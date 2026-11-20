@@ -1,0 +1,19 @@
+head=4390f7a50 pwd=~/axdev/.wt/cys-1116-s5 GUARD-BASE syspolicyd=21 fake=87 23:45:53
+bin-cysd rc=0 1468s test result: ok. 3336 passed; 0 failed; 17 ignored; 0 measured; 0 filtered out; finished i 
+ui-test rc=1 21s  2 fail Ran 3874 tests across 124 files. [20.85s] 
+ui-install rc=0 0s 
+ui-tsc rc=1 3s 
+ui-build rc=0 0s 
+cys-app-inputs rc=0 1s 
+cys-app rc=0 115s test result: ok. 350 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in  
+pw-venv rc=0 1s 
+e2e-tickrec rc=0 35s 
+e2e-chat rc=0 88s 
+e2e-confirm rc=0 6s 
+e2e-cc_popover_z rc=0 6s 
+e2e-restart_confirm rc=0 6s 
+e2e-rolereuse rc=0 69s 
+e2e-restart rc=0 28s 
+GUARD-OK syspolicyd 21 · fake 87
+실패 단계 수=2(기준선부터 붉은 것 포함 · 판정은 HANDOFF §11 표로)
+gate_rc=1 00:17:38

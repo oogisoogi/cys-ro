@@ -435,7 +435,7 @@ class Facts(FakeCys):
     @unittest.skipIf(os.name == "nt", POSIX_FAKE_CYS)
     def test_seat_category_table(self):
         table = {"master": "master", "MASTER": "master", "cso": "cso", "cso-2": "cso", "cso-fresh-1791200000": "cso",
-                 "worker": "worker", "worker-3": "worker", "worker-oogisoogi-mbp": "worker", "reviewer": "worker",
+                 "worker": "worker", "worker-3": "worker", "worker-host-mbp": "worker", "reviewer": "worker",
                  "reviewer-codex": "worker", "reviewers": "worker", "planner": "worker", "planner-x": "worker",
                  "master-2": "pack", "csox": "pack", "workers": "pack", "update": "pack", "pack": "pack",
                  "ceo": "pack", "": "pack", None: "pack", "kim-macbook": "pack"}

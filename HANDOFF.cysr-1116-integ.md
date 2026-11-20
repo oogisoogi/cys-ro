@@ -234,7 +234,7 @@
 
 ## 7. 증거 경로
 
-- 스크래치(재부팅 시 사라질 수 있음) = `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-integ/f735c79c-f628-4381-8653-1eb57b0995c2/scratchpad/`: `runall.sh`(시험 틀) · `out-head/`(최종 시험) · `out-run1/`(06:53 재시작으로 끊긴 첫 실행) · `gates.sh`·`gates-head/`(화면 게이트) · `remerge.diff` · `codex-r1-*`
+- 스크래치(재부팅 시 사라질 수 있음) = `/private/tmp/claude-501/-Users-<사용자>-axdev--wt-cys-1116-integ/f735c79c-f628-4381-8653-1eb57b0995c2/scratchpad/`: `runall.sh`(시험 틀) · `out-head/`(최종 시험) · `out-run1/`(06:53 재시작으로 끊긴 첫 실행) · `gates.sh`·`gates-head/`(화면 게이트) · `remerge.diff` · `codex-r1-*`
 - 저장소 안: `docs/integ-1116/codex-r1-prompt.md` · `codex-r1.json`
 - 측정 작업트리 `~/axdev/.wt/cys-1116-integ-race`(미커밋 측정 시험 2개 · 지울 때 `git worktree remove --force`) · codex 사본 작업트리 = 스크래치 `cx/`
 - 기준선 작업트리 `~/axdev/.wt/cys-1116-base-1118`(detached 3a095c4e · 이번에 `ui/node_modules`·`ui/dist` 생김 = git 무시 대상)

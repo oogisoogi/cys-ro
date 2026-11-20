@@ -1,0 +1,11 @@
+LANE-FAIL test_hook_r34
+LANE-FAIL test_pyseal_negative_specimen
+LANE-FAIL test_role_authority
+LANE-FAIL test_role_authority_shell
+LANE-FAIL test_hook_r34 rc=1
+LANE-FAIL test_pyseal_negative_specimen rc=2
+LANE-FAIL test_capgate_hook_shell rc=1
+LANE-FAIL test_role_authority rc=1
+LANE-FAIL test_role_authority_shell rc=1
+LANE-FAIL test_refl_inject_context_role_canon rc=1
+LANE-FAIL test_owner_desk rc=1

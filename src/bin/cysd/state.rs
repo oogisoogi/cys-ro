@@ -2441,6 +2441,9 @@ pub struct Surface {
     /// Serializes close preparation through removal for this incarnation only.
     /// Acquire before daemon/queue locks; EOF queue cleanup does not take this gate.
     pub close_operation: Mutex<()>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기(`surface.close` `if_quiet`)가 `input_gate` 안에서 「닫는다」로 판정한 표식 — 그 뒤 직접 쓰기(`try_write`)는 바이트 0 거부.
+    /// 판정과 표식이 같은 `input_gate` 임계영역이고 사람 쓰기 길도 같은 게이트 안에서 이 표식을 본다 = 사람 바이트는 판정이 보거나 쓰이지 않거나 둘 중 하나. 닫기 실패면 내린다.
+    pub close_decided: AtomicBool,
     /// PTY 쓰기는 전용 writer 스레드만 수행 — async 경로는 유한 채널 try_send.
     /// 정체된 pane의 블로킹 write가 tokio 워커·watchdog을 멈추는 경로를 원천 차단한다.
     pub write_tx: crate::writer_gate::WriterSender,
@@ -2488,6 +2491,12 @@ pub struct Surface {
     pub agent_exit_notified: AtomicBool,
     /// T3-13 타이핑 가드: 사람(UI) 입력의 마지막 시각 — 원격 주입 충돌 보호
     pub last_human_input: Mutex<Option<Instant>>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · 조각 5 S1-5) 지금 `last_human_input` 에 남은 찍기의 번호(0 = 찍기 없음) — 앱 대화 화면이
+    /// 「지금 남은 사람 입력 = 내 원자 제출」을 짝짓는 열쇠(`surface.send_text` 응답 · `org.status` 행 `human_input_stamp` = `<데몬 기동 ms>:<번호>`).
+    /// 쓰기 0 으로 끝난 원자 제출(S1-10)은 찍은 시각과 이 번호를 **앞 값으로** 되돌린다 — 그 사이 다른 찍기가 있었으면 그대로 둔다.
+    pub human_input_seq: AtomicU64,
+    /// 찍기 번호 발급기 — **줄지 않는다**(되돌림이 있어도 같은 번호를 다시 내지 않음 · codex 1R ABA).
+    pub human_input_issued: AtomicU64,
     /// ★B1(0.14.30): 이 pane 에 쓰였으나 **제출(CR)·선정리(Ctrl-U/Ctrl-C)를 아직 보지 못한**
     /// 입력 바이트 수. 큐 배달의 '입력줄 점유' 1차 축이다(화면 무의존 결정론 신호 —
     /// `governance::pending_input_step` 가 전이 규칙, `governance::input_line_state` 가 소비자).
@@ -6780,6 +6789,51 @@ impl Daemon {
         self.released_roles.lock().unwrap().retain(|r, s| r != role && *s != sid);
     }
 
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환(`surface.create` idempotency_key)된 **역할 없는** 좌석에 요청 역할을 다시 단다 —
+    /// 에이전트 죽음 유예(60초) 뒤 `role.released` 로 딱지가 내려간 좌석을 120초 안 다시 기동하면 같은 좌석이 되살아나는데 종전엔 역할이 0 이었다(마스터 0).
+    /// 생성 경로(`create_surface_with_env` 의 역할 공개 블록)와 같은 규약 — 락 순서 surfaces → roles → surface.role · worker 는 고유 이름 · caps · 거둔 역할 장부 ·
+    /// 묘비 해제 · master 쿨다운 스탬프 · 위상 영속. 이미 역할이 있으면 아무것도 안 하고 None.
+    pub fn reattach_role_on_reuse(self: &Arc<Self>, surface: &Arc<Surface>, role: &str) -> Option<String> {
+        let final_role = {
+            let surfaces = self.surfaces.lock().unwrap();
+            let mut roles = self.roles.lock().unwrap();
+            let mut srole = surface.role.lock().unwrap();
+            // (master#c78fa28f F1) 「되살리러 왔다」를 회수 시계에 알린다 — 역할이 아직 있어도(사망 유예 안 재반환) 시계를 비워, 새 에이전트가 보이기 전
+            //   watchdog 틱이 역할을 거두지 못하게 한다(다음 틱이 죽음을 다시 보면 유예를 새로 시작). roles·surface.role 잠금 안 = 회수 쪽 재판정과 직렬.
+            // 뮤턴트 S5R-NODEADRESET(시계 안 비움) — 시험 빌드에서만.
+            if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NODEADRESET")) {
+                *surface.agent_dead_since.lock().unwrap() = None;
+            }
+            if srole.is_some() {
+                return None;
+            }
+            let final_role = dedup_worker_role(
+                role,
+                &roles,
+                |h| surfaces.get(&h).map(|s| !s.exited.load(Ordering::Relaxed)).unwrap_or(false),
+                surface.id,
+            );
+            *srole = Some(final_role.clone());
+            *surface.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(final_role.as_str()));
+            roles.insert(final_role.clone(), surface.id);
+            final_role
+        };
+        self.note_role_held(&final_role, surface.id);
+        self.caller_gen.fetch_add(1, Ordering::Relaxed);
+        self.remove_tombstone(&final_role);
+        if final_role == "master" {
+            *self.master_claimed_at.lock().unwrap() = Some(now_epoch());
+        }
+        crate::governance::persist_topology(self);
+        self.bus.publish(
+            "role.reattached",
+            "surface",
+            Some(surface.id),
+            json!({"role": final_role, "surface_ref": cys::surface_ref(surface.id), "path": "surface.create(idempotent_reuse)"}),
+        );
+        Some(final_role)
+    }
+
     pub fn remove_tombstone(&self, role: &str) {
         let mut tombstones = self.tombstones.lock().unwrap();
         tombstones.remove(role);
@@ -8285,6 +8339,7 @@ impl Daemon {
             exited: AtomicBool::new(false),
             exited_at: Mutex::new(None),
             close_operation: Mutex::new(()),
+            close_decided: AtomicBool::new(false),
             write_tx,
             master: Mutex::new(spawned.master),
             child: Mutex::new(spawned.child),
@@ -8324,6 +8379,8 @@ impl Daemon {
             crash_notified: AtomicBool::new(false),
             last_cmd_ack: Mutex::new(None),
             last_human_input: Mutex::new(None),
+            human_input_seq: AtomicU64::new(0),
+            human_input_issued: AtomicU64::new(0),
             pending_input_bytes: AtomicU64::new(0),
             pending_input: Mutex::new(Default::default()),
             // ★(0.14.43 · RQFIX B-1) 신생 좌석은 거짓(v2 = 종전 동작) — 첫 watchdog 틱의 생존·마커 판정이 확정한다.

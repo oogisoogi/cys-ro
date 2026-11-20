@@ -695,12 +695,38 @@ pub fn role_release_due(dead_since: Option<f64>, now: f64, grace_secs: f64) -> b
 /// 락 순서는 claim_role 승계 마무리와 동일하다(roles → surface 리프 락). `surfaces` 맵은
 /// 잡지 않는다 — 호출부가 이미 Arc 를 들고 있다.
 pub(crate) fn release_role_after_agent_death(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) -> bool {
+    release_role_after_agent_death_if(daemon, s, || true)
+}
+
+/// (1.1.16 · master#26ff3e1f ③) 회수 시계 풀기 — 「되살리러 왔다」를 roles·surface.role 잠금 **안**에서 알린다(watchdog 의 `release_role_after_agent_death_if` 재판정·제거와 같은 잠금).
+/// 잠금 밖에서 풀면 틱이 `still_due` 를 참으로 본 뒤 · 역할을 지우기 전 사이에 풀려 그 기동이 역할 없는 좌석으로 이어질 수 있었다(codex 3R major).
+pub(crate) fn rearm_release_clock(daemon: &Arc<Daemon>, s: &Arc<crate::state::Surface>) {
+    // 뮤턴트 S5R-CLOCKNOLOCK(잠금 밖 풀기) — 시험 빌드에서만.
+    if cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("CLOCKNOLOCK") {
+        *s.agent_dead_since.lock().unwrap() = None;
+        return;
+    }
+    let _roles = daemon.roles.lock().unwrap();
+    let _srole = s.role.lock().unwrap();
+    *s.agent_dead_since.lock().unwrap() = None;
+}
+
+/// (1.1.16 · master#c78fa28f F1) 회수 직전 재판정 — `still_due` 를 roles·surface.role 잠금 **안**에서 본다. watchdog 은 「회수 시계가 아직 만료」를 넘긴다:
+/// 멱등 재반환(`Daemon::reattach_role_on_reuse`)이 같은 잠금 안에서 시계를 비우므로, 틱이 시계를 읽은 뒤 재반환이 끼어들어도 역할을 거두지 않는다.
+pub(crate) fn release_role_after_agent_death_if(
+    daemon: &Arc<Daemon>,
+    s: &Arc<crate::state::Surface>,
+    still_due: impl FnOnce() -> bool,
+) -> bool {
     let released = {
         let mut roles = daemon.roles.lock().unwrap();
         let mut srole = s.role.lock().unwrap();
         let Some(role) = srole.clone() else {
             return false; // 이미 무역할 — 멱등
         };
+        if !still_due() {
+            return false; // 그 사이 되살리러 왔다(회수 시계 비워짐)
+        }
         // 다른 좌석이 그 역할을 승계한 뒤라면 roles 맵은 그쪽 것이다(내 것만 지운다).
         if roles.get(&role) == Some(&s.id) {
             roles.remove(&role);
@@ -1061,7 +1087,9 @@ fn check_agent_death_with_model(
         // role 회수는 **매 틱** 판정한다 — 아래 통지 래치(agent_exit_notified)는 1회성이라
         // 그 뒤에 두면 유예가 지난 시점에 영영 도달하지 못한다(통지와 회수는 다른 층위다).
         if role_release_due(Some(dead_since), now, role_release_grace_secs())
-            && release_role_after_agent_death(daemon, &s)
+            && release_role_after_agent_death_if(daemon, &s, || {
+                role_release_due(*s.agent_dead_since.lock().unwrap(), now, role_release_grace_secs())
+            })
         {
             eprintln!(
                 "[cysd] {} role 회수 — {agent} 가 {:.0}초 이상 사라져 있다(좌석 셸은 유지).",
@@ -1084,7 +1112,9 @@ fn check_agent_death_with_model(
         //   ★1.1.8 병합(판정 갈림 G2 · 원작자 R1F-IN 핀 `r1f_in_tick_blank_process_table_…` 과의 정합): 비울 계수가 **있을 때만**
         //   비운다. 계수 0 이면 지울 초안이 없고, `clear_pending_input` 이 잠정 Esc 면제 표식까지 내려 원작자 틱 되돌리기(전경 그룹
         //   대조)의 재료를 지운다 — 프로세스 표가 한 틱 비는 관측 결손에서도 표식은 유지돼야 한다(원작자 단언).
-        if s.pending_input_bytes.load(Ordering::Relaxed) > 0 {
+        // (master#26ff3e1f ②) 열린 채 남은 붙여넣기 봉투(OPEN 만 · 바이트 0)도 죽은 입력줄의 잔재다 — 함께 비운다.
+        let paste_left = s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).in_paste;
+        if s.pending_input_bytes.load(Ordering::Relaxed) > 0 || paste_left {
             let _gate = s.input_gate.lock().unwrap();
             s.clear_pending_input();
         }
@@ -6581,6 +6611,99 @@ pub fn close_surface(daemon: &Arc<Daemon>, id: u64, cause: CloseCause) -> Result
     close_surface_effect(daemon, CloseOperation { surface: &surface, _guard: guard }, cause)
 }
 
+/// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기의 거절 — 무엇이 안 맞았나(응답 `error.reason`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CloseIfQuiet {
+    NotFound,
+    /// 조건 불충족 — 닫지 않았다(좌석 그대로).
+    Refused(&'static str),
+    Failed(String),
+}
+
+/// 조건 판정(순수) — 셋 다 맞아야 닫는다: 생성 시각 일치(같은 좌석 한 번 · 번호 재사용 대비) · 입력줄 사람 바이트 0 ∧ 붙여넣기 닫힘 · 최근 사람 입력 없음.
+/// `human_age_secs` = 마지막 사람 입력 뒤 지난 초(None = 사람 입력 없음). 생성 시각은 JSON 왕복(f64 파싱 1 ULP)을 견디게 1ms 안이면 같다.
+pub(crate) fn close_if_quiet_denial(
+    created_at: f64,
+    expected_created_at: f64,
+    pending_human: u64,
+    in_paste: bool,
+    human_age_secs: Option<u64>,
+    quiet_secs: u64,
+) -> Option<&'static str> {
+    if !(created_at.is_finite() && expected_created_at.is_finite() && (created_at - expected_created_at).abs() <= 1e-3) {
+        return Some("created_at_mismatch");
+    }
+    if pending_human > 0 {
+        return Some("input_line_has_human_draft");
+    }
+    if in_paste {
+        return Some("paste_open");
+    }
+    if human_age_secs.is_some_and(|a| a < quiet_secs) {
+        return Some("recent_human_input");
+    }
+    None
+}
+
+/// 조건부 닫기 — 판정과 닫기를 **이 좌석의 `close_operation` 한 잠금 안**에서 한다(그 안에서 `input_gate` 를 잡고 판정 → 표식 `close_decided` → 게이트 놓음 → 같은 잠금으로 닫기).
+/// 사람 쓰기 길(`send_text`·`send_key` 의 `try_write`)은 `input_gate` 안에서 표식을 본다 — 판정 앞의 사람 바이트는 판정이 보고(거절), 판정 뒤의 것은 쓰이지 않는다(바이트 0).
+/// 락 순서 = `close_operation` → `input_gate` → (`pending_input`·`last_human_input` leaf) · 닫기 본체(큐·맵 락)는 게이트를 놓은 뒤라 `pending_queue → input_gate` 계약과 교차하지 않는다.
+pub(crate) fn close_surface_if_quiet(
+    daemon: &Arc<Daemon>,
+    id: u64,
+    cause: CloseCause,
+    expected_created_at: f64,
+    // (master#26ff3e1f ①) 호출자가 판정할 때 본 사람 입력 표지(org.status 행 `human_input_stamp` · null = 그때 없음). Some 이면 지금 표지와 달라졌을 때(그 뒤 사람 입력) 닫지 않는다.
+    expected_stamp: Option<&Value>,
+) -> Result<(), CloseIfQuiet> {
+    let surface = daemon.get_surface(id).ok_or(CloseIfQuiet::NotFound)?;
+    let guard = surface.close_operation.lock().map_err(|_| CloseIfQuiet::Failed("close_operation_poisoned".into()))?;
+    let current = daemon.get_surface(id).ok_or(CloseIfQuiet::NotFound)?;
+    if !Arc::ptr_eq(&current, &surface) {
+        return Err(CloseIfQuiet::NotFound);
+    }
+    {
+        // 뮤턴트 S5P1-NOGATE(게이트 밖 판정) — 시험 빌드에서만.
+        let _gate = (!(cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOGATE")))
+            .then(|| surface.input_gate.lock().unwrap_or_else(|e| e.into_inner()));
+        let (pending_human, in_paste) = {
+            let p = surface.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            (p.human, p.paste_open_now(std::time::Instant::now()))
+        };
+        // 뮤턴트 S5P1-NOSTAMP(스냅샷 표지 대조 끔) — 시험 빌드에서만.
+        let stamp_moved = !(cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOSTAMP"))
+            && expected_stamp.is_some_and(|want| {
+                crate::handlers::human_input_stamp_label(daemon, surface.human_input_seq.load(Ordering::SeqCst)) != *want
+            });
+        if stamp_moved {
+            return Err(CloseIfQuiet::Refused("human_input_since_snapshot"));
+        }
+        let human_age = surface.last_human_input.lock().unwrap_or_else(|e| e.into_inner()).map(|t| t.elapsed().as_secs());
+        // 뮤턴트 S5P1-NOCOND(조건 칸 무시) — 시험 빌드에서만.
+        let ignore = cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOCOND");
+        if let Some(why) = close_if_quiet_denial(
+            surface.created_at,
+            expected_created_at,
+            pending_human,
+            in_paste,
+            human_age,
+            queue_human_quiet_secs(),
+        )
+        .filter(|_| !ignore)
+        {
+            return Err(CloseIfQuiet::Refused(why));
+        }
+        // 뮤턴트 S5P1-NOFLAG(표식 안 세움 · 판정 뒤 사람 바이트가 쓰임) — 시험 빌드에서만.
+        if !(cfg!(test) && std::env::var("CYS_S5P1_MUTANT").as_deref() == Ok("NOFLAG")) {
+            surface.close_decided.store(true, Ordering::SeqCst);
+        }
+    }
+    close_surface_effect(daemon, CloseOperation { surface: &surface, _guard: guard }, cause).map_err(|e| {
+        surface.close_decided.store(false, Ordering::SeqCst);
+        CloseIfQuiet::Failed(e)
+    })
+}
+
 /// Constructed only with this exact Surface's operation guard. Keep the existing
 /// expiry-before-removal transaction; broad queue/map locks never span its I/O.
 struct CloseOperation<'a> {
@@ -9395,6 +9518,18 @@ pub(crate) enum InputOrigin {
 
 /// 미종결 봉투 해제 TTL(초) — OPEN 뒤 이 시간이 지난 새 청크는 봉투 밖으로 본다.
 pub(crate) const PASTE_OPEN_TTL_SECS: u64 = 5;
+
+impl PendingInputState {
+    /// (1.1.16 · cysr-1116-s5-1119 · master#26ff3e1f ②) 지금 붙여넣기가 **살아 있게** 열려 있는가 — 만료(TTL) 반영 값. 종전엔 만료를 다음 입력 조각이 와야만 셌다
+    ///   (`pending_input_step` 첫 줄) → OPEN 만 온 뒤 아무 입력도 없는 좌석(죽은 좌석)은 영원히 `in_paste=true` 로 보였다(조건부 닫기·phoenix 보류가 영구 거절).
+    ///   보고(org.status·surface.list 행 `input_paste_open`)와 조건부 닫기가 이 값을 본다. 상태기계(`in_paste`) 자체는 종전 그대로.
+    pub(crate) fn paste_open_now(&self, now: std::time::Instant) -> bool {
+        self.in_paste
+            && self
+                .paste_opened_at
+                .is_some_and(|t| now.duration_since(t).as_secs() < PASTE_OPEN_TTL_SECS)
+    }
+}
 
 /// ★(0.14.43 · C2 · 오너 결재 A안) 미제출 입력 **계수 모델** — [`pending_input_step_model`] 의 노브.
 ///
@@ -20003,6 +20138,42 @@ mod tests {
         assert_eq!(s.pending_input.lock().unwrap_or_else(|e| e.into_inner()).human, 0,
             "소멸한 사람 초안 계수가 남아 node-recover C-u 를 영구 거부한다");
         assert!(s.input_gen.load(Ordering::Acquire) > gen0, "쓰기 세대가 오르지 않았다(⑭ 관측 무효화)");
+    }
+
+    /// (1.1.16 · master#26ff3e1f ②) 붙여넣기 OPEN 만 온 채(바이트 0) 에이전트가 죽으면 그 봉투도 비운다 + 만료 반영 열림 값.
+    ///   종전: 정리 조건이 `pending_input_bytes > 0` 뿐 · 만료는 다음 조각이 와야 셈 → 죽은 좌석이 영원히 `input_paste_open=true` (조건부 닫기·phoenix 보류 영구).
+    #[test]
+    fn s5_1116_dead_seat_open_paste_cleared_and_ttl_reported() {
+        let daemon = drill_daemon("s5-paste-open");
+        let id = spawn_role_surface(&daemon, "worker");
+        let s = daemon.surfaces.lock().unwrap().get(&id).cloned().unwrap();
+        let now = std::time::Instant::now();
+        {
+            let mut p = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            p.in_paste = true;
+            p.paste_opened_at = Some(now);
+        }
+        assert!(s.pending_input.lock().unwrap().paste_open_now(now), "방금 연 봉투 = 열림");
+        assert!(!s.pending_input.lock().unwrap().paste_open_now(now + std::time::Duration::from_secs(super::PASTE_OPEN_TTL_SECS)), "TTL 지나면 열림 아님(다음 조각 없이도)");
+        assert_eq!(s.pending_input_bytes.load(Ordering::Relaxed), 0, "전제: OPEN 만 = 바이트 0");
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        s.agent_seen.store(true, Ordering::Relaxed);
+        let sys = sysinfo::System::new();
+        let mut rc: HashMap<u64, u32> = HashMap::new();
+        let mut sp: HashMap<u64, Option<(String, u32)>> = HashMap::new();
+        super::check_agent_death(&daemon, &sys, &mut rc, &mut sp);
+        assert!(s.agent_exit_notified.load(Ordering::Relaxed), "전제: 사망 통지");
+        assert!(!s.pending_input.lock().unwrap().in_paste, "죽은 좌석의 열린 붙여넣기 봉투가 남았다(바이트 0 이라 정리 건너뜀)");
+        // 여러 회차: 다시 열린 채 두고 틱을 거듭해도(통지 래치 뒤) 보고값은 TTL 뒤 닫힘 — 영구 보류 0
+        {
+            let mut p = s.pending_input.lock().unwrap();
+            p.in_paste = true;
+            p.paste_opened_at = Some(now - std::time::Duration::from_secs(super::PASTE_OPEN_TTL_SECS + 1));
+        }
+        for _ in 0..3 {
+            super::check_agent_death(&daemon, &sys, &mut rc, &mut sp);
+            assert!(!s.pending_input.lock().unwrap().paste_open_now(std::time::Instant::now()), "TTL 지난 OPEN 이 열림으로 보고된다");
+        }
     }
 
     /// ★G5-③(W5-A) Keep·가드 소거 의미 핀 — ① 신선 pending + 무관측 = Keep(소거·이벤트 0)

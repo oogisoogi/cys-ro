@@ -1,5 +1,5 @@
 [리뷰 의뢰 — 엄격 제약 준수 · 지정 범위만 · 읽기 전용]
-저장소 = /private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-integ/f735c79c-f628-4381-8653-1eb57b0995c2/scratchpad/cx (가지 integ/1116 · HEAD d858abb3 = merge commit). 쓰기 금지 · 서버·빌드·장시간 프로세스 금지 · 파일 읽기와 git 읽기 명령만.
+저장소 = /private/tmp/claude-501/-Users-<사용자>-axdev--wt-cys-1116-integ/f735c79c-f628-4381-8653-1eb57b0995c2/scratchpad/cx (가지 integ/1116 · HEAD d858abb3 = merge commit). 쓰기 금지 · 서버·빌드·장시간 프로세스 금지 · 파일 읽기와 git 읽기 명령만.
 검토 범위(이 범위만, 무관 파일·repo 배회 금지): 아래 remerge diff(자동 병합 결과 대비 사람이 한 충돌 해결 차이) + 그 해결이 닿는 곳:
   ui/src/views/core.ts · ui/src/views/index.ts · ui/src/views/chat/index.ts · ui/src/views/confirm.ts(onEvent·scanStep·startSession·resetSession·onTail 만) · ui/src/views/confirm.test.ts(키 이름 바꿈만) · src-tauri/src/viewcore.rs parse_transcript_chunk(+그 시험)
 비교 기준: 부모1 = 75dc2640(조각 1+3 들어간 integ) · 부모2 = fa400dda(feat/ui-slice4 = 조각 1+4). `git show 75dc2640:<경로>` · `git show fa400dda:<경로>` 로 각 쪽 원본을 볼 수 있다.

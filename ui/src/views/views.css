@@ -128,3 +128,18 @@
 .wv-band:not([hidden]) + #body-row { height: calc(100% - var(--topbar-h) - var(--wv-band-h)); }
 /* (s79 · S4-7) 사람이 물음 내리기 · 저절로 바뀌어 온 항목 표시 */
 .cvb-swapped { font-size: 18px; color: var(--cv-wait); }
+/* (cysr-1116-s5) 마스터 멈춤·깨우기·다시 켜기 띠 — 맨 위 한 줄 · 글자 18px 이상 · 누를 면 44px(§9-2) · 잠긴 단추 흐림 */
+.cv-revive { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border: 2px solid var(--cv-err); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; font-size: 18px; color: var(--cv-ink); }
+.cv-revive[hidden] { display: none; }
+.cv-revive[data-tone="wait"] { border-color: var(--cv-wait); }
+.cvr-text { flex: 1 1 320px; }
+.cvr-title { color: var(--cv-err); }
+.cv-revive[data-tone="wait"] .cvr-title { color: var(--cv-wait); }
+.cvr-acts { display: flex; flex-wrap: wrap; gap: 10px; }
+.cvr-btn { min-height: 44px; min-width: 44px; padding: 0 16px; font-size: 18px; border-radius: 8px; border: 1px solid var(--cv-line); background: transparent; color: var(--cv-ink); cursor: pointer; }
+.cvr-pri { border-color: var(--cv-accent); font-weight: 700; }
+.cvr-btn[aria-disabled="true"] { opacity: 0.55; cursor: progress; }
+/* 작업 화면 위 관문 안내(§6-3) — 전환 자리 줄에 붙는다 */
+.vs-hint { display: flex; align-items: center; gap: 10px; font-size: 16px; padding: 4px 10px; border: 2px solid var(--cv-wait, #b26b00); border-radius: 8px; }
+.vs-hint[hidden] { display: none; }
+.vs-hint button { min-height: 36px; padding: 0 12px; font-size: 16px; border-radius: 6px; cursor: pointer; }

@@ -130,7 +130,7 @@ UNDO-ALL · NO-PLACEMENTS · IGNORE-BUSY · ANY-COMMIT · NO-LATE · LATE-ANYKIN
 - U05: 업데이터 tarball 미배선 · 설치본 LSMinimumSystemVersion 10.13 vs 진입점 11.0 경고.
 - U08: javis_radio.py 의 자체 표지 판정(원작자도 같음).
 
-## 9. 증거 경로(scratchpad = `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-vendor/0ac8a2b3-7526-4162-b7c2-fbb6a81fa2b3/scratchpad/` · 재부팅 시 사라질 수 있음)
+## 9. 증거 경로(scratchpad = `/private/tmp/claude-501/-Users-<사용자>-axdev--wt-cys-1116-vendor/0ac8a2b3-7526-4162-b7c2-fbb6a81fa2b3/scratchpad/` · 재부팅 시 사라질 수 있음)
 
 - 시험 요약 `out-base/summary.txt`(기준선) · `out-head/summary.txt`(최종) · 각 로그 같은 폴더 · 실행 틀 `runall.sh`
 - red first `red-j1116.log` · 1R 고침 붉음 `red-codexfix-prev.log` · 뮤턴트 `mutants-j1116*.log` · `mutants-7d.log`
@@ -148,7 +148,7 @@ UNDO-ALL · NO-PLACEMENTS · IGNORE-BUSY · ANY-COMMIT · NO-LATE · LATE-ANYKIN
 ## 10. 델타 — 독립 검증 1118 1회 고침 (TICKET=cysr-1116-vendor-fix-1118 · worker-3 surface:2163 · 2026-11-18 01:1x~03:4x)
 
 - 입력 = 독립 검증 원문 `~/axdev/.wt/cys-1116-vendor-verify/VERIFY.cysr-1116-vendor-verify-1118.md`(F1~F7) · push·서명·발행·설치 0 · 실제 `~/.cys` 무접촉(시험 = 격리 HOME `env -i`).
-- 증거 경로(scratchpad = `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1116-vendor/410f637d-ac6a-4ccd-9e2b-642e51cf6cd6/scratchpad/` · 재부팅 시 사라질 수 있음): `red-f1.log`·`red-f2.log`(붉음 먼저) · `mut-*.log`·`r1-mut-*.log`(뮤턴트) · `xlock/`(실바이너리 잠금 6줄) · `e2e/`(저널 실바이너리 재현) · `out-head/`·`out-base/`·`out-r1/`(전체 시험) · `v1118-on-head.log`(검증 좌석 시험 10개를 이 가지에서) · `codex-f1-prompt.md`·`codex-f1-out.txt`(codex 1R 원문).
+- 증거 경로(scratchpad = `/private/tmp/claude-501/-Users-<사용자>-axdev--wt-cys-1116-vendor/410f637d-ac6a-4ccd-9e2b-642e51cf6cd6/scratchpad/` · 재부팅 시 사라질 수 있음): `red-f1.log`·`red-f2.log`(붉음 먼저) · `mut-*.log`·`r1-mut-*.log`(뮤턴트) · `xlock/`(실바이너리 잠금 6줄) · `e2e/`(저널 실바이너리 재현) · `out-head/`·`out-base/`·`out-r1/`(전체 시험) · `v1118-on-head.log`(검증 좌석 시험 10개를 이 가지에서) · `codex-f1-prompt.md`·`codex-f1-out.txt`(codex 1R 원문).
 
 ### 10-1. 커밋(fcc0cc73 위 · push 0)
 

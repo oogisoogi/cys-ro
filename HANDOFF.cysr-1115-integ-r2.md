@@ -69,7 +69,7 @@ f41a0024 agy = src/bin/cysd/state.rs 뿐 — 차이 = 충돌 표식 3줄 삭제 
 ```
    파일 단위(f41a0024): 바뀐 200파일 = 조각 합집합 200 · 조각 밖 파일 0 · 한 조각만 바꾼 185파일은 조각 머리와 내용(blob) 같음 · 여러 조각이 바꾼 15파일(Cargo.lock·Cargo.toml·USER-MANUAL.md·팩 시험 3·_lib.sh·src-tauri/main.rs·cys.rs·governance.rs·handlers.rs·state.rs·lib.rs·main.ts·toastaxis.test.ts)은 위 ③ 으로 자동 병합 그대로임을 보임.
    (브리프의 `git diff <조각 머리>...integ/1115-r2 --stat` 는 다른 조각 변경이 전부 섞여 나와 판정에 못 써 위 두 가지로 바꿨다 — 지시 없이 내린 판단 1건.)
-   재현: 스크립트 `/private/tmp/claude-501/-Users-oogisoogi-axdev--wt-cys-1115-integ/a28a3eeb-ef91-4e4c-9396-c1c0d24bdf0d/scratchpad/pidcheck.sh`·`filecheck.py`(스크래치 · 재부팅 시 사라짐 — 명령 뼈대는 위와 같음).
+   재현: 스크립트 `/private/tmp/claude-501/-Users-<사용자>-axdev--wt-cys-1115-integ/a28a3eeb-ef91-4e4c-9396-c1c0d24bdf0d/scratchpad/pidcheck.sh`·`filecheck.py`(스크래치 · 재부팅 시 사라짐 — 명령 뼈대는 위와 같음).
 
 ## 4. B — 뜻 충돌 점검
 
@@ -213,7 +213,7 @@ python3 cysjavis-pack/bin/tests/run_bootstrap_health.py --json      # 기대 FAI
 
 - 내가 만든 임시 작업트리: `~/axdev/.wt/cys-1115-integ2-mut`(detached 3d2d4e88 · 상담소·agy 팩 뮤턴트용) · `/private/tmp/claude-501/r2/wt-{base,tabs,agy,t3}`(기준선·조각 단독 대조용 · detached · wt-t3 에 target 있음). 모두 커밋 0 · 변경 0 확인 뒤 **2차 끝(08:0x)에 5개 모두 `git worktree remove --force` 로 지움**(master#65cc8eea 지시).
 - `WORKER_TODO.cysr-1115-reassemble.md` = 커밋 안 함(브리프).
-- 증류 2건 = 저장소 장기기억(`~/.claude-acct2/projects/-Users-oogisoogi-cys-terminal-src/memory/`)에 기록: `test-env-tmpdir-length-sun-len` · `agy-seat-is-gemini-adapter-has-marker`(팩 `~/.cys/pack` 은 브리프상 손대지 않아 팩 기억 도구는 안 씀).
+- 증류 2건 = 저장소 장기기억(`~/.claude-acct2/projects/-Users-<사용자>-cys-terminal-src/memory/`)에 기록: `test-env-tmpdir-length-sun-len` · `agy-seat-is-gemini-adapter-has-marker`(팩 `~/.cys/pack` 은 브리프상 손대지 않아 팩 기억 도구는 안 씀).
 
 ## 12. 2차(master#65cc8eea · 08:0x) — H-SECRET-1 · T3 census · 흔들림
 

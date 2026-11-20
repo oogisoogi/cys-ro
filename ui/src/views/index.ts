@@ -20,6 +20,10 @@ export interface BootDeps {
   focusSeat?(sid: number): void;
   /** (cysr-1116-s2 · P2-DESIGN §2-3 ㉢) 작업 화면이 보이게 된 직후(전환·물러남·시작) — main.ts 가 미룬 좌석 런타임을 만든다. */
   onWorkShown?(): void;
+  /** (조각 5) 도움 요청 창(main.ts 기존 피드백 창) */
+  openHelp?(): void;
+  /** (조각 5) 복원 진행 중(main.ts briefGate — 앱 수명 전체) */
+  restoring?(): boolean;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -70,6 +74,13 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     // (cysr-1116-s2 · integ I3·S4-3) 데몬 사건은 main.ts 의 하나뿐인 daemon-event 구독이 viewsIngest(아래) 로 넘긴다 —
     //   종전 조각 3 `listen` · 조각 4 `listenDaemon` 두 구독과 `defaultSlug`(default_socket_slug 재조회)는 걷었다(구독 1 · 조회 0 · 대화 화면이 꺼진 동안 온 사건도 장부가 받음).
     goView: (id) => void booted?.registry.choose(id),
+    // (s5 조각 5) 앱 사건(boot-degraded · restore-progress) — daemon-event 가 아니다(그것은 위 viewsIngest 단일 입구).
+    //   ★통합(cysr-1116-integ-1120): s5 의 defaultSlug(default_socket_slug 재조회)는 s2 뜻대로 걷었다 — 본부 slug 는 ingest 가 넣는다.
+    listenApp: (name, handler) => (window as unknown as { __TAURI__: { event: { listen(n: string, h: (e: { payload: unknown }) => void): Promise<() => void> } } }).__TAURI__.event.listen(name, handler),
+    focusSeat: (sid) => deps.focusSeat?.(sid),
+    openHelp: () => deps.openHelp?.(),
+    restoring: () => deps.restoring?.() === true,
+    workHint: (text) => paintWorkHint(switchHost, text, () => void booted?.registry.choose("chat")),
   });
   // (s79 조각 9 · FR-C7) 작업 화면이 켜져 있는 동안만 붙는 띠 — 대화 화면을 이번 실행에서 켠 적이 없으면 조회 0·띠 0(watchStart = false).
   const workExtra: WorkExtra<ChatState, ChatCore> = {
@@ -150,6 +161,38 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
   paintSwitch(switchHost, registry);
   void registry.start(first);
   return booted;
+}
+
+/** (조각 5 · §6-3) 작업 화면 위 관문 안내 1줄 + 「대화 화면으로」 · 닫기. text=null 이면 숨김. 대화 화면으로 가면 닫힌다. textContent 만. */
+function paintWorkHint(host: HTMLElement, text: string | null, backToChat: () => void): void {
+  let h = host.querySelector<HTMLElement>(".vs-hint");
+  if (!h) {
+    h = document.createElement("div");
+    h.className = "vs-hint";
+    h.setAttribute("role", "status");
+    host.append(h);
+  }
+  h.replaceChildren();
+  if (text === null) {
+    h.hidden = true;
+    return;
+  }
+  const t = document.createElement("span");
+  t.textContent = text;
+  const back = document.createElement("button");
+  back.type = "button";
+  back.textContent = "대화 화면으로";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "닫기";
+  const hide = () => paintWorkHint(host, null, backToChat);
+  back.addEventListener("click", () => {
+    hide();
+    backToChat();
+  });
+  close.addEventListener("click", hide);
+  h.append(t, back, close);
+  h.hidden = false;
 }
 
 /** 전환 단추 「대화 화면 | 작업 화면」 + 띠 1줄(물러남·쓸 수 없음 까닭). textContent 만. */

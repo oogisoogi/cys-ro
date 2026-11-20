@@ -15,6 +15,7 @@ import { applyRecords, applyRefusedAtWrite, applyRefusedById, canRetry, mergeOut
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
 import { ResultBook } from "./results"; // (s79 조각 7) 결과 받기 장부
+import { ReviveBook } from "./revive";
 
 export const HOLD_KEY = "cys-chat-hold";
 /** 붙잡은 말 상한(설계 §5-3 · 넘으면 새 말을 받지 않고 안내). */
@@ -109,6 +110,14 @@ export interface Deps {
   goView?(id: string): void;
   /** (조각 4 · 검증 F1) 본부 데몬 socket_slug(Tauri default_socket_slug) — 사건의 slug 대조용 · 대화 화면이 켜질 때 1회. */
   defaultSlug?(): Promise<string>;
+  /** (조각 5) 작업 화면에서 그 좌석 창에 포커스(main.ts jumpToSurface) · 작업 화면 위 안내 띠 · 도움 요청 창(기존 피드백 창). */
+  focusSeat?(sid: number): void;
+  workHint?(text: string | null): void;
+  openHelp?(): void;
+  /** (조각 5) Tauri 앱 사건 구독(boot-degraded · restore-progress) — 대화 화면 attach~detach 동안만 · 없으면 그 사건 없이. */
+  listenApp?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
+  /** (조각 5 · codex 1R major) 앱 수명 전체의 복원 진행 중 여부(main.ts briefGate) */
+  restoring?(): boolean;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -200,10 +209,34 @@ export class ChatCore {
    *  기다리는 사이(재조회·list_dir·feed/org) 사람이 작업 화면을 누를 수 있다 — 그때는 사람이 마스터 창에 직접 칠 수 있으므로 대화 화면의 행동을 이어 하지 않는다. */
   readonly onChatScreen = (): boolean => !this.watchOnly;
 
+  /** (조각 5) 멈춤·깨우기·다시 켜기 장부. */
+  readonly revive: ReviveBook;
+  /** (조각 5) 앱 사건(boot-degraded · restore-progress) 구독 해제 — 대화 화면 attach~detach 동안만. */
+  private unlistenApp: Array<() => void> = [];
+  /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 표지(데몬 응답 human_input_stamp). */
+  private ownHuman: { seat: number; stamp: string } | null = null;
+
   constructor(private readonly d: Deps) {
     this.loadHold();
     this.confirm = new ConfirmBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
     this.results = new ResultBook({ invoke: d.invoke, now: d.now, store: d.store, onChat: this.onChatScreen }, () => this.set({}));
+    this.revive = new ReviveBook({
+      invoke: d.invoke,
+      now: d.now,
+      setTimeout: d.setTimeout,
+      clearTimeout: d.clearTimeout,
+      store: d.store,
+      working: d.working,
+      trackAuto: (id, seat) => this.trackAuto(id, seat),
+      holdRemainingMs: () => this.autoHoldRemainingMs(),
+      goView: (id) => this.d.goView?.(id),
+      focusSeat: (sid) => this.d.focusSeat?.(sid),
+      workHint: (t) => this.d.workHint?.(t),
+      openHelp: () => this.d.openHelp?.(),
+      changed: () => this.set({}),
+      pollSoon: () => void this.poll(),
+      restoring: () => this.d.restoring?.() === true,
+    });
   }
 
   get state(): ChatState {
@@ -260,6 +293,23 @@ export class ChatCore {
     if (!watch) void this.results.start(); // (s79 조각 7) 홈 1회(살핌 중 = 다시 묻지 않음)
     void this.readTranscript();
     void this.startListening();
+    void this.startAppListening();
+  }
+
+  /** (조각 5) 앱 사건 — boot-degraded(팀 준비 덜 됨) · restore-progress(복원 중 다시 켜기 잠금). */
+  private async startAppListening(): Promise<void> {
+    const listen = this.d.listenApp;
+    if (!listen || this.unlistenApp.length) return;
+    const gen = this.listenGen;
+    for (const name of ["boot-degraded", "restore-progress"]) {
+      try {
+        const un = await listen(name, (e) => this.revive.onAppEvent(name, e.payload));
+        if (!this.attached || gen !== this.listenGen) un();
+        else this.unlistenApp.push(un);
+      } catch {
+        /* 구독 실패 = 그 사건 없이 */
+      }
+    }
   }
 
   /** (s79 조각 9 · FR-C7) 작업 화면이 켜짐 — 대화 화면을 이번 실행에서 켠 적이 있을 때만 띠 자료를 계속 받는다(아니면 false · 조회 0).
@@ -293,6 +343,13 @@ export class ChatCore {
     for (const h of this.readTimers) this.d.clearTimeout(h);
     this.readTimers.clear();
     this.listenGen++;
+    for (const un of this.unlistenApp.splice(0)) {
+      try {
+        un();
+      } catch {
+        /* 이미 풀림 */
+      }
+    }
     if (this.unlisten) {
       try {
         this.unlisten();
@@ -360,6 +417,7 @@ export class ChatCore {
     const e = raw as { name?: unknown; socket_slug?: unknown; surface_id?: unknown } | null;
     if (!e || typeof e.name !== "string") return;
     if (this.defaultSlug === null || e.socket_slug !== this.defaultSlug) return;
+    this.revive.onEvent(raw); // (조각 5) deadman·idle·released·claim_denied·takeover — 본부 데몬 것만
     if (e.name === "input.refused_at_write") {
       // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S3-1): 요청 번호가 실린 사건(원자 제출 Enter 직전 거부) = 번호로만 짝짓는다 — 좌석·5초 창 0.
       const rid = (raw as { payload?: { request_id?: unknown } }).payload?.request_id;
@@ -512,12 +570,14 @@ export class ChatCore {
   }
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
-    return sendGate({ master: f.master, approvalSeats: f.approvals });
+    const own = f.master && this.ownHuman && this.ownHuman.seat === f.master.surface_id ? this.ownHuman.stamp : null;
+    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanStamp: own });
   }
 
   private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
     const m = f.master;
     this.confirm.observe(f.feed, f.org, m);
+    this.revive.observe(m, f.org); // (조각 5)
     const confirms = f.approvals === null || !m ? (f.approvals === null ? null : 0) : f.approvals.filter((x) => x === m.surface_id).length;
     const working = m ? m.working : null;
     const msgs = settleSteps(this.s.msgs, this.d.now(), working);
@@ -695,11 +755,14 @@ export class ChatCore {
       } finally {
         this.d.clearTimeout(silent);
       }
-      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { request_id?: unknown } };
+      const r = (res ?? {}) as { outcome?: unknown; code?: unknown; message?: unknown; result?: { request_id?: unknown; human_input_stamp?: unknown } };
       const step = stepFromOutcome(r.outcome);
       // ★1.1.16(S3-1): 데몬 요청 번호를 그 말에 붙인다(쓰기 직전 거부 사건과 번호로 짝짓기) · 먼저 온 사건이면 지금 적용한다(아래 patch 뒤).
       const rid = typeof r.result?.request_id === "string" && r.result.request_id.length > 0 ? r.result.request_id : undefined;
       if (rid) this.patchMsg(id, { requestId: rid });
+      // (조각 5 · S1-5) 데몬이 찍은 사람 입력 차례 — 다음 말의 30초 쉼을 「내 보내기」면 걸지 않는 짝짓기 열쇠
+      const hst = r.result?.human_input_stamp;
+      if (typeof hst === "string" && hst !== "") this.ownHuman = { seat: m.surface_id, stamp: hst };
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
       const cur = this.s.msgs.find((x) => x.id === id);

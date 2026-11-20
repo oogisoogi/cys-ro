@@ -406,11 +406,72 @@ fn caller_lineage_desc(pid: u32) -> String {
     )
 }
 
+/// (1.1.16 · TICKET=cysr-1116-s5-1119 · 조각 5 S1-5·S1-10) 사람 입력 시각 한 번 찍기 — 앞 값과 이번 차례 번호를 돌려준다(같은 락 안).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HumanStamp {
+    prev: Option<std::time::Instant>,
+    prev_seq: u64,
+    seq: u64,
+}
+
+/// 번호는 발급기(`human_input_issued`)에서만 나온다 — 되돌림이 있어도 같은 번호가 두 번 나오지 않는다(codex 1R ABA).
+pub(crate) fn stamp_human_input(s: &crate::state::Surface) -> HumanStamp {
+    let mut g = s.last_human_input.lock().unwrap();
+    let prev = *g;
+    *g = Some(std::time::Instant::now());
+    let seq = s.human_input_issued.fetch_add(1, Ordering::SeqCst) + 1;
+    let prev_seq = s.human_input_seq.swap(seq, Ordering::SeqCst);
+    HumanStamp { prev, prev_seq, seq }
+}
+
+/// 쓰기 0 으로 끝난 원자 제출의 찍기를 되돌린다(S1-10) — 그 사이 다른 입력이 찍었으면(지금 번호가 내 번호가 아님) 아무것도 안 한다.
+pub(crate) fn unstamp_human_input(s: &crate::state::Surface, st: HumanStamp) {
+    let mut g = s.last_human_input.lock().unwrap();
+    if s.human_input_seq.load(Ordering::SeqCst) == st.seq {
+        *g = st.prev;
+        s.human_input_seq.store(st.prev_seq, Ordering::SeqCst);
+    }
+}
+
+/// 사람 입력 표지(앱이 짝짓는 불투명 값) — `<데몬 기동 ms>:<번호>` · 데몬이 다시 켜지면 번호가 1 부터라도 표지는 다르다 · 0 = 없음.
+pub(crate) fn human_input_stamp_label(daemon: &Daemon, seq: u64) -> Value {
+    if seq == 0 {
+        Value::Null
+    } else {
+        json!(format!("{}:{seq}", (daemon.started_at * 1000.0) as u64))
+    }
+}
+
+/// (S1-10) 「창이면 쓰지 마라」 원자 제출의 찍기 — 쓰기 줄에 넘기기 전에 이 요청이 어떤 갈래로 돌아가든(쓰기 0) 떨어질 때 되돌린다.
+/// 쓰기 줄에 넘긴 뒤(`commit`)에는 그대로 둔다. 갈래마다 되돌림을 적지 않는다(codex 1R major — 빠진 갈래가 생긴다).
+struct HumanStampGuard {
+    s: std::sync::Arc<crate::state::Surface>,
+    st: Option<HumanStamp>,
+}
+
+impl HumanStampGuard {
+    fn commit(&mut self) {
+        self.st = None;
+    }
+}
+
+impl Drop for HumanStampGuard {
+    fn drop(&mut self) {
+        if let Some(st) = self.st.take() {
+            unstamp_human_input(&self.s, st);
+        }
+    }
+}
+
 fn try_write(
     surface: &crate::state::Surface,
     req: crate::state::WriteReq,
     id: &Value,
 ) -> Option<Value> {
+    // (조각 5 P1) 조건부 닫기가 「닫는다」로 판정한 좌석 = 바이트 0 거부 — 두 호출자(send_text·send_key)는 input_gate 안이라 판정과 직렬.
+    if surface.close_decided.load(Ordering::SeqCst) {
+        return Some(err_response(id, "surface_closing", "surface is closing (if_quiet close decided) · nothing written"));
+    }
     match surface.write_tx.try_send(req) {
         Ok(()) => None,
         Err(std::sync::mpsc::TrySendError::Full(_)) => Some(err_response(
@@ -7359,7 +7420,16 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     // surfaces/roles 락을 쥔 채 하면 데몬 전체가 그동안 멈춘다 — 반드시 락 해제 후.
                     let mut held_by_live = holder_surface.is_some();
                     let mut takeover_cancelled: Option<&'static str> = None;
+                    // (1.1.16 · cysr-1116-s5-1119 · 조각 5 §6-2) 보유 좌석에 최근(큐 사람 정숙 창 안) 사람 입력이 있었는가 — 거절 사유가
+                    //   「사람이 그 창을 쓰는 중」인지 앱이 가르는 칸(seat_not_claimable 도 이 까닭일 수 있다 · 가산 키).
+                    let mut seat_human_recent = false;
                     if let Some((holder, hs)) = holder_surface {
+                        seat_human_recent = hs
+                            .last_human_input
+                            .lock()
+                            .unwrap()
+                            .map(|t| t.elapsed().as_secs() < crate::governance::queue_human_quiet_secs())
+                            .unwrap_or(false);
                         if want_takeover && crate::governance::seat_claimable_now(&hs) {
                             // ★(W2 · G14) create 경로의 임계영역 재검증. create 는 게이트 통과 후
                             // PTY 스폰(수백 ms)을 거쳐 state.rs 의 roles.insert(latest-wins)에
@@ -7394,7 +7464,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                                    "path": "surface.create", "caller_pid": caller_pid,
                                    "takeover_cancelled": takeover_cancelled,
                                    "takeover_requested": want_takeover,
-                                   "seat_blocked": seat_blocked}),
+                                   "seat_blocked": seat_blocked,
+                                   "seat_human_recent": seat_human_recent}),
                         );
                         return Reply::Single(err_response(
                             &id,
@@ -7433,6 +7504,23 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                             }
                         })
                     };
+                    // (1.1.16 · cysr-1116-s5-1119 · master#fe289e63) 재반환 좌석의 역할 — 요청 역할이 있는데 그 좌석이 역할을 잃었으면(사망 유예 뒤 role.released)
+                    //   다시 단다(reattach_role_on_reuse). 다른 좌석에서 승계해 오는 중(seat_takeover_from = 다른 좌석)이면 재반환하지 않고 아래 새 생성으로 간다 —
+                    //   승계 마무리(옛 좌석 역할·큐 이관)는 성공 아크에만 있다. 재반환 좌석이 그 역할을 이미 쥐고 있으면 종전 그대로.
+                    let reuse_role = param_str(&params, "role").filter(|r| !r.is_empty());
+                    let reuse = reuse.filter(|_| {
+                        // 뮤턴트 S5R-NOFALLBACK(승계 중에도 재반환) — 시험 빌드에서만.
+                        let skip_fallback = cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NOFALLBACK");
+                        reuse_role.is_none() || skip_fallback || seat_takeover_from.is_none_or(|h| h == sid)
+                    });
+                    if let (Some(_), Some(role)) = (reuse, reuse_role.as_deref()) {
+                        if let Some(s) = daemon.get_surface(sid) {
+                            // 뮤턴트 S5R-NOREATTACH(재등록 끔) — 시험 빌드에서만.
+                            if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NOREATTACH")) {
+                                let _ = daemon.reattach_role_on_reuse(&s, role);
+                            }
+                        }
+                    }
                     if let Some(pid) = reuse {
                         // ★T-0147-4 이음매 주의: 이 조기 반환은 성공 아크를 타지 않으므로 create_owner
                         // 원장을 **갱신하지 않는다**(의도). 같은 pane 재시도는 원 기록이 그대로 유효하고
@@ -7733,7 +7821,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                     let (pending_input_human_bytes, input_paste_open) = {
                         let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                        (input.human, input.in_paste)
+                        (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                     };
                     json!({
                         "surface_id": s.id,
@@ -7950,9 +8038,23 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             //   빠지면 스크롤 중 큐 배달이 마지막 휠 뒤 queue_human_quiet_secs(30초)까지 멎는다(맥 = SGR 보고라 A9 로 면제).
             let page_scroll = surface.alt_screen.load(Ordering::Relaxed)
                 && crate::governance::is_page_scroll_chunk(text.as_bytes());
-            if human && !page_scroll && !cys::mousereport::is_pure_terminal_autoreply(&text) {
-                *surface.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
-            }
+            // ★(1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5) 찍은 차례 번호를 응답에 싣는다(앱 대화 화면이 「이 사람 입력 = 내 원자 제출」을 짝짓는다).
+            //   ★S1-10: 「창이면 쓰지 마라」 원자 제출이 **쓰기 0** 으로 끝나면(승인 창 · 빈 셸 · 등록 아님 · 쓰기 줄 막힘) 찍기를 되돌린다 —
+            //   종전엔 거부된 요청도 사람 입력으로 남아 그 좌석의 큐 배달·화면 문턱이 30초 묶였다.
+            let human_stamp = if human && !page_scroll && !cys::mousereport::is_pure_terminal_autoreply(&text) {
+                Some(stamp_human_input(&surface))
+            } else {
+                None
+            };
+            // 가드 = 「사람 표지 ∧ 기계 표지 아님 ∧ refuse_on_approval」(앱 대화 화면 원자 제출 꼴)만 — 이 꼴은 에이전트 작업 길(direct_agent_intent)에
+            //   닿지 않아(`human && !machine_origin` → None) 쓰기 줄 인계 = try_write 하나다. 인계 뒤 결판이 따로 오는 갈래가 없다(codex 2R M1).
+            let mut stamp_guard = HumanStampGuard {
+                s: surface.clone(),
+                st: human_stamp.filter(|_| {
+                    params.get("refuse_on_approval").and_then(|v| v.as_bool()).unwrap_or(false)
+                        && !params.get("machine_origin").and_then(|v| v.as_bool()).unwrap_or(false)
+                }),
+            };
             // T3-13 권위 전달(clear_first): 잔존 미제출 텍스트를 Ctrl-U로 지운 깨끗한 라인에
             // 명령을 원자적으로 꽂고 제출한다(아래 Inject 경로). 게이트를 데몬에서 집행한다.
             let clear_first = params
@@ -8138,7 +8240,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     //   남아, 재기동 직후 새 프로세스가 표에 오르기 전 틱에 역할 회수 유예(60초)가 만료될 수 있었다.
                     //   기동 줄이 실제로 쳐지는 여기서 사망 타이머를 풀어 유예를 기동 시점부터 다시 센다(래치 해제만 ·
                     //   생존 판정·통지 래치는 그대로 — 되살아나면 check_agent_death 가 agent.recovered 로 재무장).
-                    *surface.agent_dead_since.lock().unwrap() = None;
+                    // (master#26ff3e1f ③) 풀기는 roles·surface.role 잠금 안(watchdog 회수 재판정과 직렬) — governance::rearm_release_clock.
+                    crate::governance::rearm_release_clock(daemon, &surface);
                 } else {
                     let entry_from = verified_from.map(cys::surface_ref).or_else(|| {
                         params.get("from").and_then(|v| v.as_str()).map(str::to_string)
@@ -8618,8 +8721,11 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     return Reply::Single(err);
                 }
             } else if let Some(err) = try_write(&surface, write_req, &id) {
+                // (조각 5 S1-8·S1-10) write_stalled·write_failed = 쓰기 줄에 넣지 못함(바이트 0) — 원자 제출이면 찍기도 되돌린다(가드가 떨어지며).
                 return Reply::Single(err);
             }
+            // 쓰기 줄에 넘겼다 — 여기부터는 바이트가 나갈 수 있으므로 찍기를 남긴다.
+            stamp_guard.commit();
             // ★B1(0.14.30): 미제출 입력 계수 — 큐 배달의 '입력줄 점유' 1차 축(화면 무의존).
             //   clear_first 주입은 Ctrl-U 선정리 + 본문 + CR 을 원자로 보내 **줄을 비우고 제출**
             //   하므로 계수는 0 이다. 그 외 본문(사람 키·프로그램 미제출 본문)은 누적한다 —
@@ -8761,6 +8867,10 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             } else if let Some(rid) = &human_refuse_request {
                 // 사람 길은 응답이 쓰기 전에 나간다 — 거부는 같은 번호의 `input.refused_at_write` 로만 온다.
                 result["request_id"] = json!(rid);
+            }
+            // (1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5) 이 요청이 찍은 사람 입력 차례(가산 키 · 찍지 않았으면 없음).
+            if let Some(st) = human_stamp {
+                result["human_input_stamp"] = human_input_stamp_label(daemon, st.seq);
             }
             Reply::Single(ok_response(&id, result))
         }
@@ -9577,6 +9687,15 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
             let Some(sid) = resolve_surface_id(&params) else {
                 return Reply::Single(err_response(&id, "invalid_params", "missing surface_id"));
             };
+            // (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기 칸 — `if_quiet:true` + `expected_created_at`(그 좌석 org.status 행의 생성 시각).
+            //   소유 게이트는 아래 그대로 지나고, 닫기만 governance::close_surface_if_quiet(판정과 닫기가 그 좌석 close_operation 한 잠금 안)로 간다. 칸 없는 호출 = 종전 그대로.
+            let if_quiet = params.get("if_quiet").and_then(|v| v.as_bool()) == Some(true);
+            let expected_created_at = params.get("expected_created_at").and_then(|v| v.as_f64());
+            // (master#26ff3e1f ①) 판정 때 본 사람 입력 표지(키가 있을 때만 대조 · null = 그때 없음).
+            let expected_stamp = params.get("expected_human_input_stamp").cloned();
+            if if_quiet && (expected_created_at.is_none() || params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true)) {
+                return Reply::Single(err_response(&id, "invalid_params", "surface.close if_quiet needs expected_created_at (number) and cannot combine with only_if_empty"));
+            }
             // ★1.1.9 2판 ③(master#9343f472 결정 A): 빈 좌석 회수 갈래 — 아래 소유 게이트와 **별개 계약**이다.
             if params.get("only_if_empty").and_then(|v| v.as_bool()) == Some(true) {
                 return Reply::Single(close_if_empty(daemon, &id, sid, caller_pid));
@@ -9656,6 +9775,36 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         json!({"requested_surface": sid, "creator_surface": cs,
                                "caller_pid": caller_pid, "cause": "reap"}),
                     );
+                }
+            }
+            if let (true, Some(expected)) = (if_quiet, expected_created_at) {
+                match governance::close_surface_if_quiet(daemon, sid, cause, expected, expected_stamp.as_ref()) {
+                    Ok(()) => {
+                        daemon.create_caller.lock().unwrap().remove(&sid);
+                        daemon.created_by.lock().unwrap().remove(&sid);
+                        return Reply::Single(ok_response(
+                            &id,
+                            json!({"surface_id": sid, "closed": true, "cause": format!("{cause:?}"), "if_quiet": true}),
+                        ));
+                    }
+                    Err(governance::CloseIfQuiet::NotFound) => {
+                        return Reply::Single(err_response(&id, "not_found", &format!("surface {sid} not found")));
+                    }
+                    Err(governance::CloseIfQuiet::Refused(why)) => {
+                        daemon.bus.publish(
+                            "surface.close_if_quiet_denied",
+                            "surface",
+                            Some(sid),
+                            json!({"requested_surface": sid, "caller_surface": caller_sid, "caller_pid": caller_pid, "reason": why}),
+                        );
+                        let mut r = err_response(&id, "close_refused", &format!("surface.close if_quiet refused: {why} · not closed"));
+                        r["error"]["reason"] = json!(why);
+                        return Reply::Single(r);
+                    }
+                    Err(governance::CloseIfQuiet::Failed(e)) => {
+                        let code = if daemon.get_surface(sid).is_none() { "not_found" } else { "close_failed" };
+                        return Reply::Single(err_response(&id, code, &e));
+                    }
                 }
             }
             match governance::close_surface(daemon, sid, cause) {
@@ -12569,7 +12718,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                     // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                     let (pending_input_human_bytes, input_paste_open) = {
                         let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                        (input.human, input.in_paste)
+                        (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                     };
                     json!({
                         "surface_id": s.id,
@@ -12585,6 +12734,8 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         // ★1.1.8 U1(AUTO-UPDATE-118 §3-4 N2): 이 좌석의 마지막 사람 입력 뒤 경과(초) · 사람 입력 0 = null.
                         //   자동 갱신 게이트 「사람이 쓰고 있다」의 좌석 쪽 계기(읽기 전용 가산 키).
                         "human_idle_secs": s.last_human_input.lock().unwrap().map(|t| t.elapsed().as_secs()),
+                        // (1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5) 지금 남은 사람 입력 시각을 찍은 차례 번호(`surface.send_text` 응답과 같은 값 · 가산 키).
+                        "human_input_stamp": human_input_stamp_label(daemon, s.human_input_seq.load(Ordering::SeqCst)),
                         "queue_depth": s.pending_queue.lock().unwrap().len(),
                         "queue_paused": queue_paused,
                         // ★(0.14.43 · C5) 가산 키 3개(막힘 없으면 null) — 조치 코드는 아래 `remedy_todo` 가 가드 해제 뒤 채운다.
@@ -12608,6 +12759,9 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         //   있으면 참이라(스크립트·sleep·빌드) 에이전트 착석의 증거가 아니다 — 수동으로 띄운 claude 를
                         //   가려내는 소비자(편성 각성 지시 `_master_ready`)가 이 값을 본다. 추가형 키(구 소비자 무영향).
                         "seat_agent": s.seat_agent_cache.load(Ordering::Relaxed),
+                        // (1.1.16 · cysr-1116-s5-1119 · 조각 5 §6-2) 등록 에이전트를 이 좌석에서 한 번이라도 봤는가 — `agent_alive` null 의
+                        //   두 뜻(등록 없음 · 아직 못 봄)을 앱이 가른다(못 봄 ∧ 좌석 Empty 지속 = 「아직 시작하지 못했어요」 · 가산 키).
+                        "agent_seen": s.agent_seen.load(Ordering::Relaxed),
                         "status": status,
                         // ★(W2 · B6/B14) 각성 래치·주입 검증 상태 — org.status(대시보드)는 팩 부트
                         // 체인이 소비하는 정본 status 채널이다(javis_boot_node.cys_status →
@@ -13687,7 +13841,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                 // ★(0.14.39 · WP-C-input · D-01 v2 6항) 종전엔 reset 이벤트 stale_bytes 로만 관측 가능했다 · 소비자(팩·GUI)는 부재(null)를 '모름' 으로 접는다.
                 let (pending_input_human_bytes, input_paste_open) = {
                     let input = s.pending_input.lock().unwrap_or_else(|e| e.into_inner());
-                    (input.human, input.in_paste)
+                    (input.human, input.paste_open_now(std::time::Instant::now())) // (master#26ff3e1f ②) 만료 반영 값
                 };
                 let q = s.pending_queue.lock().unwrap();
                 for (i, e) in q.iter().enumerate() {
@@ -29643,6 +29797,337 @@ mod tests {
         }
     }
 
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · 조각 5 §6-2) 거절 이벤트가 「보유 좌석에 최근 사람 입력」을 싣는다 — 앱 대화 화면이
+    /// 「사람이 그 창을 쓰는 중이라 기다림(자동 재시도 0)」과 「좌석이 아직 비지 않음(65초 뒤 1회)」을 가르는 칸.
+    /// seat_not_claimable 갈래는 사람 입력이 까닭이어도 사유 원문(takeover_cancelled)이 비어 있다 — 그래서 따로 싣는다.
+    #[test]
+    fn s5_1116_claim_denied_carries_seat_human_recent() {
+        let daemon = claim_daemon();
+        let holder = make_surface(&daemon, Some("master"));
+        let pid = 995_811_u32;
+        let deny = |daemon: &Arc<Daemon>| {
+            let Reply::Single(resp) = dispatch(
+                daemon,
+                Request { id: json!(1), method: "surface.create".into(), params: json!({"cmd": "sleep 30", "role": "master"}) },
+                Some(pid),
+            ) else {
+                panic!("expected single reply");
+            };
+            assert_eq!(resp["error"]["code"], json!("claim_denied"), "전제: 거절 ({resp})");
+            daemon.bus.tail(200).into_iter().filter(|e| e["name"] == json!("role.claim_denied")).next_back().expect("role.claim_denied 미발행")
+        };
+        let ev = deny(&daemon);
+        assert_eq!(ev["payload"]["seat_human_recent"], json!(false), "사람 입력이 없는데 참: {ev}");
+        *daemon.surfaces.lock().unwrap()[&holder].last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let ev = deny(&daemon);
+        assert_eq!(ev["payload"]["seat_human_recent"], json!(true), "방금 사람 입력이 있는데 거짓: {ev}");
+        *daemon.surfaces.lock().unwrap()[&holder].last_human_input.lock().unwrap() =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(crate::governance::queue_human_quiet_secs() + 5));
+        let ev = deny(&daemon);
+        assert_eq!(ev["payload"]["seat_human_recent"], json!(false), "정숙 창 밖 입력까지 참: {ev}");
+    }
+
+    /// (1.1.16 · cysr-1116-s5-1119 · 조각 5 S1-5·S1-10) 사람 원자 제출의 찍기 차례 — 응답·org.status 같은 값 ·
+    /// 쓰기 0 거부(`clear_first_unsupported`)면 시각·차례를 되돌림 · 그 사이 다른 입력이 찍었으면 되돌리지 않음.
+    #[test]
+    fn s5_1116_human_input_seq_paired_and_restored_on_refusal() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("s5-1116-seq", r#"{"default":"allow","rules":[]}"#);
+        let s = daemon.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
+        daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        let caller = 990_330_u32;
+        bind_caller(&daemon, caller, s.id);
+        let send = |n: u64, p: Value| {
+            let Reply::Single(resp) = dispatch(&daemon, Request { id: json!(n), method: "surface.send_text".into(), params: p }, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let row = || {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(9), method: "org.status".into(), params: json!({}) }, Some(caller)) else {
+                panic!("expected single reply");
+            };
+            r["result"]["surfaces"].as_array().unwrap().iter().find(|x| x["surface_id"] == json!(s.id)).cloned().expect("row")
+        };
+        let label = |n: u64| json!(format!("{}:{n}", (daemon.started_at * 1000.0) as u64));
+        assert_eq!(row()["human_input_stamp"], Value::Null, "찍기 없음 = null");
+        assert_eq!(row()["agent_seen"], json!(false), "가산 키 agent_seen 이 없다");
+        // ① 등록(meta) 없는 좌석에 원자 제출 → clear_first_unsupported(바이트 0) → 찍기 되돌림
+        let r = send(1, json!({"surface_id": s.id, "text": "hi", "human": true, "quiet": true, "queued": false,
+                               "clear_first": true, "machine_origin": false, "refuse_on_approval": true}));
+        assert_eq!(r["error"]["code"], json!("clear_first_unsupported"), "전제: {r}");
+        assert!(s.last_human_input.lock().unwrap().is_none(), "쓰기 0 거부가 사람 입력 시각을 남겼다(S1-10)");
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 0);
+        // ② 옵션 없는 사람 입력(자판) = 찍힘 · 응답에 차례 · org.status 같은 값
+        let r = send(2, json!({"surface_id": s.id, "text": "x", "human": true, "quiet": true}));
+        assert_eq!(r["result"]["sent"], json!(true), "{r}");
+        // 번호 2 — 앞 ① 의 되돌린 찍기가 번호 1 을 썼다(발급기는 줄지 않는다 · 같은 번호 재사용 0)
+        assert_eq!(r["result"]["human_input_stamp"], label(2), "응답에 찍기 표지가 없다(S1-5): {r}");
+        assert_eq!(row()["human_input_stamp"], label(2), "행 표지 ≠ 응답 표지");
+        assert!(s.last_human_input.lock().unwrap().is_some());
+        // ③ 대조: 옵션 없는 거부 요청은 되돌리지 않는다(종전 동작) — refuse_on_approval 없는 clear_first
+        let before = *s.last_human_input.lock().unwrap();
+        let r = send(3, json!({"surface_id": s.id, "text": "hi", "human": true, "quiet": true, "clear_first": true}));
+        assert_eq!(r["error"]["code"], json!("clear_first_unsupported"));
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 3, "옵션 없는 요청까지 되돌렸다");
+        assert_ne!(*s.last_human_input.lock().unwrap(), before);
+        // ⑤a 등록 좌석인데 ② 의 자판 글이 입력줄에 남음 → 초안 게이트 거부(typing_guard · 바이트 0) → 찍기 되돌림(codex 1R major: draft_gate 갈래)
+        *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        let atomic = |sid: u64| json!({"surface_id": sid, "text": "hi", "human": true, "quiet": true, "queued": false,
+                               "clear_first": true, "machine_origin": false, "refuse_on_approval": true});
+        let r = send(4, atomic(s.id));
+        assert_eq!(r["error"]["code"], json!("typing_guard"), "전제: 초안 게이트 거부 {r}");
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), 3, "쓰기 0 초안 게이트 거부가 찍기를 남겼다");
+        // ⑤b 새 등록 좌석(입력줄 빈칸)에 원자 제출 성공 → 찍기 유지(가드 commit) · 응답 표지 = 그 좌석 행 표지
+        //   (뿌리 셸 아래 자손이 돌아야 빈 셸 가드에 안 걸린다 — 셸이 sleep 을 기다리는 꼴)
+        let s2 = daemon.create_surface(None, Some("/bin/sh -c 'sleep 31; :'".into()), None, None, 24, 80).expect("create surface 2");
+        daemon.surfaces.lock().unwrap().insert(s2.id, s2.clone());
+        *s2.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
+        crate::governance::test_wait_seat_runs(&s2, "sleep", &["31"]);
+        let r = send(5, atomic(s2.id));
+        assert_eq!(r["result"]["sent"], json!(true), "전제: 원자 제출 성공 {r}");
+        assert_eq!(r["result"]["human_input_stamp"], label(1), "{r}");
+        assert_eq!(s2.human_input_seq.load(Ordering::SeqCst), 1, "성공한 원자 제출의 찍기가 되돌려졌다(commit 누락)");
+        assert!(s2.last_human_input.lock().unwrap().is_some());
+        // ④ 되돌림은 그 사이 다른 찍기가 있으면 하지 않는다
+        let st = stamp_human_input(&s);
+        let other = stamp_human_input(&s);
+        unstamp_human_input(&s, st);
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), other.seq, "다른 입력의 찍기를 지웠다");
+        unstamp_human_input(&s, other);
+        assert_eq!(s.human_input_seq.load(Ordering::SeqCst), st.seq, "앞 찍기로 되돌림");
+        assert_eq!(stamp_human_input(&s).seq, other.seq + 1, "되돌린 뒤 같은 번호를 다시 냈다(ABA)");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기 `surface.close{if_quiet, expected_created_at}` —
+    /// ① 칸 없는 호출 = 종전 응답 바이트 같음(초안·최근 사람 입력이 있어도 닫음) ② 칸 꼴 오류 ③ 생성 시각 다름 · 사람 초안 · 붙여넣기 열림 · 30초 안 사람 입력 = 닫지 않고 사유
+    /// ④ 셋 다 맞으면 닫음 ⑤ 판정은 input_gate 안 — 게이트를 쥔 동안 사람이 찍으면 판정이 본다(거절) ⑥ 닫는다고 판정한 뒤 사람 쓰기 = 바이트 0(surface_closing).
+    #[test]
+    fn s5_1116_close_if_quiet_atomic_conditions() {
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (daemon, dir) = daemon_with_acl("s5-1116-ifq", r#"{"default":"allow","rules":[]}"#);
+        let mk = || {
+            let s = daemon.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
+            daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+            s
+        };
+        let close = |n: u64, p: Value| {
+            let Reply::Single(resp) = dispatch(&daemon, Request { id: json!(n), method: "surface.close".into(), params: p }, None) else {
+                panic!("expected single reply");
+            };
+            resp
+        };
+        let alive = |sid: u64| daemon.get_surface(sid).is_some();
+        let stale = || Some(std::time::Instant::now() - std::time::Duration::from_secs(crate::governance::queue_human_quiet_secs() + 5));
+        // ① 하위 호환 — 칸 없는 호출은 초안·최근 사람 입력이 있어도 닫고, 응답은 종전 꼴 그대로(바이트 같음)
+        let a = mk();
+        a.pending_input.lock().unwrap().human = 3;
+        *a.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = close(1, json!({"surface_id": a.id}));
+        assert_eq!(
+            serde_json::to_string(&r).unwrap(),
+            serde_json::to_string(&json!({"id": 1, "ok": true, "result": {"surface_id": a.id, "closed": true, "cause": "OwnerClose"}})).unwrap(),
+            "칸 없는 호출의 응답이 바뀌었다"
+        );
+        assert!(!alive(a.id));
+        assert!(!a.close_decided.load(Ordering::SeqCst), "종전 닫기가 조건부 표식을 세웠다");
+        let a2 = mk();
+        let r = close(2, json!({"surface_id": a2.id, "if_quiet": false, "expected_created_at": 1.0}));
+        assert_eq!(r["result"]["closed"], json!(true), "if_quiet:false = 종전 닫기: {r}");
+        assert!(r["result"].get("if_quiet").is_none());
+        // ② 칸 꼴 오류 — 생성 시각 없음 · only_if_empty 와 겹침 = 닫지 않음
+        let b = mk();
+        let r = close(3, json!({"surface_id": b.id, "if_quiet": true}));
+        assert_eq!(r["error"]["code"], json!("invalid_params"), "{r}");
+        let r = close(4, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": b.created_at, "only_if_empty": true}));
+        assert_eq!(r["error"]["code"], json!("invalid_params"), "{r}");
+        assert!(alive(b.id));
+        // ③ 조건 하나라도 틀리면 닫지 않고 사유(코드 close_refused · reason)
+        let q = |n: u64, s: &Arc<crate::state::Surface>, at: f64| close(n, json!({"surface_id": s.id, "if_quiet": true, "expected_created_at": at}));
+        let r = q(5, &b, b.created_at + 1.0);
+        assert_eq!((r["error"]["code"].clone(), r["error"]["reason"].clone()), (json!("close_refused"), json!("created_at_mismatch")), "{r}");
+        b.pending_input.lock().unwrap().human = 2;
+        let r = q(6, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("input_line_has_human_draft"), "{r}");
+        b.pending_input.lock().unwrap().human = 0;
+        b.pending_input.lock().unwrap().in_paste = true;
+        b.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now());
+        let r = q(7, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("paste_open"), "{r}");
+        // (master#26ff3e1f ②) TTL 지난 OPEN 은 열림 아님(다음 조각 없이도) — 붙여넣기 사유로 거절하지 않는다(아래 30초 사유로 거절되는지 대조)
+        b.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(crate::governance::PASTE_OPEN_TTL_SECS + 1));
+        *b.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = q(70, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("recent_human_input"), "TTL 지난 붙여넣기가 아직 열림으로 판정됐다: {r}");
+        *b.last_human_input.lock().unwrap() = None;
+        b.pending_input.lock().unwrap().in_paste = false;
+        *b.last_human_input.lock().unwrap() = Some(std::time::Instant::now());
+        let r = q(8, &b, b.created_at);
+        assert_eq!(r["error"]["reason"], json!("recent_human_input"), "{r}");
+        assert!(alive(b.id), "거절인데 닫혔다");
+        assert!(!b.close_decided.load(Ordering::SeqCst), "거절인데 닫기 표식이 섰다");
+        // (master#26ff3e1f ①) 스냅샷 표지 대조 — 호출자가 본 표지 뒤에 사람 입력이 찍혔으면(조용해 보여도) 닫지 않음 · 같으면 다른 조건대로
+        *b.last_human_input.lock().unwrap() = stale();
+        let snap = human_input_stamp_label(&daemon, b.human_input_seq.load(Ordering::SeqCst));
+        let _ = stamp_human_input(&b); // 질의(스냅샷)와 닫기 사이 사람 입력 주입
+        *b.last_human_input.lock().unwrap() = stale(); // 30초 문턱으로는 못 잡는 꼴(시각만 오래된 것으로)
+        b.pending_input.lock().unwrap().human = 0;
+        let r = close(80, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": b.created_at, "expected_human_input_stamp": snap}));
+        assert_eq!(r["error"]["reason"], json!("human_input_since_snapshot"), "질의와 닫기 사이 사람 입력을 못 봤다: {r}");
+        assert!(alive(b.id));
+        let now_label = human_input_stamp_label(&daemon, b.human_input_seq.load(Ordering::SeqCst));
+        // ④ 셋 다 맞음(사람 입력이 문턱 밖 · 표지 = 지금) → 닫음 · JSON 왕복한 생성 시각(1ms 안)도 같은 좌석
+        *b.last_human_input.lock().unwrap() = stale();
+        let at: f64 = serde_json::from_str::<Value>(&serde_json::to_string(&json!(b.created_at)).unwrap()).unwrap().as_f64().unwrap();
+        let r = close(9, json!({"surface_id": b.id, "if_quiet": true, "expected_created_at": at, "expected_human_input_stamp": now_label}));
+        assert_eq!(r["result"]["closed"], json!(true), "{r}");
+        assert_eq!(r["result"]["if_quiet"], json!(true));
+        assert!(!alive(b.id));
+        let r = q(10, &b, at);
+        assert_eq!(r["error"]["code"], json!("not_found"), "이미 닫힌 좌석: {r}");
+        // ⑤ 판정은 input_gate 안 — 시험이 게이트를 쥔 동안 닫기는 판정에 못 들어가고, 그 사이 사람이 찍으면 판정이 그것을 본다
+        let c = mk();
+        *c.last_human_input.lock().unwrap() = stale();
+        let gate = c.input_gate.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let daemon = daemon.clone();
+            let (sid, at) = (c.id, c.created_at);
+            std::thread::spawn(move || {
+                let r = crate::governance::close_surface_if_quiet(&daemon, sid, crate::governance::CloseCause::OwnerClose, at, None);
+                let _ = tx.send(r);
+            });
+        }
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "닫기가 input_gate 밖에서 판정했다(게이트를 기다리지 않음)");
+        let _ = stamp_human_input(&c); // 사람 입력 길의 찍기(send_text 는 게이트 앞에서 찍고 게이트 안에서 쓴다)
+        drop(gate);
+        let got = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("닫기 결과");
+        assert_eq!(got, Err(crate::governance::CloseIfQuiet::Refused("recent_human_input")), "게이트 앞에서 찍힌 사람 입력을 판정이 못 봤다");
+        assert!(alive(c.id));
+        // ⑥ 닫는다고 판정한 뒤의 사람 쓰기 = 바이트 0(surface_closing) — 판정과 표식이 같은 게이트 안이라 그 사이에 끼는 쓰기는 없다
+        *c.last_human_input.lock().unwrap() = stale();
+        let r = q(11, &c, c.created_at);
+        assert_eq!(r["result"]["closed"], json!(true), "{r}");
+        let late = try_write(&c, crate::state::WriteReq::Data(b"x".to_vec()), &json!(12)).expect("닫는다고 판정한 좌석에 썼다");
+        assert_eq!(late["error"]["code"], json!("surface_closing"), "{late}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환 좌석의 역할 — ① 사망 유예 뒤 역할을 잃은 좌석을 같은 key 로 다시 만들면
+    /// 같은 좌석 + 역할 다시 닮(roles 맵·좌석 칸·role.reattached) ② 이미 쥐고 있으면 변화 0 ③ 다른 좌석이 그 역할을 쥐고 승계 대상이면 재반환하지 않고 새 좌석.
+    #[test]
+    fn s5_1116_idem_reuse_reattaches_released_role_or_creates_new() {
+        let daemon = { let d = std::env::temp_dir().join(format!("s5r-reattach-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
+        let create = |n: u64| {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": "s5r-k", "takeover_empty_seat": true}) }, Some(995_901_u32)) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let master = || daemon.roles.lock().unwrap().get("master").copied();
+        let reattached = || daemon.bus.tail(400).iter().filter(|e| e["name"] == json!("role.reattached")).count();
+        let r1 = create(1);
+        let a = r1["result"]["surface_id"].as_u64().expect("1차 생성");
+        let sa = daemon.get_surface(a).unwrap();
+        assert_eq!(master(), Some(a));
+        // ① 사망 유예 뒤 역할 회수(watchdog 과 같은 함수) → 같은 key 다시 생성 = 같은 좌석 + 역할 다시
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &sa), "전제: 역할 회수");
+        assert_eq!((master(), sa.role.lock().unwrap().clone()), (None, None));
+        let r2 = create(2);
+        assert_eq!(r2["result"]["idempotent_reuse"], json!(true), "{r2}");
+        assert_eq!(r2["result"]["surface_id"], json!(a));
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"), "재반환 좌석이 역할을 다시 쥐지 않았다(마스터 0)");
+        assert_eq!(master(), Some(a), "roles 맵에 마스터 없음");
+        assert!(!daemon.released_roles.lock().unwrap().contains_key("master"), "거둔 역할 장부가 남았다");
+        assert!(daemon.master_claimed_at.lock().unwrap().is_some(), "마스터 쿨다운 스탬프 없음");
+        assert_eq!(reattached(), 1);
+        // ② 이미 쥐고 있으면 변화 0
+        let r3 = create(3);
+        assert_eq!((r3["result"]["idempotent_reuse"].clone(), r3["result"]["surface_id"].clone()), (json!(true), json!(a)));
+        assert_eq!((master(), reattached()), (Some(a), 1), "이미 쥔 좌석에 다시 달았다");
+        // ③ 역할을 잃은 뒤 다른 좌석이 마스터를 쥠 → 같은 key = 승계 대상이 다른 좌석 → 재반환 0 · 새 좌석이 승계(옛 보유자 역할 내림)
+        assert!(crate::governance::release_role_after_agent_death(&daemon, &sa));
+        let b = make_surface(&daemon, Some("master"));
+        assert_eq!(master(), Some(b));
+        let r4 = create(4);
+        assert_eq!(r4["ok"], json!(true), "{r4}");
+        let c = r4["result"]["surface_id"].as_u64().unwrap();
+        assert!(r4["result"].get("idempotent_reuse").is_none() && c != a, "다른 좌석 승계 중인데 역할 없는 옛 좌석을 재반환했다: {r4}");
+        assert_eq!(master(), Some(c));
+        assert_eq!(daemon.get_surface(b).unwrap().role.lock().unwrap().clone(), None, "옛 보유자 역할이 남음(이중 마스터)");
+        assert_eq!(sa.role.lock().unwrap().clone(), None);
+    }
+
+    /// (1.1.16 · master#c78fa28f F1) 사망 유예 **안**에서 재반환(역할은 아직 있음) → 새 에이전트가 보이기 전 watchdog 틱이 와도 역할을 거두지 않는다 —
+    /// 재반환이 회수 시계(agent_dead_since)를 비우고, 틱의 회수는 roles·surface.role 잠금 안에서 시계를 다시 본다. 대조: 재반환 없으면 같은 틱이 거둔다.
+    #[test]
+    fn s5_1116_idem_reuse_rearms_release_clock() {
+        let daemon = { let d = std::env::temp_dir().join(format!("s5r-clock-{}", std::process::id())); let _ = std::fs::remove_dir_all(&d); let _ = std::fs::create_dir_all(&d); Daemon::new(d.join("cysd.sock")) }; // claim_daemon 폴더 = pid+초 → 같은 초 병렬 시험이 폴더를 공유
+        let create = |n: u64, key: &str| {
+            let Reply::Single(r) = dispatch(&daemon, Request { id: json!(n), method: "surface.create".into(),
+                params: json!({"cmd": "sleep 30", "role": "master", "idempotency_key": key, "takeover_empty_seat": true}) }, Some(995_911_u32)) else {
+                panic!("expected single reply");
+            };
+            r
+        };
+        let grace = 60.0;
+        let tick = |s: &Arc<crate::state::Surface>| {
+            // watchdog 의 회수 판정과 같은 꼴(release_role_after_agent_death_if + 잠금 안 재판정)
+            let now = crate::state::now_epoch();
+            let seen = *s.agent_dead_since.lock().unwrap();
+            crate::governance::role_release_due(seen, now, grace)
+                && crate::governance::release_role_after_agent_death_if(&daemon, s, || {
+                    crate::governance::role_release_due(*s.agent_dead_since.lock().unwrap(), now, grace)
+                })
+        };
+        // 대조: 유예를 넘겨 죽어 있는 좌석 = 틱이 거둔다
+        let r = create(1, "s5r-clock-ctl");
+        let ctl = daemon.get_surface(r["result"]["surface_id"].as_u64().unwrap()).unwrap();
+        *ctl.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        assert!(tick(&ctl), "전제: 재반환 없으면 틱이 역할을 거둔다");
+        // 본: 유예 끝 직전 재반환(역할 아직 있음) → 틱이 그 뒤 와도 역할 유지 · 시계 비워짐
+        let r = create(2, "s5r-clock");
+        let sid = r["result"]["surface_id"].as_u64().unwrap();
+        let sa = daemon.get_surface(sid).unwrap();
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let r2 = create(3, "s5r-clock");
+        assert_eq!((r2["result"]["idempotent_reuse"].clone(), r2["result"]["surface_id"].clone()), (json!(true), json!(sid)), "{r2}");
+        assert_eq!(*sa.agent_dead_since.lock().unwrap(), None, "재반환이 회수 시계를 비우지 않았다");
+        assert!(!tick(&sa), "재반환 뒤(새 에이전트 보이기 전) 틱이 역할을 거뒀다 — 마스터 0");
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"));
+        assert_eq!(daemon.roles.lock().unwrap().get("master").copied(), Some(sid));
+        // 잠금 안 재판정: 틱이 시계를 읽은 뒤(만료로 봄) 재반환이 시계를 비웠다면 회수하지 않는다
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let read_then_reused = crate::governance::release_role_after_agent_death_if(&daemon, &sa, || {
+            *sa.agent_dead_since.lock().unwrap() = None; // 재반환이 끼어든 꼴(같은 잠금 안에서 본 값)
+            crate::governance::role_release_due(*sa.agent_dead_since.lock().unwrap(), crate::state::now_epoch(), grace)
+        });
+        assert!(!read_then_reused, "잠금 안 재판정이 없다(틱이 읽은 낡은 만료로 거뒀다)");
+        assert_eq!(sa.role.lock().unwrap().as_deref(), Some("master"));
+        // (master#26ff3e1f ③) node-recover 의 시계 풀기(rearm_release_clock)도 roles 잠금 안 — 틱이 roles 를 쥔 동안(재판정~제거 사이)은 풀지 못한다
+        *sa.agent_dead_since.lock().unwrap() = Some(crate::state::now_epoch() - 61.0);
+        let held = daemon.roles.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let (d2, s2) = (daemon.clone(), sa.clone());
+            std::thread::spawn(move || {
+                crate::governance::rearm_release_clock(&d2, &s2);
+                let _ = tx.send(());
+            });
+        }
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(300)).is_err(), "시계 풀기가 roles 잠금 밖에서 일어났다(재판정 뒤·제거 전 사이에 끼어듦)");
+        assert!(sa.agent_dead_since.lock().unwrap().is_some());
+        drop(held);
+        rx.recv_timeout(std::time::Duration::from_secs(5)).expect("잠금 놓은 뒤 풀림");
+        assert_eq!(*sa.agent_dead_since.lock().unwrap(), None);
+        let src = include_str!("handlers.rs");
+        let rec = src.find("빈 좌석 재기동 줄 타이핑 — agent_launch").expect("node-recover 자리");
+        let tail = &src[rec..rec + 2500];
+        assert!(tail.contains("crate::governance::rearm_release_clock(daemon, &surface);"), "node-recover 가 공용 잠금 풀기를 쓰지 않는다");
+    }
+
     // ───────── ★D7⑵(트랙 DAEMON): 역할 좌석의 미배달 큐는 폐기가 아니라 주차·상속된다 ─────────
 
     /// 핵심 왕복 — **셸이 스스로 죽어도 각성문이 살아남아 후임 좌석에 들어간다.**
@@ -34480,6 +34965,8 @@ mod tests {
         let active = daemon.next_queue_entry("활성".into(), None, "send");
         s.apply_pending_input(b"abc", crate::governance::InputOrigin::Human);
         s.pending_input.lock().unwrap().in_paste = true;
+        // (1.1.16 · master#26ff3e1f ②) 행 input_paste_open = 만료 반영 값(paste_open_now) — 「지금 열린」 봉투는 열린 시각이 있다(OPEN 바이트가 찍는 값)
+        s.pending_input.lock().unwrap().paste_opened_at = Some(std::time::Instant::now());
         let mut expired = daemon.next_queue_entry("만료".into(), None, "send");
         expired.expired_at = Some(crate::state::now_epoch());
         expired.ttl_secs = Some(10);

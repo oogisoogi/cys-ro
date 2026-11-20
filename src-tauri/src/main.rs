@@ -8983,6 +8983,7 @@ fn main() {
             viewcore::chat_transcript, // (cysr-ui-slice1)
             viewcore::result_open, // (s79 조각 7) 결과 열기·폴더 보기 — 정규 경로 가둠
             viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
+            viewcore::close_surface_if_quiet, // (cysr-1116-s5 P1) 다시 켜기 옛 창 조건부 닫기 — 데몬이 닫기와 같은 잠금 안에서 판정
             feedback::feedback_new_draft,
             feedback::feedback_stage_file,
             feedback::feedback_unstage,

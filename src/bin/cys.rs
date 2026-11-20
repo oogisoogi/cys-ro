@@ -384,6 +384,13 @@ enum Command {
         /// 기본(플래그 없음)=OwnerClose(묘비 생성·의도적 폐역).
         #[arg(long)]
         reap: bool,
+        /// (1.1.16 · master#26ff3e1f ①) 조건부 닫기 — 그 좌석의 생성 시각(org.status `created_at`). 데몬이 닫기와 같은 잠금 안에서 입력줄 사람 바이트 0 ·
+        /// 붙여넣기 닫힘 · 30초 안 사람 입력 없음 · 생성 시각 일치 · (아래 표지를 주면) 그 뒤 사람 입력 없음을 다시 보고, 아니면 닫지 않는다(close_refused · rc 1).
+        #[arg(long = "if-quiet", value_name = "CREATED_AT")]
+        if_quiet: Option<f64>,
+        /// 판정 때 본 사람 입력 표지(org.status `human_input_stamp` · 빈 글 = 그때 없음) — `--if-quiet` 와 함께만.
+        #[arg(long = "if-quiet-stamp", value_name = "STAMP", requires = "if_quiet")]
+        if_quiet_stamp: Option<String>,
     },
     /// ★G4(W4-C): 죽은(exited) 좌석 수동 회수 — surface.reap RPC(권위 role 전용·7조건 게이트)
     ///
@@ -1756,13 +1763,39 @@ const EXIT_DIRECTIVE_REFUSED: i32 = 90;
 /// Family: the direct-write OUTCOME codes of B-360 - 90 (`EXIT_DIRECTIVE_REFUSED`, launch-agent: zero bytes, pane kept)
 /// and 91 (any command: outcome unknown); passed = 0 and refused = 1 elsewhere. It sits right after 90 because it is the
 /// third outcome of the same write path. Neighbours for a reader scanning 80..91: 80-81 clear verification, 82-83
-/// verifier, 84-89 cycle-agent, then this family. 94-99 unassigned (92 = `EXIT_SESSION_WRITER_LIVE` · 93 = `EXIT_RESUME_HELD` =
-/// `EXIT_SESSION_LIVENESS_UNKNOWN` — both 「held, no new conversation」 · session_lease_cli). Outside sysexits 64-78.
+/// verifier, 84-89 cycle-agent, then this family. 95-99 unassigned (92 = `EXIT_SESSION_WRITER_LIVE` · 93 = `EXIT_RESUME_HELD` =
+/// `EXIT_SESSION_LIVENESS_UNKNOWN` — both 「held, no new conversation」 · session_lease_cli · 94 = `EXIT_REUSE_DRAFT_HELD`). Outside sysexits 64-78.
 const EXIT_WRITE_OUTCOME_UNKNOWN: i32 = 91;
 
 /// ★조각 1(cysr-piece1-recover-1118): `cys node-recover` 가 저장 대화를 잇지 못해 **멈췄다**. 새 대화로 내려가지 않았다.
 /// rc 1 이면 안 된다 — `run_boot` 이 rc 1 만 파괴적 회수(`escalate_reclaim`)로 올리고, 그러면 대화를 잃는다.
 const EXIT_RESUME_HELD: i32 = 93;
+
+/// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 §8-3) `cys launch-agent` 가 멱등 재반환(`idempotent_reuse`)된 자리에 기동 줄을 **치지 않았다** —
+/// 그 셸 입력줄에 사람 초안(또는 붙여넣기 열림·상태 모름)이 있거나 줄 비우기(C-u)를 데몬이 거부했다. 좌석 보존(close 0 · 롤백 0).
+/// rc 1 이면 안 된다(1 = 「롤백 · 좌석 닫힘」 — 사람이 쓰던 창을 닫게 된다). 94 = 첫 빈 번호 — ★통합(cysr-1116-integ-1120):
+/// s5 갈래는 92 를 골랐으나 skt1 이 같은 명령(launch-agent)의 92 = `EXIT_SESSION_WRITER_LIVE` 로 이미 소비처(javis_boot_node ·
+/// phoenix · 앱 복원 집계)를 묶었다 → 초안 보류가 「대화 작성자 살아 있음」으로 오독되지 않게 94 로 옮김.
+const EXIT_REUSE_DRAFT_HELD: i32 = 94;
+/// 위 거절을 `run_launch_agent_opts` 의 결과 갈래로 나르는 오류 머리(다른 오류 글과 겹치지 않는 고정 접두).
+const REUSE_DRAFT_REFUSED_TAG: &str = "[launch-agent reuse held] ";
+
+/// 멱등 재반환 자리의 입력줄 판정(순수) — `surface.list` 행. 사람 초안 바이트 > 0 · 붙여넣기 열림 · 칸 없음(모름)이면 치지 않는다.
+fn reuse_draft_refusal(entry: &Value) -> Option<&'static str> {
+    // 뮤턴트 S5L-NODRAFT(초안 거절 끔) — 시험 빌드에서만.
+    if cfg!(test) && std::env::var("CYS_S5L_MUTANT").as_deref() == Ok("NODRAFT") {
+        return None;
+    }
+    match entry["pending_input_human_bytes"].as_u64() {
+        None => return Some("입력줄 상태 모름(pending_input_human_bytes 없음)"),
+        Some(n) if n > 0 => return Some("입력줄에 사람이 쓰던 글이 있다"),
+        _ => {}
+    }
+    if entry["input_paste_open"].as_bool() != Some(false) {
+        return Some("붙여넣기가 열려 있거나 모름");
+    }
+    None
+}
 
 /// [결재 7ⓑ] `cycle-agent` 의 clear 는 **송신(행위)과 실효(결과)가 다르다.**
 ///
@@ -7482,14 +7515,22 @@ fn run(command: Command) -> i32 {
                 .map(|_| println!("OK"))
         }),
 
-        Command::CloseSurface { surface, reap } => resolve_surface_arg(&surface)
+        Command::CloseSurface { surface, reap, if_quiet, if_quiet_stamp } => resolve_surface_arg(&surface)
             .and_then(|sid| {
                 // ★W2/C6: --reap → cause="reap"(묘비 미생성). 기본=OwnerClose(묘비).
-                let params = if reap {
+                let mut params = if reap {
                     json!({"surface_id": sid, "cause": "reap"})
                 } else {
                     json!({"surface_id": sid})
                 };
+                // (master#26ff3e1f ①) 조건부 닫기 칸 — 없으면 종전 요청 그대로.
+                if let Some(at) = if_quiet {
+                    params["if_quiet"] = json!(true);
+                    params["expected_created_at"] = json!(at);
+                    if let Some(st) = if_quiet_stamp.as_deref() {
+                        params["expected_human_input_stamp"] = if st.is_empty() { Value::Null } else { json!(st) };
+                    }
+                }
                 request("surface.close", params).map(|r| {
                     println!("closed {} (descendants killed{})", surface,
                              if reap { ", reap" } else { "" });
@@ -21307,6 +21348,20 @@ fn run_launch_agent_opts(
             println!("{}", surface_ref(sid));
             return Ok(BootVerdict::Ready);
         }
+        // (조각 5 · master#565d7c18 §8-3) 멱등 재반환 = 사람이 쓰던 그 셸일 수 있다 — 기동 줄은 clear 없이 이어 쳐진다(실물 real-daemon.txt ⑤).
+        //   초안이면 치지 않고 거절(좌석 보존 · EXIT_REUSE_DRAFT_HELD) · 없으면 C-u 로 줄을 비운 뒤 친다. C-u 는 권위 키라도 데몬이 사람 초안을
+        //   input_gate 안에서 다시 보고 거부한다(handlers.rs send_key exempt_draft_kind) — 행 판정과 비우기 사이에 생긴 초안도 지우지 않는다.
+        if reused {
+            let entry = surface_entry(sid).unwrap_or(Value::Null);
+            let held = reuse_draft_refusal(&entry).map(String::from).or_else(|| {
+                request("surface.send_key", json!({"surface_id": sid, "key": "C-u", "authoritative": true}))
+                    .err()
+                    .map(|e| format!("입력줄 비우기(C-u)를 데몬이 거부: {e}"))
+            });
+            if let Some(why) = held {
+                return Err(format!("{REUSE_DRAFT_REFUSED_TAG}{why}"));
+            }
+        }
         // (W1) 데몬이 기록·반환한 권위 config_dir을 resume 게이트·restore 인라인의 결정론 소스로 쓴다.
         let recorded_cfg = r["claude_config_dir"].as_str().map(String::from);
         // ★T-0147-5(W3): 그 config dir 의 settings.json 에 각성 훅이 없으면 **1분 내 원인 가시화**.
@@ -21389,6 +21444,17 @@ fn run_launch_agent_opts(
                 }
             }
             EXIT_SESSION_LIVENESS_UNKNOWN
+        }
+        // (조각 5 §8-3) 멱등 재반환 자리에 사람 초안 — 기동 줄 0 · close 0(사람이 쓰던 창) · stdout 계약(마지막 줄 = surface ref) 유지.
+        Err(e) if created.is_some() && e.starts_with(REUSE_DRAFT_REFUSED_TAG) => {
+            let sid = created.expect("guarded above");
+            eprintln!(
+                "[launch-agent] {} — 멱등 재반환된 자리(같은 역할·에이전트·폴더 120초 안 다시 기동)에 기동 줄을 치지 않았다: {} · 좌석 보존 — 그 창의 글을 지우거나 보낸 뒤 다시 기동",
+                surface_ref(sid),
+                &e[REUSE_DRAFT_REFUSED_TAG.len()..]
+            );
+            println!("{}", surface_ref(sid));
+            EXIT_REUSE_DRAFT_HELD
         }
         // ★(B-360) The directive was refused at the writer journal: zero bytes typed, the agent is running. Keep the
         //   pane (no close · no role release) and say so; stdout keeps its contract (last line = surface ref).
@@ -32280,6 +32346,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&td);
     }
 
+
+    /// (1.1.16 · cysr-1116-s5-1119 · master#565d7c18 §8-3) 멱등 재반환 자리 — 사람 초안·붙여넣기 열림·상태 모름이면 기동 줄을 치지 않는다(순수 판정 표)
+    /// + 배선 핀: 재반환 갈래가 boot_agent_on_surface 앞에서 판정 → C-u(권위) → 거절은 전용 갈래(close 0 · rc 92 · stdout ref)로.
+    #[test]
+    fn s5_1116_reuse_draft_refusal_table_and_wiring() {
+        let row = |h: Value, p: Value| json!({"surface_id": 3, "pending_input_human_bytes": h, "input_paste_open": p});
+        assert_eq!(reuse_draft_refusal(&row(json!(0), json!(false))), None, "빈 줄 = 친다");
+        assert!(reuse_draft_refusal(&row(json!(4), json!(false))).is_some(), "사람 초안인데 친다");
+        assert!(reuse_draft_refusal(&row(json!(0), json!(true))).is_some(), "붙여넣기 열림인데 친다");
+        assert!(reuse_draft_refusal(&row(Value::Null, json!(false))).is_some(), "상태 모름인데 친다");
+        assert!(reuse_draft_refusal(&row(json!(0), Value::Null)).is_some(), "붙여넣기 모름인데 친다");
+        assert!(reuse_draft_refusal(&Value::Null).is_some(), "행 없음인데 친다");
+        assert_eq!(EXIT_REUSE_DRAFT_HELD, 94); // 통합: skt1 92(EXIT_SESSION_WRITER_LIVE)와 겹치지 않게
+        assert_ne!(EXIT_REUSE_DRAFT_HELD, EXIT_SESSION_WRITER_LIVE);
+        assert_ne!(EXIT_REUSE_DRAFT_HELD, EXIT_SESSION_LIVENESS_UNKNOWN);
+        let src = include_str!("cys.rs");
+        let f = src.find("\nfn run_launch_agent_opts(").expect("launch-agent 본체");
+        let body = &src[f..f + src[f + 1..].find("\nfn ").expect("다음 함수") + 1];
+        let gate = body.find("reuse_draft_refusal(&entry)").expect("재반환 갈래 판정 없음");
+        let cu = body.find(r#""key": "C-u", "authoritative": true"#).expect("C-u 비우기 없음");
+        let boot = body.find("let verdict = boot_agent_on_surface(").expect("기동");
+        assert!(body[..gate].contains("if reused {"), "판정이 재반환 갈래 밖");
+        assert!(gate < cu && cu < boot, "판정 → 비우기 → 기동 순서가 아니다");
+        let held = body.find("e.starts_with(REUSE_DRAFT_REFUSED_TAG)").expect("거절 전용 갈래 없음");
+        let rollback = body.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) =>").expect("롤백 갈래");
+        assert!(held < rollback, "거절이 롤백(close) 갈래보다 뒤 — 사람이 쓰던 창을 닫는다");
+        let arm = &body[held..rollback];
+        assert!(arm.contains("EXIT_REUSE_DRAFT_HELD") && arm.contains("println!(\"{}\", surface_ref(sid))"), "rc·stdout 계약");
+        assert!(!arm.contains("surface.close"), "거절 갈래가 좌석을 닫는다");
+    }
 
     /// ★(v112-restore ①-b) 겹친 복원의 두 번째 경로는 기동하지 않는다 — 윈 image(71) 사건의 표.
     #[test]

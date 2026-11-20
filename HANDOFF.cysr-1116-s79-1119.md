@@ -168,6 +168,31 @@
 - **HTML·SVG 능동 내용**(master#717eeef1 ⑤): 허용 목록의 `.html`·`.htm`·`.svg` 결과를 열면 브라우저가 그 안의 스크립트·외부 요청·리다이렉트를 처리한다 — 그 파일은 사람이 맡긴 일의 산출물이고, Finder 에서 더블클릭하는 것과 같은 동작이며, 우리 화면이 더하는 바깥 유출은 0이다. 결과 카드에 「웹 페이지는 브라우저로 열려요」 같은 안내는 넣지 않았다.
 - 폴더 열기의 Finder 동작: `open -a Finder <꾸러미 표지 없는 폴더>` 는 탐침하지 않았다(실제 창이 뜸) — 꾸러미 표지가 있으면 그 전에 거절되므로 Finder 가 꾸러미를 받는 길은 없다.
 
+## 6-5. codex 4R(3b445dfbd = BLOCK · 원문 master/reports/verify/codex-1120/s79-r4.md) — master#1031d7aa 처분대로(마지막 회차 · 5R 없음)
+
+master 판정: 두 건 다 「같은 사용자 권한의 에이전트가 이미 할 수 있는 일」 이상을 열지 않음 = 배포 차단 사유 아님 · 고치는 값이 싸서 고침.
+
+| # | 지적 | 처분 | 시험 · 뮤턴트 |
+|---|---|---|---|
+| ① | File·Reveal 이 맨 이름 `open`/`explorer` 를 spawn(맥 = PATH 탐색 · 윈 = 실행 파일 폴더 먼저) | **고침** — `result_open_in` = `open_plan` → `launch_command`(실행기 `launcher()` = 맥 `/usr/bin/open` · 윈 `explorer_path_from(GetWindowsDirectoryW, SystemRoot)` → 없으면 `C:\Windows` 뒤 `\explorer.exe` · 드라이브 절대 꼴만 받음 · 그 밖 `/usr/bin/xdg-open`) · 원작자 `open_path`/`reveal_path` 는 더 부르지 않음(main.rs 무변경) · 옛 open_path 의 **실행 비트 게이트**는 `open_verdict` 로 옮김 · 맥 인자 불변(파일 `open <파일>` · 보기 `open -R <항목>` · 폴더 `open -a Finder <폴더>`) | cargo `launchers_are_absolute_paths_and_no_bare_name_spawn`(세 계획 = 같은 절대 실행기 · 운영 코드 `Command::new(` = `launcher()` 하나뿐 · 맨 이름 문자열 0 · 윈 경로 고르기 4꼴 · 맥 인자) · `result_target_confines_to_canonical_home` 에 실행 비트 `실행.html` 거절 · 뮤턴트 Q1(맥 맨 이름)·Q2(File = 옛 open_path)·Q3(맨 이름 하나 더)·Q4(상대 값 받음)·Q5(SystemRoot 먼저)·Q11(실행 비트 뺌)·Q12(보기 -R 뺌) 붉음 |
+| ② | 윈 `이름.{CLSID}` 폴더 · desktop.ini `CLSID=` 폴더 = 탐색기가 COM 이름공간·네트워크로 엮음 | **고침** — 윈 폴더 「열기」 = 들어가지 않고 `explorer.exe /select,<폴더>`(상위 폴더에서 골라 보여 줌 · 보기와 통일) · `open_plan` 윈도 갈래(reveal 보다 **먼저** = 열기·보기 둘 다): 정규 대상과 그 조상(홈 아래만) 중 `is_clsid_name`(`.{8-4-4-4-12 16진}` 끝 · 대소문자 무시) 또는 `desktop_ini_has_clsid`(읽기만 · 앞 64KB · UTF-8/UTF-16LE BOM · 키 `CLSID`·`CLSID2` · 못 읽으면 거절 쪽) = `executable_confirm` · 맥·리눅스 = 판정 안 부름(동작 불변) | cargo `windows_shell_junction_folders_are_refused`(CLSID 이름 2 · 아닌 꼴 6 · 정션 자신·그 안 파일 · desktop.ini 5꼴 · 홈 자신 desktop.ini = 안 봄 · 맥 = Folder 그대로 · open_plan 소스 대조) · 뮤턴트 Q6(이름 판정 끔)·Q7(desktop.ini 끔)·Q8(BOM 해석 뺌)·Q9(조상 안 봄)·Q10b(검사를 reveal 뒤로) 붉음 |
+
+- 뮤턴트 = 12/12 붉음(첫 Q10 은 뮤턴트 자체가 검사를 옮기지 않아 무효 → Q10b 로 다시 · 첫 Q11 생존 → 실행 비트 시험 덧붙인 뒤 붉음).
+- **윈 교차 타입체크** = windrive + drive_root + OpenPlan + 정션 판정·explorer_path_from·launcher·launch_command 토막을 `rustc --target x86_64-pc-windows-msvc --crate-type lib --emit=metadata` rc 0 · 음성 대조(`GetWindowsDirectoryW` 크기 인자 타입 틀림) rc 1 E0308 · **윈 실기 0**(`/select,` 가 정션 폴더를 엮지 않는지 · GetWindowsDirectoryW 실제 값 = 미실측).
+
+### 6-5 시험 숫자(기준 3b445dfbd → 이 커밋)
+
+| 무엇 | 기준 | 뒤 |
+|---|---|---|
+| cargo `-p cys-app --bins viewcore` | 14 | **16/0** |
+| cargo `-p cys-app --bins` 전체 | 351/0 + 2 무시 | **353/0 + 2 무시** · viewcore 경고 0 |
+| bun test(ui · 이 회차 `ui/` 변경 0) | 3791/0 | 전체 묶음 2회 = 3790 pass · 1 fail(tickrec 「최악 장면」 5초 상한 · 7.6초 · 부하 23~26) · 그 파일 단독 2회 = 21/0 — §3 에 적힌 부하성 흔들림과 같은 시험 |
+| secret-scan `--all` | clean | clean(2193 파일) |
+| 화면 게이트 | (6-4 PASS) | 다시 안 돌림 — 이 회차 `ui/` 변경 0 · 바뀐 것은 Rust 실행 길뿐(화면 게이트 = 브라우저 대역이라 result_open 을 실제로 안 부름) |
+
+### 알려진 한계(6-5 뒤 덧붙임)
+- **같은 사용자 경계**: 결과 열기의 막음(맨 이름 실행기 · 셸 정션 · TOCTOU · 처리기의 능동 내용)은 모두 「같은 사용자 권한으로 이미 무엇이든 실행·열 수 있는 로컬 에이전트·프로세스」를 상대로는 새 권한을 막는 경계가 아니다 — 쉬운 화면의 누름 하나가 그 위에 **더하는** 실행·유출을 0 으로 만드는 것이 목표이고, 그 이상(같은 사용자 안의 격리)은 이 기능의 범위 밖이다(master#1031d7aa).
+
 ## 7. 원작자 파일 변경 줄(NFR-F3)
 - `src-tauri/src/main.rs` +1: `viewcore::result_open, // (s79 조각 7) …`(generate_handler)
 - `ui/src/main.ts` ±1: 우리 `bootViews(...)` 줄에 `focusSeat: (sid) => jumpToSurface(sid)` 덧붙임

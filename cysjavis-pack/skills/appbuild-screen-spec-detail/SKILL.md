@@ -1,9 +1,12 @@
 ---
 name: appbuild-screen-spec-detail
 description: 화면별 상세(레이아웃·상태·컴포넌트·데이터)를 명세하는 하위 스킬 — 정상/빈/에러/로딩 상태를 빠짐없이, 참조 데이터를 아키텍처 모델과 일치시킨다. appbuild-screen-spec 상세 관문. "화면 상세 / 화면 상태 / 컴포넌트 명세 / 빈 상태 에러 상태" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-screen-spec-detail
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 각 화면을 구현 가능한 수준으로 상세화한다. **빠지기 쉬운 상태(빈·에러·로딩)를 빠뜨리지 않는
 것**이 핵심 — 갭 검증의 단골 결함이다.

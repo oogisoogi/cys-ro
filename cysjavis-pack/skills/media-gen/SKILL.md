@@ -1,9 +1,11 @@
 ---
 name: media-gen
-description: fal.ai 애그리게이터로 생성형 비주얼을 만드는 대표 스킬 — 텍스트→이미지·참조 편집·이미지→영상(시네마틱 B-roll)·업스케일·썸네일을 하위 스킬로 오케스트레이션한다. 모델을 경로로 지정해 새 모델도 코드 변경 없이 채택. "이미지 생성 / B-roll 생성 / 영상 생성 / 업스케일 / 썸네일 / fal" 트리거, 또는 youtube-video-pipeline B-roll 단계로 발동.
+description: fal.ai로 이미지 생성·참조 편집·이미지→영상(B-roll)·업스케일·썸네일을 만든다. 「이미지·썸네일·B-roll 만들어 / 화질 올려 / 사진 움직이게」 요청 때.
 ---
 
 # media-gen
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 아바타·HTML 모션그래픽으론 못 만드는 **생성형 비주얼**(포토리얼 장면·시네마틱 B-roll·생성
 이미지·썸네일)을 만든다. 단일 게이트웨이는 **fal.ai** — 이미지·영상 모델 애그리게이터다.
@@ -38,9 +40,18 @@ description: fal.ai 애그리게이터로 생성형 비주얼을 만드는 대�
 - **프롬프트 재작성**: 사용자의 거친 의도를 *모델 최적 프롬프트*로 Claude가 재작성 후 생성.
 - **비용 가드**: 유료 호출 전 `[[cost-preview-confirm]]`(fal 공식 추산 API
   `POST https://api.fal.ai/v1/models/pricing/estimate` 활용 가능) — 영상·업스케일은 종량제.
+- **구독 크레딧 창구(선택)**: Adobe Firefly(Creative Cloud 구독 · 생성마다 크레딧 차감)에도 다른 회사 영상·이미지
+  모델이 얹혀 있다 — 이미 구독 중이면 새 구독 없이 쓸 수 있는 길. 크레딧은 `[[cost-preview-confirm]]` 6번(구독 크레딧)
+  규약대로 다룬다. 얹힌 모델에 따라 사람 얼굴·아이가 든 그림→영상을 거부할 수 있다(2026-11 실측 사례) · 결과물
+  사용 조건은 쓰는 등급의 약관으로 확인한다.
 - **자기교정**: API 제한 감지 시 자동 교정 후 재시도(예: 입력 이미지 용량 초과 → 압축 →
   재실행. Seedance 입력 30MB 한도 등 모델별 제약을 응답에서 읽고 대응).
 - **로컬 저장**: 산출물을 `media/` 하위에 파일경로로 저장(이미지·B-roll·썸네일 분류).
+- **AI 공개(유튜브)**: 실제 사람·장소·사건처럼 보이는 생성 장면을 유튜브에 올리면 업로드 때 AI·합성 콘텐츠
+  공개 질문(화면 문구는 바뀔 수 있음)에 『예』로 답한다(유튜브 도움말 14328491 · 공개만으로 시청자층·수익 창출 자격에
+  영향 없음). 만화·완전한 애니메이션처럼 실제 같지 않은 그림과 대본·아이디어 같은 제작 보조는 대상이 아니다.
+  파일에 C2PA(출처 표시) 정보가 있으면 유튜브가 라벨을 자동으로 붙일 수 있다. `media/manifest.jsonl`
+  기록에 `realistic: true/false` 를 남겨 업로드 판단에 쓴다.
 - **체크포인트·비용 원장**: 유료 호출 직전 `media/manifest.jsonl` 대조 —
   `python3 ${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/check_manifest.py check` exit 0(산출물 실존 ∧
   동일 입력해시 ok 레코드)이면 생략(RESULT=skipped). 생성 결과는 `record`로 append(append-only
@@ -55,3 +66,7 @@ description: fal.ai 애그리게이터로 생성형 비주얼을 만드는 대�
 (append-only 원장: 작업·모델경로·프롬프트 해시·seed·실비용 — 구 `gen-manifest.json` 명명을
 이 원장으로 통일). 상위 `[[youtube-video-pipeline]]`로 반환 →
 B-roll은 `[[video-stitch-broll]]`이 배치, 썸네일은 별도 업로드 산출물.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+fal.ai 애그리게이터로 생성형 비주얼을 만드는 대표 스킬 — 텍스트→이미지·참조 편집·이미지→영상(시네마틱 B-roll)·업스케일·썸네일을 하위 스킬로 오케스트레이션한다. 모델을 경로로 지정해 새 모델도 코드 변경 없이 채택. "이미지 생성 / B-roll 생성 / 영상 생성 / 업스케일 / 썸네일 / fal" 트리거, 또는 youtube-video-pipeline B-roll 단계로 발동.

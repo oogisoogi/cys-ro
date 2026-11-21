@@ -1,9 +1,12 @@
 ---
 name: vibecoding-state
 description: 상태관리(State Management)를 설계 전담하는 스킬 — State=기억(변수 아님) 판별·State=f(action) 원칙·Flux 단방향 규율·Context는 항상 마지막·페이지 상태 매핑. 핵심 명제 "AI는 상태의 경계를 정의하지 못한다"에 따라 상태 경계·전이 규칙 확정은 인간(doctor) DECISION block으로만 받고 에이전트는 전사만 한다. "상태관리 설계 / state management / 상태 경계 / Flux 설계 / 페이지 상태 매핑 / state-management.md 작성" 트리거, 또는 바이브코딩 파이프라인 layer 7(spec 직후) 단계로 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-state
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 바이브코딩 파이프라인의 **layer 7 — 상태관리 설계(필수 단계)**. spec 직후에 화면이
 **언제(Trigger)·왜(Reason/guard)·어떻게(Transition)** 변하는지를 문서로 못박아, AI를

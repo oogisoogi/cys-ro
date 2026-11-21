@@ -1,9 +1,12 @@
 ---
 name: media-gen-upscale
 description: 영상·이미지를 고해상도로 업스케일하는 하위 스킬 — fal.ai Topaz 모델로 저해상 클립을 선명하게(배율 기반). 생성 B-roll뿐 아니라 임의 저화질 소스에도 적용. media-gen 업스케일 관문. "업스케일 / 화질 향상 / 해상도 올리기 / topaz upscale" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-upscale
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 저해상 클립을 선명하게 올린다(원본 영상의 Topaz 업스케일 — 연 $400 구독을 건당 수십 센트로).
 생성 B-roll만이 아니라 **아무 저화질 영상**(다운로드 소스 등)에도 쓴다.

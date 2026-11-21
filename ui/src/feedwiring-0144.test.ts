@@ -26,7 +26,11 @@ describe("C2 — 목록을 그리는 한 곳만 새 명령 · 나머지 feed_lis
     expect(b.includes("if (legacyMode) renderOtherWorkspacePending(box);")).toBe(true); // 종전 띠는 폴백에서만
   });
   it("feed_list_all 호출은 refreshFeed 하나뿐 · feed_list 의 다른 호출처 셋(승인 전환·팔레트 게이트·수동 승인 게이트)은 그대로", () => {
-    expect(code.split('invoke("feed_list_all"').length - 1).toBe(1);
+    // (tabs-sidebar 조각1) 두 번째 호출처 = 좌석 줄 「막힘(승인 창)」 재료 refreshApprovalSeats — 대기 승인이 0 이면 부르지 않는다(평소 비용 0 · m-2 취지 유지).
+    expect(code.split('invoke("feed_list_all"').length - 1).toBe(2);
+    const seat = fnBody("refreshApprovalSeats");
+    expect(seat.includes('invoke("feed_list_all", { status: "pending" })')).toBe(true);
+    expect(seat.indexOf("if (pendingApprovals === 0) {") >= 0 && seat.indexOf("if (pendingApprovals === 0) {") < seat.indexOf('invoke("feed_list_all"')).toBe(true);
     expect(code.split('feedList: () => invoke("feed_list", { status: null }),').length - 1).toBe(1); // 승인 전환 스케줄러(probefail.test.ts:450 이 같은 줄을 고정)
     expect(code.includes('invoke("feed_list", { status: "pending" })')).toBe(true);
   });
@@ -46,7 +50,9 @@ describe("C2 — 목록을 그리는 한 곳만 새 명령 · 나머지 feed_lis
   it("부서 항목의 응답은 그 부서 소켓으로 — 치우기·Allow/Deny·모두 확인 모두 socket 을 넘긴다 · 열쇠는 (소켓, request_id) 로 클로저에 묶인다", () => {
     expect(code.includes('invoke("feed_reply", { requestId, decision: "dismissed", socket })')).toBe(true); // wireFeedDismiss
     const b = fnBody("refreshFeed");
-    expect(b.includes('invoke("feed_reply", { requestId: item.request_id, decision, socket: sock })')).toBe(true);
+    expect(b.includes('invoke("feed_reply", { requestId: item.request_id, decision, socket: sock, screenFingerprint })')).toBe(true);
+    // ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · master#75867925): Allow 만 항목의 창 지문을 싣는다 · 지문 없는 항목은 undefined(= 종전 호출).
+    expect(b.includes('const screenFingerprint = decision === "allow" && typeof item.screen_fingerprint === "string" && item.screen_fingerprint ? item.screen_fingerprint : undefined;')).toBe(true);
     expect(fnBody("renderBulkConfirm").includes('invoke("feed_reply", { requestId: t.request_id, decision: "dismissed", socket })')).toBe(true);
     expect(b.includes("wireFeedDismiss(dismiss, item.request_id, sock)")).toBe(true);
     expect(b.includes("wireFeedDismiss(clear, item.request_id, sock)")).toBe(true);

@@ -1,9 +1,12 @@
 ---
 name: suite-runtime-keys
 description: 영상 파이프라인 공통 규약 — 외부 서비스 API 키(ElevenLabs·HeyGen 등)를 하드코딩하지 않고 런타임에 받고, 없으면 deny-by-default로 멈춰 정확히 안내하는 패턴. 보급용 배포 전제. "API 키 처리 / BYOK / 런타임 키 / 키 누락 안내" 맥락에서 참조.
+disable-model-invocation: true
 ---
 
 # suite-runtime-keys
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 영상 제작 파이프라인은 **보급용**이다 — 오너 한 사람이 아니라 누구나 자기 키만 넣으면
 동작해야 한다. 따라서 외부 서비스 자격증명은 코드·스킬에 절대 박지 않고, **사용 시점에

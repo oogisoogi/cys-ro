@@ -1,9 +1,12 @@
 ---
 name: appbuild-tasks-slice
 description: 기능을 엔드투엔드 수직 슬라이스(트레이서 불릿)로 분해하는 하위 스킬 — 화면+데이터+로직이 함께 도는 데모 가능한 작업으로 자른다(수평 레이어 금지). appbuild-tasks 슬라이스 관문. "수직 슬라이스 / 트레이서 불릿 / 작업 분해" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-tasks-slice
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 작업을 **수직 슬라이스**로 자른다 — 한 작업이 화면·데이터·로직을 관통해 **그 자체로 데모
 가능한 가치**를 낸다(Pragmatic Programmer 트레이서 불릿). "전부 백엔드 먼저, 그다음 전부

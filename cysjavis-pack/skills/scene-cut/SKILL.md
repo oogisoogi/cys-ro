@@ -1,6 +1,6 @@
 ---
 name: scene-cut
-description: 영상에서 콘텐츠 인지 shot-detect·침묵 트림으로 자동 편집점(컷)을 산출하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 ffmpeg silencedetect/scene-detect 바닥부터, deny-by-default). 점프컷·클립 경계·몽타주 컷의 공통 편집 토대. "씬컷 / 점프컷 / 컷편집 / 무음제거 / silence trim / shot detection / scene detect / 자동 편집점" 트리거, 또는 clip-factory·cinematic·documentary-montage·screen-demo·talking-head 아키타입의 scene-plan/edit 단계로 발동.
+description: 영상의 무음 구간·장면 전환을 찾아 자동 편집점(컷)을 낸다. 「무음 제거 / 점프컷 / 컷 편집 / 장면 감지」 요청 때.
 cys:
   capability: scene-cut
   stability: beta
@@ -27,13 +27,19 @@ cys:
 도구를 손으로 고르지 마라. 카탈로그를 javis_select로 랭킹해 **설명가능하게** 고른다:
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability scene-cut --intent "<용도: 점프컷/클립경계/몽타주>" --free-first
 ```
 
-- **무료·로컬 바닥**: `scenecut_ffmpeg`(ffmpeg `silencedetect`+장면 전환·무키·로컬). 키가 없어도
-  항상 가용(deny-by-default 통과) — 그래서 컷 편집은 키 없이도 동작한다.
-- 콘텐츠 인지 shot-detect가 필요하면 `scenecut_pyscenedetect`(threshold/adaptive·로컬·무키).
+- **무료·로컬 바닥**: `scenecut_ffmpeg`(ffmpeg `silencedetect`+장면 전환·무키·로컬). 키는 필요
+  없다(ffmpeg 가 설치돼 있을 때 가용 · probe = `ffmpeg` 바이너리) — 그래서 컷 편집은 키 없이도 동작한다.
+- 콘텐츠 인지 shot-detect가 필요하면 `scenecut_pyscenedetect`(threshold/adaptive·로컬·무키 · 파이썬
+  `scenedetect` 가 설치돼 있을 때만 가용).
+- ⚠ 함정: 배경이 대부분 검은 영상(모션그래픽 등)은 ffmpeg 장면 점수(`select='gt(scene,0.3)'`)가 작아
+  전환을 0건 잡는다(실측 2026-11: 검은 배경 위 작은 흰 상자 위치가 바뀌는 컷 = 최고 0.09 · 빨강→파랑
+  전체 색 컷 = 0.40). 이때는 160×90 회색 프레임의 이웃 차이가 문턱을 처음 넘는 프레임을 전환으로 본다
+  (같은 방식 = `${CYS_PACK_DIR:-$HOME/.cys/pack}/skills/narrated-motion/tools/s2m_sync_check.py` — 그 도구는 큐 시작
+  ±0.5초 창 안 가장 큰 변화의 절반을 문턱으로 쓴다 · 큐가 없는 영상은 이웃 차이 값을 먼저 찍어 보고 문턱을 정해 기록한다).
 - `--free-first`로 무료 바닥 우선. 특정 도구를 원하면 `--prefer <id>`.
 
 ## 산출물 계약 (다운스트림 아키타입이 소비)
@@ -72,3 +78,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
   `{"kind":"json_valid"}` + `{"kind":"field_present","value":"scenes"}` +
   `{"kind":"min_items","value":{"field":"scenes","min":2}}`(점프컷 커버리지 강제).
 - cost_class=wall-heavy: 긴 영상은 검출 후 임시 프레임·로그 정리(자원 거버넌스).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+영상에서 콘텐츠 인지 shot-detect·침묵 트림으로 자동 편집점(컷)을 산출하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 ffmpeg silencedetect/scene-detect 바닥부터, deny-by-default). 점프컷·클립 경계·몽타주 컷의 공통 편집 토대. "씬컷 / 점프컷 / 컷편집 / 무음제거 / silence trim / shot detection / scene detect / 자동 편집점" 트리거, 또는 clip-factory·cinematic·documentary-montage·screen-demo·talking-head 아키타입의 scene-plan/edit 단계로 발동.

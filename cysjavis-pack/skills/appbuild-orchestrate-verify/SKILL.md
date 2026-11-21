@@ -1,9 +1,12 @@
 ---
 name: appbuild-orchestrate-verify
 description: 만든 페인이 아닌 다른 페인이 완성물을 E2E로 직접 검증해 증거를 수집하는 하위 스킬 — 게이트 체크리스트를 들고 실행하고 문제는 고치지 말고 리포트만 한다(producer≠evaluator). appbuild-orchestrate 검증 관문. "E2E 검증 / 증거 검증 / 다른 페인 검증 / 체크리스트 실행" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-orchestrate-verify
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 **만든 에이전트가 아닌 다른 페인**(예: 코덱스)이 체크리스트를 들고 직접 실행해 검증한다 —
 "다 됐다"는 말을 믿지 않고 증거를 만든다(`[[eval-driven-self-improvement]]`·

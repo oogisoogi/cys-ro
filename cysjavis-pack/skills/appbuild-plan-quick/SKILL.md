@@ -1,9 +1,12 @@
 ---
 name: appbuild-plan-quick
 description: 질문을 최소로 해서 바로 기획 산출물을 작성하는 기획 모드 하위 스킬 — 명확한 아이디어·숙련 사용자를 위해 핵심 결정만 빠르게 확정하고 PRD·아키텍처를 즉시 만든다. appbuild-plan 모드 3. "빠른 기획 / 퀵 PRD / 질문 최소 기획" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-plan-quick
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 아이디어가 이미 명확하거나 사용자가 숙련됐을 때 — 긴 인터뷰·토론 없이 **핵심 결정만** 빠르게
 받고 산출물을 즉시 작성한다.

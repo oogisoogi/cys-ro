@@ -47,7 +47,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-cargo build --bin cys --bin cysd
+# cys-seatkeep = release 같은 스텝 뒤 `cargo test --bin cysd` 의 seatkeep 좌석 시험 4건이 target/debug 에서 띄운다 — 그 시험 명령은 만들지 않는다
+#   (TICKET=cysr-1116-maccysd-1121 · C6 런 44787231417 「실행 파일 없음」 · ci-branch 는 cysd 스텝 바로 앞 빌드 스텝이 같은 일을 한다).
+cargo build --bin cys --bin cysd --bin cys-seatkeep
 export PHOENIX_HARNESS_CYSD="$PWD/target/debug/cysd"
 export PATH="$PWD/target/debug:$PATH"
 export PHOENIX_CYS="$PWD/target/debug/cys"

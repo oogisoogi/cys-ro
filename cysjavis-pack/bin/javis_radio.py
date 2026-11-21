@@ -369,12 +369,16 @@ def paused_now():
     paused, hits = javis_wakeup.paused_evidence()
     live = os.path.join(ROOT(), "_round", javis_wakeup.PAUSED_BASENAME)
     if live not in hits:
+        # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V7): exists → lstat(U08 꼴 · 판독 불가 = 정지 · 앞 except 는 죽은 코드였다).
         try:
-            if os.path.exists(live):
-                hits.append(live)
-                paused = True
-        except OSError as e:
+            os.lstat(live)
+        except (FileNotFoundError, NotADirectoryError):
+            pass
+        except Exception as e:  # 확인 불능 = 정지(fail-closed)
             hits.append("%s (확인 불능: %s)" % (live, e))
+            paused = True
+        else:
+            hits.append(live)
             paused = True
     return paused, hits
 

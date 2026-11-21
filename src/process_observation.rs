@@ -199,9 +199,9 @@ pub fn identity(pid: u32) -> Result<Identity, Failure> {
     }
 }
 
-/// Windows only: argv through a LIMITED handle (see `windows_backend::argv_limited`).
+/// Windows only: (creation FILETIME ticks, argv) through ONE LIMITED handle (see `windows_backend::argv_limited`).
 #[cfg(windows)]
-pub fn argv_limited(pid: u32) -> Result<Vec<Vec<u8>>, Failure> {
+pub fn argv_limited(pid: u32) -> Result<(u64, Vec<Vec<u8>>), Failure> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(Failure::InvalidPid);
     }
@@ -834,10 +834,11 @@ mod windows_backend {
         observe_handle(&p, pid)
     }
 
-    /// argv only, through ONE `PROCESS_QUERY_LIMITED_INFORMATION` handle (no SYNCHRONIZE, no birth recheck) —
+    /// (creation ticks, argv) through ONE `PROCESS_QUERY_LIMITED_INFORMATION` handle (no SYNCHRONIZE) —
     /// TICKET=cysr-1116-win-restore-1121: an elevated same-user process may refuse SYNCHRONIZE/VM_READ yet answer
-    /// ProcessCommandLineInformation, which only needs LIMITED.
-    pub(super) fn argv_limited(pid: u32) -> Result<Vec<Vec<u8>>, Failure> {
+    /// ProcessCommandLineInformation, which only needs LIMITED. The creation time is read from the SAME handle
+    /// (GetProcessTimes needs only LIMITED) so the caller can match it against the enumeration (pid reuse · rule 8).
+    pub(super) fn argv_limited(pid: u32) -> Result<(u64, Vec<Vec<u8>>), Failure> {
         // SAFETY: plain Win32 call; a null return is handled below.
         let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if h.is_null() {
@@ -850,8 +851,15 @@ mod windows_backend {
             });
         }
         let p = OwnedProcess(h);
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+        // SAFETY: four writable FILETIME outputs on an owned handle.
+        if unsafe { GetProcessTimes(p.0, &mut c, &mut e, &mut k, &mut u) } == 0 {
+            return Err(last_error("GetProcessTimes(limited)"));
+        }
+        let birth = ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64;
         let wide = command_line(&p)?;
-        Ok(parse_windows_command_line(&wide).into_iter().map(|a| wide_to_bytes(&a)).collect())
+        Ok((birth, parse_windows_command_line(&wide).into_iter().map(|a| wide_to_bytes(&a)).collect()))
     }
 }
 

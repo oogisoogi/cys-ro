@@ -268,6 +268,10 @@ jobs:
                   "--bin cysd activity_tests::":
                       "0.14.52 F-01: the only BLOCKING native Windows run of the activity observer tests (Windows identity staging path included) — "
                       "without it the observer ships with Windows behaviour vouched for only by macOS.",
+                  "--lib session_lease::win_tests::":
+                      "1.1.16 TICKET=cysr-1116-win-restore-1121: the only run of the Windows conversation-lease scan's real FFI fact collection "
+                      "(SystemProcessInformation session/CreateTime, WTS SID, LIMITED token, exit code) — the pure table runs everywhere but these "
+                      "tests do not even compile on macOS, so a missing run leaves the restore fix vouched for only by fixtures.",
               },
           }
 

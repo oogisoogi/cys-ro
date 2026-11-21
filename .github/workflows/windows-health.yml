@@ -584,6 +584,13 @@ jobs:
           #   이 두 줄에도 `if:` 를 달지 마라.
           cargo_filter_count --lib claude_tui::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib claude_tui:: -- --test-threads=1
+          # ★(1.1.16 · TICKET=cysr-1116-win-restore-1121 · master#d6185ede 규칙 6) 아홉째 필터 `session_lease::win_tests::` — 윈 대화 임대
+          #   「같은 사용자」 훑기의 FFI 사실 수집(SystemProcessInformation 세션·CreateTime · WTS SID · LIMITED 토큰 · 종료 코드)을 **실제로** 지나는
+          #   윈도우 전용 검체 5종(ⓐ 나 = 열림·SID 같음·내 세션·생성 시각 일치 ⓑ pid 4 = 남의 것 ⓒ 없는 pid = 없음·죽음 ⓓ 자식 명령줄 S = Seen → 끝낸 뒤 죽음
+          #   ⓔ 아무도 안 쥔 대화 = NoneConfirmed — 「시스템 pid 때문에 판정 불가」 사고 원형 재발 탐지). 순수 판정 표(`session_lease::tests::`)는 맥에서도
+          #   돌지만 이 다섯은 맥에서 컴파일조차 안 된다 — mac 초록은 그 축의 증거가 아니다(정본 §8). 이 두 줄에도 `if:` 를 달지 마라.
+          cargo_filter_count --lib session_lease::win_tests::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib session_lease::win_tests:: -- --test-threads=1
 
       # ★(1.1.8 U5 · TICKET=cysr-118-u5-install-link) 설치 링크(bootstrap.ps1)의 자동 갱신 잠금 참가·위임 — **윈도우 실물 대조**.
       #   무엇을 보는가: PowerShell 이 쥔 0번 바이트 잠금(FileStream.Lock = LockFile) ↔ cys 의 LockFileEx 전 범위 잠금이 서로 막는가 ·

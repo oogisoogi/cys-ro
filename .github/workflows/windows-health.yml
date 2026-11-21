@@ -590,6 +590,17 @@ jobs:
           #   ⓔ 아무도 안 쥔 대화 = NoneConfirmed — 「시스템 pid 때문에 판정 불가」 사고 원형 재발 탐지). 순수 판정 표(`session_lease::tests::`)는 맥에서도
           #   돌지만 이 다섯은 맥에서 컴파일조차 안 된다 — mac 초록은 그 축의 증거가 아니다(정본 §8). 이 두 줄에도 `if:` 를 달지 마라.
           cargo_filter_count --lib session_lease::win_tests::
+          #   문턱 = win_tests 개수(5) 이상(master#c699b44d 4 · 검증 R2 하) — 「≥ 1」 이면 일부가 #[ignore]·cfg·이름 변경으로 빠져도 초록이다.
+          #   검체를 늘리면 이 수도 올린다(내리지 마라).
+          wt_list="${RUNNER_TEMP:-/tmp}/session-lease-win-tests-list.txt"
+          if CYS_PACK_DIR="$(mktemp -d)" cargo test --lib session_lease::win_tests:: -- --list > "$wt_list" 2>&1; then wt_rc=0; else wt_rc=$?; fi
+          wt_n=$(grep -c ': test$' "$wt_list" || true)
+          if [ "$wt_rc" -ne 0 ] || [ "${wt_n:-0}" -lt 5 ]; then
+            cat "$wt_list"
+            echo "::error::session_lease::win_tests:: 검체 ${wt_n:-0}건(rc=$wt_rc) < 5 — 윈 FFI 실시험 일부가 빠졌다(돌지 않는 초록 금지)"
+            exit 1
+          fi
+          echo "[win-tests-count] session_lease::win_tests:: → ${wt_n}건(문턱 5)"
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib session_lease::win_tests:: -- --test-threads=1
 
       # ★(1.1.8 U5 · TICKET=cysr-118-u5-install-link) 설치 링크(bootstrap.ps1)의 자동 갱신 잠금 참가·위임 — **윈도우 실물 대조**.

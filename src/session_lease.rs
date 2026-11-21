@@ -1347,6 +1347,9 @@ pub(crate) enum WinOpen {
     Gone,
     /// 그 밖 오류(ACCESS_DENIED 포함) — 남의 것으로 단정하지 않는다.
     Failed,
+    /// 열렸으나 그 행의 사실을 못 믿음 — 핸들 생성 시각 ≠ 열거 표 CreateTime(100ns · pid 재사용) ∨ 핸들 토큰 SID 못 읽음
+    /// (master#c699b44d 1 · codex 2R H1). 남의 것으로 치지 않는다(세션 규칙도 안 탐) = 대상 → 명령줄 못 읽으면 판정 불가.
+    Unverified,
 }
 
 /// OpenProcess 오류 코드 → 존재 사실(순수 · 뮤턴트 MC). 87 = ERROR_INVALID_PARAMETER = 없음 · 그 밖 = 판독 실패.
@@ -1413,20 +1416,71 @@ pub(crate) struct WinFacts {
     pub birth: Option<u64>,
 }
 
-/// FILETIME(100ns · 1601-01-01) → 유닉스 초(1970-01-01) · **내림**(sysinfo 0.33 `compute_start` = `ticks / 10_000_000 - 11_644_473_600` 과 같은 값).
-/// 1970 전(sysinfo 는 뺄셈이 감김) = None(대조 불가). 순수 · 뮤턴트 M8d.
-pub(crate) fn filetime_unix_secs(ticks: u64) -> Option<u64> {
-    const EPOCH_DIFF_TICKS: u64 = 116_444_736_000_000_000;
-    ticks.checked_sub(EPOCH_DIFF_TICKS).map(|t| t / 10_000_000)
-}
-
-/// 출생 대조(순수 · 규칙 8 · 뮤턴트 M8a·M8e) — 열거 때 생성 시각(`create_ticks`)과 명령줄을 읽은 핸들의 생성 시각(유닉스 초)이 같을 때만 참.
-/// 초 단위 = sysinfo 자신의 pid 재사용 판정(`get_start_time() == start_time()`)과 같은 눈금. 둘 중 하나라도 없음·1970 전 = 거짓(= 그 명령줄을 쓰지 않음 → 판정 불가 쪽).
-pub(crate) fn birth_matches(create_ticks: Option<u64>, observed_secs: Option<u64>) -> bool {
-    match (create_ticks.and_then(filetime_unix_secs), observed_secs) {
+/// 출생 대조(순수 · 규칙 8 · master#c699b44d 2 · 뮤턴트 MB) — 열거 표(SystemProcessInformation) CreateTime 과 그 사실·명령줄을 읽은
+/// 핸들의 GetProcessTimes 생성 시각이 **100ns 그대로** 같을 때만 참(초로 자르면 같은 1초 안의 pid 재사용을 같은 프로세스로 받는다 · codex 2R H2).
+/// 둘 중 하나라도 없음 = 거짓(= 그 사실·명령줄을 쓰지 않음 → 판정 불가 쪽).
+pub(crate) fn birth_matches(table_ticks: Option<u64>, handle_ticks: Option<u64>) -> bool {
+    match (table_ticks, handle_ticks) {
         (Some(a), Some(b)) => a == b,
         _ => false,
     }
+}
+
+/// 핸들 하나로 본 것 — Ok = 열림(그 핸들의 생성 ticks · 그 핸들 토큰 SID 바이트 · 못 읽음 = None) · Err = OpenProcess 오류 코드.
+pub(crate) type WinHandleView = Result<(Option<u64>, Option<Vec<u8>>), u32>;
+
+/// ★수집 순서 불변식(master#d82fcb00 · 바꾸지 마라 — 시험 W21 `collect_rows` 호출 순서 · 뮤턴트 MO):
+///   ① SPI 표(세션·CreateTime) → ② WTS 표(SID) → ③ OpenProcess(LIMITED) → ④ 그 핸들 GetProcessTimes CreationTime == ① CreateTime(100ns).
+///   ④ 가 같으면 그 프로세스는 ①~③ 내내 같은 프로세스였다(살아 있는 동안 pid 는 재사용되지 않고, 재사용이면 CreateTime 이 달라진다) →
+///   ①~③ 사이에 찍힌 ② 의 SID 도 그 프로세스의 것이다. ② 가 ③ 뒤로 가면 이 추론이 무너진다(② 가 새 주인을 볼 수 있음).
+
+/// 열린 행(④ 출생 일치)의 SID 출처(순수 · 뮤턴트 MH1a·MWF) — 그 핸들 토큰 SID(형식 유효) 우선 · 토큰 실패면 ② WTS SID · 둘 다 없으면 None(= 모름).
+pub(crate) fn sid_for_opened<'a>(token: Option<&'a [u8]>, wts: Option<&'a [u8]>) -> Option<&'a [u8]> {
+    token.filter(|t| sid_valid(t)).or(wts)
+}
+
+/// 한 행의 사실 채택(순수 · master#c699b44d 1 → master#d82fcb00 정본 · codex 2R H1 · 뮤턴트 MH1b·MH1d·MH1e) — `spi` = ① 표의 (세션, CreateTime).
+/// ⑴ 열림: ④ 핸들 생성 시각 == 표 CreateTime(100ns) → SID = [`sid_for_opened`](토큰 → WTS → 모름) · 어긋남(핸들·표 생성 시각 결측 포함) =
+///   [`WinOpen::Unverified`](판정 불가 쪽 · 세션 규칙 안 탐). ⑵ 못 엶 = 오류 매핑 + ② WTS SID(출생 대조 불가 · 스냅샷 한계 · REPORT 7-5).
+pub(crate) fn row_facts(spi: Option<(u32, Option<u64>)>, handle: WinHandleView, wts: Option<&[u8]>, me: Option<&[u8]>) -> WinFacts {
+    let (session, birth) = spi.map_or((None, None), |(s, b)| (Some(s), b));
+    match handle {
+        Err(code) => WinFacts { open: open_err_kind(code), sid: sid_verdict(me, wts), session, birth },
+        Ok((handle_birth, token)) => {
+            if !birth_matches(birth, handle_birth) {
+                WinFacts { open: WinOpen::Unverified, sid: WinSid::Unknown, session, birth }
+            } else {
+                WinFacts { open: WinOpen::Opened, sid: sid_verdict(me, sid_for_opened(token.as_deref(), wts)), session, birth }
+            }
+        }
+    }
+}
+
+/// 윈 훑기 한 번의 수집 골격(순수 · 시험 W21) — 위 순서 불변식 ①②③④ 를 **이 함수 하나가** 강제한다:
+/// `table`(①) → 내 세션 → `wts`(②) → 행마다 `handle`(③④ · 열기 + 그 핸들 생성 시각·토큰) → [`row_facts`]. ① 을 못 읽으면 None.
+pub(crate) fn collect_rows(
+    table: impl FnOnce() -> Option<std::collections::HashMap<u32, (u32, Option<u64>)>>,
+    wts: impl FnOnce(Option<u32>) -> std::collections::HashMap<u32, Vec<u8>>,
+    handle: impl Fn(u32) -> WinHandleView,
+    me: Option<&[u8]>,
+) -> Option<(Option<u32>, Vec<(u32, WinFacts)>)> {
+    let table = table()?;
+    let my_session = table.get(&std::process::id()).map(|&(s, _)| s);
+    let wts = wts(my_session);
+    let opened: Vec<(u32, (u32, Option<u64>), WinHandleView)> = table.iter().map(|(&pid, &spi)| (pid, spi, handle(pid))).collect();
+    let rows = opened.into_iter().map(|(pid, spi, h)| (pid, row_facts(Some(spi), h, wts.get(&pid).map(Vec::as_slice), me))).collect();
+    Some((my_session, rows))
+}
+
+/// WTSEnumerateProcessesExW 의 「모든 세션」 값.
+pub(crate) const WTS_ANY_SESSION: u32 = 0xFFFF_FFFE;
+
+/// WTS 표(순수 · master#c699b44d 3 · 검증 R2 ② · 뮤턴트 MW) — 모든 세션으로 먼저 부르고, 실패하면 **내 세션 id 로 한 번 더**.
+/// 근거(문서 · 확신 중): 「The caller must be a member of the Administrators group to enumerate processes that are running under
+/// another user session.」(learn.microsoft.com wtsapi32 WTSEnumerateProcessesExW) — 관리자 요구는 **다른** 사용자 세션에만 걸린다.
+/// 비관리자가 내 세션으로 부르면 내 세션 SYSTEM 프로세스(winlogon) SID 까지 주는지는 실기 확인 전(REPORT 5 · 윈 실기 1).
+pub(crate) fn wts_any_then_mine<M>(enumerate: impl Fn(u32) -> Option<M>, my_session: Option<u32>) -> Option<M> {
+    enumerate(WTS_ANY_SESSION).or_else(|| my_session.and_then(&enumerate))
 }
 
 /// 윈 프로세스 분류(순수 · master#d6185ede 정본) — Some(true) = 남의 것(건너뜀) · Some(false) = 훑기 대상 · None = 사라짐(목록에서 뺌).
@@ -1440,6 +1494,9 @@ pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>) -> Op
     if f.open == WinOpen::Gone {
         return None;
     }
+    if f.open == WinOpen::Unverified {
+        return Some(false);
+    }
     match f.sid {
         WinSid::Same => Some(false),
         WinSid::Other => Some(true),
@@ -1447,24 +1504,21 @@ pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>) -> Op
     }
 }
 
-/// 윈 훑기 한 줄 조립(순수 · 시험 가능) — `sysinfo_cmd` 가 비고 남의 것이 아니면 `self_read`(LIMITED 핸들 명령줄 판독)로 다시 읽는다
-/// (sysinfo 는 VM_READ 가 없으면 빈 값 — 상승 실행한 같은 사용자 claude 가 여기 걸린다). 그래도 비면 지금처럼 판정 불가 후보.
-/// ★규칙 8(pid 재사용): 명령줄은 그것을 읽은 핸들의 생성 시각이 `f.birth`(열거 표)와 같을 때만 쓴다 — sysinfo 명령줄 = `sysinfo_start`
-/// (sysinfo 가 그 명령줄을 읽은 핸들의 `start_time()` 초 · 없으면 None) · 자체 판독 = `self_read` 가 돌려준 (생성 ticks, argv). 다르면 빈 값(= 판정 불가 후보).
+/// 윈 훑기 한 줄 조립(순수 · 시험 가능) — 남의 것이 아니면 `self_read`(우리 LIMITED 핸들 하나 · 생성 ticks 와 명령줄을 같은 핸들에서)로 읽는다.
+/// ★윈에서는 sysinfo 명령줄을 쓰지 않는다(master#c699b44d 2 · codex 2R H2 — sysinfo 첫 훑기 핸들이 끝난 앞 프로세스의 명령줄을 줄 수 있음).
+/// 명령줄은 그 핸들의 생성 시각이 `f.birth`(열거 표 CreateTime)와 100ns 그대로 같을 때만 쓴다 · 다르거나 못 읽으면 빈 값(= 판정 불가 후보).
 pub(crate) fn win_view(
     pid: u32,
-    sysinfo_cmd: Vec<String>,
-    sysinfo_start: Option<u64>,
     f: &WinFacts,
     my_session: Option<u32>,
     self_read: impl Fn(u32) -> Option<(u64, Vec<String>)>,
 ) -> Option<ProcView> {
     let foreign = win_foreign(pid, f, my_session)?;
-    let cmd = if foreign || (!sysinfo_cmd.is_empty() && birth_matches(f.birth, sysinfo_start)) {
-        sysinfo_cmd
+    let cmd = if foreign {
+        Vec::new()
     } else {
         match self_read(pid) {
-            Some((born, argv)) if birth_matches(f.birth, filetime_unix_secs(born)) => argv,
+            Some((born, argv)) if birth_matches(f.birth, Some(born)) => argv,
             _ => Vec::new(),
         }
     };
@@ -1472,23 +1526,23 @@ pub(crate) fn win_view(
 }
 
 /// 윈 사실 수집(얇은 FFI · 판정·오류 매핑은 위 순수 함수) — 핸들 열기는 `PROCESS_QUERY_LIMITED_INFORMATION` 만(SYNCHRONIZE 없음).
-/// pid 재사용(규칙 8): 명령줄은 생성 시각(세션과 같은 SystemProcessInformation 표)이 맞을 때만 쓴다([`win_view`]).
-/// 남는 한계(스냅샷): WTS 표(SID)는 생성 시각이 없다 · 열거(sysinfo 첫 훑기) **뒤에** 태어난 프로세스는 어느 표로도 못 본다(REPORT).
+/// 행 목록 = SystemProcessInformation 표 하나(세션·CreateTime 도 같은 표) · 그 뒤 WTS(SID) · 행마다 LIMITED 핸들(생성 시각 대조 → 토큰 SID) ·
+/// 명령줄 = 다시 LIMITED 핸들(생성 시각 대조 → 판독). 남는 한계(스냅샷): 못 연 행의 WTS SID 는 생성 시각에 묶이지 않는다 · 표 **뒤에**
+/// 태어난 프로세스는 못 본다(REPORT 7-5).
 #[cfg(windows)]
 mod win_scan {
-    use super::{open_err_kind, probe_verdict, sid_verdict, win_foreign, win_view, ProcView, WinFacts, WinOpen};
+    use super::{collect_rows, probe_verdict, win_view, wts_any_then_mine, ProcView};
     use crate::process_observation::Failure;
     use std::collections::HashMap;
     use windows_sys::Wdk::System::SystemInformation::NtQuerySystemInformation;
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, HANDLE};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, FILETIME, HANDLE};
     use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
     use windows_sys::Win32::System::RemoteDesktop::{WTSEnumerateProcessesExW, WTSFreeMemoryExW, WTSTypeProcessInfoLevel1, WTS_CURRENT_SERVER_HANDLE, WTS_PROCESS_INFO_EXW};
-    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::System::WindowsProgramming::SYSTEM_PROCESS_INFORMATION;
 
     const SYSTEM_PROCESS_INFORMATION_CLASS: i32 = 5;
     const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
-    const WTS_ANY_SESSION: u32 = 0xFFFF_FFFE;
 
     pub(super) struct Owned(HANDLE);
     impl Drop for Owned {
@@ -1574,8 +1628,9 @@ mod win_scan {
                 if off + std::mem::size_of::<SYSTEM_PROCESS_INFORMATION>() > total {
                     return None;
                 }
-                // SAFETY: off 는 버퍼 안 · 항목은 커널이 8 정렬로 이어 붙인다.
-                let e = unsafe { &*(base.add(off) as *const SYSTEM_PROCESS_INFORMATION) };
+                // SAFETY: off..off+size_of 는 버퍼 안(위 검사) · 정렬은 가정하지 않고 값으로 복사한다
+                // (sysinfo 0.33.1 windows/system.rs 292~294 와 같은 방식: 「read_unaligned is necessary to avoid misaligned pointer dereference」 · 검증 R2 하).
+                let e = unsafe { std::ptr::read_unaligned(base.add(off) as *const SYSTEM_PROCESS_INFORMATION) };
                 let mut ct = [0u8; 8];
                 ct.copy_from_slice(&e.Reserved1[CREATE_TIME_IN_RESERVED1]);
                 m.insert(e.UniqueProcessId as usize as u32, (e.SessionId, u64::try_from(i64::from_ne_bytes(ct)).ok()));
@@ -1588,32 +1643,40 @@ mod win_scan {
         None
     }
 
-    /// pid → 사용자 SID(WTSEnumerateProcessesExW level 1 · 핸들 없음). 실패 = 빈 표(토큰 경로로 내려감).
-    pub(super) fn wts_sids() -> HashMap<u32, Vec<u8>> {
+    /// pid → 사용자 SID(WTSEnumerateProcessesExW level 1 · 핸들 없음) — `session` = 세션 id 또는 [`super::WTS_ANY_SESSION`]. None = 호출 실패.
+    pub(super) fn wts_sids(session: u32) -> Option<HashMap<u32, Vec<u8>>> {
         let mut level = 1u32;
         let mut p: *mut WTS_PROCESS_INFO_EXW = std::ptr::null_mut();
         let mut n = 0u32;
         // SAFETY: 출력 칸 둘 · 성공하면 p 를 WTSFreeMemoryExW 로 돌려준다.
-        if unsafe { WTSEnumerateProcessesExW(WTS_CURRENT_SERVER_HANDLE, &mut level, WTS_ANY_SESSION, (&mut p as *mut *mut WTS_PROCESS_INFO_EXW).cast(), &mut n) } == 0 || p.is_null() {
-            return HashMap::new();
+        if unsafe { WTSEnumerateProcessesExW(WTS_CURRENT_SERVER_HANDLE, &mut level, session, (&mut p as *mut *mut WTS_PROCESS_INFO_EXW).cast(), &mut n) } == 0 || p.is_null() {
+            return None;
         }
         // SAFETY: p 는 n 개 항목 배열.
         let rows = unsafe { std::slice::from_raw_parts(p, n as usize) };
         let m = rows.iter().filter_map(|e| sid_bytes(e.pUserSid).map(|b| (e.ProcessId, b))).collect();
         // SAFETY: 위에서 받은 배열을 그대로 돌려준다.
         unsafe { WTSFreeMemoryExW(WTSTypeProcessInfoLevel1, p.cast(), n) };
-        m
+        Some(m)
     }
 
-    pub(super) fn facts(pid: u32, me: Option<&[u8]>, sessions: &HashMap<u32, (u32, Option<u64>)>, wts: &HashMap<u32, Vec<u8>>) -> WinFacts {
-        let (session, birth) = sessions.get(&pid).map_or((None, None), |&(s, b)| (Some(s), b));
-        match open(pid) {
-            Err(code) => WinFacts { open: open_err_kind(code), sid: sid_verdict(me, wts.get(&pid).map(Vec::as_slice)), session, birth },
-            Ok(h) => {
-                let them = wts.get(&pid).cloned().or_else(|| token_sid(h.0));
-                WinFacts { open: WinOpen::Opened, sid: sid_verdict(me, them.as_deref()), session, birth }
-            }
-        }
+    /// 핸들 생성 시각(GetProcessTimes CreationTime · FILETIME 100ns) — None = 실패.
+    fn creation_ticks(process: HANDLE) -> Option<u64> {
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+        // SAFETY: 열린 핸들 · 쓰기 가능한 FILETIME 출력 넷.
+        (unsafe { GetProcessTimes(process, &mut c, &mut e, &mut k, &mut u) } != 0).then(|| ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64)
+    }
+
+    /// 행 하나의 ③④ — 열면 그 핸들에서 생성 시각·토큰 SID 를 읽는다(채택 여부 = [`super::row_facts`] · 순서 = [`collect_rows`]).
+    fn handle_view(pid: u32) -> super::WinHandleView {
+        open(pid).map(|h| (creation_ticks(h.0), token_sid(h.0)))
+    }
+
+    /// 한 행의 사실(윈 러너 시험용 · `collect_rows` 의 한 행과 같은 길) — 표·WTS 는 호출자가 ①② 순서로 먼저 읽어 넘긴다.
+    #[cfg(test)]
+    pub(super) fn facts(pid: u32, me: Option<&[u8]>, sessions: &HashMap<u32, (u32, Option<u64>)>, wts: &HashMap<u32, Vec<u8>>) -> super::WinFacts {
+        super::row_facts(sessions.get(&pid).copied(), handle_view(pid), wts.get(&pid).map(Vec::as_slice), me)
     }
 
     /// LIMITED 핸들 하나의 (생성 ticks, 명령줄)(`process_observation::argv_limited`) — sysinfo 명령줄을 못 쓴 남의 것 아닌 프로세스만.
@@ -1623,28 +1686,20 @@ mod win_scan {
             .map(|(born, argv)| (born, argv.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect()))
     }
 
-    /// 훑기 한 번 — 남의 것은 명령줄을 읽지 않는다.
+    /// 훑기 한 번 — 수집 순서(① 표 → ② WTS → ③④ 행마다 핸들)는 [`collect_rows`] 가 강제한다(순서 불변식 · [`super::sid_for_opened`] 위 주석).
+    /// 행 = SystemProcessInformation 표(못 읽으면 빈 목록 → `scan:enumerate` 판정 불가) · 남의 것은 명령줄을 읽지 않는다.
     pub(super) fn snapshot() -> Vec<ProcView> {
-        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-        let mut sys = System::new();
-        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-        let sessions = nt_sessions().unwrap_or_default();
-        let wts = wts_sids();
         // SAFETY: GetCurrentProcess = 닫지 않는 의사 핸들.
         let me = token_sid(unsafe { GetCurrentProcess() });
-        let my_session = sessions.get(&std::process::id()).map(|&(s, _)| s);
-        let all: Vec<(u32, WinFacts)> = sys.processes().keys().map(|p| (p.as_u32(), facts(p.as_u32(), me.as_deref(), &sessions, &wts))).collect();
-        let want: Vec<Pid> = all.iter().filter(|(pid, f)| win_foreign(*pid, f, my_session) == Some(false)).map(|(p, _)| Pid::from_u32(*p)).collect();
-        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&want), false, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
-        all.into_iter()
-            .filter_map(|(pid, f)| {
-                // sysinfo 는 2차 갱신에서 pid 주인이 바뀌었으면(자기 start_time 대조) 새 핸들로 다시 만든다 → start_time = 그 명령줄을 읽은 핸들의 것.
-                let (cmd, start) = sys
-                    .process(Pid::from_u32(pid))
-                    .map_or((Vec::new(), None), |p| (p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect(), Some(p.start_time())));
-                win_view(pid, cmd, start, &f, my_session, self_read)
-            })
-            .collect()
+        let Some((my_session, rows)) = collect_rows(
+            nt_sessions,
+            |my| wts_any_then_mine(wts_sids, my).unwrap_or_default(),
+            handle_view,
+            me.as_deref(),
+        ) else {
+            return Vec::new();
+        };
+        rows.into_iter().filter_map(|(pid, f)| win_view(pid, &f, my_session, self_read)).collect()
     }
 
     /// 죽음 확인(이 판정 한정 · SYNCHRONIZE 없음) — 판정은 [`probe_verdict`].
@@ -1666,7 +1721,7 @@ mod win_scan {
 #[cfg(all(test, windows))]
 mod win_tests {
     use super::win_scan::{facts, nt_sessions, open, probe_dead, self_read, token_sid, wts_sids};
-    use super::{birth_matches, filetime_unix_secs, open_err_kind, scan_argv, win_foreign, Evidence, WinOpen, WinSid};
+    use super::{open_err_kind, scan_argv, win_foreign, wts_any_then_mine, Evidence, WinOpen, WinSid};
     use crate::process_observation::Failure;
 
     fn random_id(tag: &str) -> String {
@@ -1674,33 +1729,34 @@ mod win_tests {
         format!("{:x}-{:x}-{tag}", n, std::process::id())
     }
 
-    /// ⓐ 나 자신 = 열림 · SID 같음 · 내 세션(Some) · 남의 것 아님 · 열거 표 생성 시각 = 내 GetProcessTimes(CreateTime 오프셋 실증) · 자체 판독 출생 일치.
+    /// ⓐ 나 자신 = 열림(= 핸들 생성 시각 == 표 CreateTime 100ns · CreateTime 오프셋 실증) · SID 같음 · 내 세션(Some) · 남의 것 아님 · 자체 판독 출생 == 표.
     #[test]
     fn self_facts_are_opened_same_sid_my_session_and_birth_matches() {
         let sessions = nt_sessions().expect("SystemProcessInformation 을 못 읽었다");
-        let wts = wts_sids();
+        let my_session = sessions.get(&std::process::id()).map(|&(s, _)| s);
+        let wts = wts_any_then_mine(wts_sids, my_session).unwrap_or_default();
         // SAFETY: GetCurrentProcess = 닫지 않는 의사 핸들.
         let me_sid = token_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() });
         assert!(me_sid.is_some(), "내 토큰 SID 를 못 읽었다");
         let me = std::process::id();
         let f = facts(me, me_sid.as_deref(), &sessions, &wts);
-        assert_eq!(f.open, WinOpen::Opened, "{f:?}");
+        assert_eq!(f.open, WinOpen::Opened, "{f:?} — Unverified 면 표 CreateTime(Reserved1[24..32]) ≠ 핸들 GetProcessTimes(100ns) 또는 토큰 실패");
         assert_eq!(f.sid, WinSid::Same, "{f:?}");
-        let my_session = sessions.get(&me).map(|&(s, _)| s);
         assert!(my_session.is_some() && f.session == my_session, "{f:?} · 표 = {my_session:?}");
         assert_eq!(win_foreign(me, &f, my_session), Some(false));
         let id = crate::process_observation::identity(me).expect("내 신원");
-        assert!(birth_matches(f.birth, Some(id.birth_seconds)), "열거 표 CreateTime(Reserved1[24..32]) {:?} ≠ GetProcessTimes {}초", f.birth, id.birth_seconds);
+        let unix = f.birth.and_then(|t| t.checked_sub(116_444_736_000_000_000)).map(|t| (t / 10_000_000, (t % 10_000_000) / 10));
+        assert_eq!(unix, Some((id.birth_seconds, id.birth_microseconds)), "표 CreateTime {:?} ↔ process_observation::identity", f.birth);
         let (born, argv) = self_read(me).expect("내 명령줄을 LIMITED 핸들로 못 읽었다");
         assert!(!argv.is_empty());
-        assert!(birth_matches(f.birth, filetime_unix_secs(born)), "자체 판독 핸들 출생 {born} ≠ 표 {:?}", f.birth);
+        assert_eq!(Some(born), f.birth, "자체 판독 핸들 출생 ≠ 표 CreateTime(100ns)");
     }
 
     /// ⓑ pid 4(System) = 남의 것.
     #[test]
     fn system_pid_4_is_foreign() {
         let sessions = nt_sessions().expect("SystemProcessInformation");
-        let wts = wts_sids();
+        let wts = wts_any_then_mine(wts_sids, sessions.get(&std::process::id()).map(|&(s, _)| s)).unwrap_or_default();
         // SAFETY: 의사 핸들.
         let me_sid = token_sid(unsafe { windows_sys::Win32::System::Threading::GetCurrentProcess() });
         let f = facts(4, me_sid.as_deref(), &sessions, &wts);
@@ -1725,7 +1781,8 @@ mod win_tests {
     fn child_with_conversation_id_is_seen_then_dead() {
         let s = random_id("child");
         // PowerShell 은 -Command 뒤 인자를 이어 붙여 실행한다 → `#` 뒤 S 는 주석 · argv 에는 S 가 한 칸으로 남는다.
-        let mut child = std::process::Command::new("powershell.exe")
+        // 숨김 헬퍼(spawn_policy 계수 동결 시험 `raw_command_new_census_is_frozen` 규율 · 윈 콘솔 창 숨김).
+        let mut child = crate::hidden_command("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 60; #", &s])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -2400,25 +2457,24 @@ mod tests {
         use crate::process_observation::Failure;
         const S: &str = "5e55aaaa-0000-4000-8000-000000000001";
         let me = std::process::id();
-        // 생성 시각: 열거 표 = T0(ticks) · sysinfo·자체 판독 핸들 = T0S(유닉스 초) — W18 만 어긋나게 준다.
-        const T0S: u64 = 1_795_000_000;
-        const T0: u64 = (T0S + 11_644_473_600) * 10_000_000 + 1_234;
+        // 생성 시각(FILETIME 100ns): 열거 표 = 자체 판독 핸들 = T0 — W18·W19 만 어긋나게 준다.
+        const T0: u64 = 133_000_000_000_001_234;
         let fx = |open: WinOpen, sid: WinSid, session: Option<u32>| WinFacts { open, sid, session, birth: Some(T0) };
         let (o, f, g) = (WinOpen::Opened, WinOpen::Failed, WinOpen::Gone);
         let (same, other, unk) = (WinSid::Same, WinSid::Other, WinSid::Unknown);
         let argv = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
         let no_read = |_p: u32| -> Option<Vec<String>> { None };
-        // 행 = (pid, sysinfo 명령줄, sysinfo start_time 초, 사실) · 자체 판독 = (생성 ticks, argv).
-        type Row = (u32, Vec<String>, Option<u64>, WinFacts);
-        let scan_st = |rows: Vec<Row>, my: Option<u32>, sr: &dyn Fn(u32) -> Option<(u64, Vec<String>)>, alive: &dyn Fn(u32) -> bool| {
+        // 행 = (pid, 사실) · 자체 판독 = (그 핸들 생성 ticks, argv) — 윈은 sysinfo 명령줄을 쓰지 않는다(master#c699b44d 2).
+        let scan_st = |rows: Vec<(u32, WinFacts)>, my: Option<u32>, sr: &dyn Fn(u32) -> Option<(u64, Vec<String>)>, alive: &dyn Fn(u32) -> bool| {
             let mut v = vec![ProcView { pid: me, uid: None, skip: false, foreign: false, cmd: argv(&["cys.exe", "restore"]) }];
-            v.extend(rows.into_iter().filter_map(|(pid, cmd, st, f)| win_view(pid, cmd, st, &f, my, sr)));
+            v.extend(rows.into_iter().filter_map(|(pid, f)| win_view(pid, &f, my, sr)));
             let probe = |p: u32| -> Result<(), Failure> { if alive(p) { Ok(()) } else { Err(Failure::Dead) } };
             scan_argv_with(S, &[], None, move || v.clone(), probe)
         };
-        // 출생이 맞는 보통 행(W1~W17·W11-real) — sysinfo 핸들·자체 판독 핸들 모두 T0.
+        // 출생이 맞는 보통 행(W1~W17·W11-real) — 행의 명령줄(비어 있지 않으면) = 그 pid 를 우리 LIMITED 핸들로 읽은 값(출생 T0) · 빈 값이면 `sr`.
         let scan = |rows: Vec<(u32, Vec<String>, WinFacts)>, my: Option<u32>, sr: &dyn Fn(u32) -> Option<Vec<String>>, alive: &dyn Fn(u32) -> bool| {
-            scan_st(rows.into_iter().map(|(p, c, f)| (p, c, Some(T0S), f)).collect(), my, &|p| sr(p).map(|a| (T0, a)), alive)
+            let read: std::collections::HashMap<u32, Vec<String>> = rows.iter().filter(|r| !r.1.is_empty()).map(|r| (r.0, r.1.clone())).collect();
+            scan_st(rows.into_iter().map(|(p, _, f)| (p, f)).collect(), my, &|p| read.get(&p).cloned().or_else(|| sr(p)).map(|a| (T0, a)), alive)
         };
         let alive = |_p: u32| true;
         let seen = |e: &Evidence| matches!(e, Evidence::Seen(_));
@@ -2434,7 +2490,8 @@ mod tests {
         assert_eq!(scan(vec![(900, vec![], fx(o, unk, Some(0))), (901, vec![], fx(f, unk, Some(0)))], Some(1), &no_read, &alive), none, "W4");
         // ★H1 뒤집기: SID 같음 ∧ 세션 0 ∧ 나 = 세션 1 · 명령줄에 S → Seen(세션 0 의 같은 사용자 claude = OpenSSH·예약 작업 · 규칙 1)
         assert!(seen(&scan(vec![(902, argv(&["claude", "--resume", S]), fx(o, same, Some(0)))], Some(1), &no_read, &alive)), "H1 같은 SID 세션 0");
-        assert!(seen(&scan(vec![(903, vec![], fx(f, same, Some(0)))], Some(1), &|p| (p == 903).then(|| argv(&["claude", "--resume", S])), &alive)), "H1 거부돼도 SID 같음");
+        // 핸들 거부 ∧ SID 같음(WTS) ∧ 세션 0 → 건너뛰지 않는다 · 자체 판독도 같은 LIMITED 열기라 실제로는 거부 → 판정 불가(검증 R2 4-4 하 · 현실 사실 조합)
+        assert_eq!(scan(vec![(903, vec![], fx(f, same, Some(0)))], Some(1), &no_read, &alive), und(903), "H1 거부돼도 SID 같음");
         // W5 나 = 세션 0(ssh) · SID 모름 세션 0 claude 에 S → Seen
         assert!(seen(&scan(vec![(904, argv(&["claude", "--resume", S]), fx(o, unk, Some(0)))], Some(0), &no_read, &alive)), "W5");
         // W6 pid 4 · W7 pid 0
@@ -2468,38 +2525,104 @@ mod tests {
         // ⓐ WTS 가 winlogon SID 를 준다(다름) → 없음(사고 해소) ⓑ 못 준다(모름 · 세션 1) → 판정 불가 = 보호(master#d6185ede 수용 · 실측으로 재결정)
         assert_eq!(scan(real(other), Some(1), &sr_other, &alive), none, "W11-real ⓐ");
         assert_eq!(scan(real(unk), Some(1), &sr_other, &alive), und(1192), "W11-real ⓑ");
-        // ★W18 규칙 8(pid 재사용) — 명령줄을 읽은 핸들의 생성 시각 ≠ 열거 표 생성 시각 → 그 명령줄을 쓰지 않는다(판정 불가 쪽).
-        let t_other = T0 + 10_000_000; // 1초 뒤 태어난 다른 프로세스(같은 pid)
-        let sr_reused = |p: u32| -> Option<(u64, Vec<String>)> { (p == 3018).then(|| (t_other, argv(&["claude", "--resume", S]))) };
-        let sr_fresh = |p: u32| -> Option<(u64, Vec<String>)> { (p == 3018).then(|| (T0, argv(&["claude", "--resume", S]))) };
-        let no_sr = |_p: u32| -> Option<(u64, Vec<String>)> { None };
-        // W18a sysinfo 명령줄(S) 의 핸들 = 다른 출생 · 자체 판독 실패 → 판정 불가(Seen 도 NoneConfirmed 도 아님)
-        assert_eq!(scan_st(vec![(3018, argv(&["claude", "--resume", S]), Some(T0S + 1), fx(o, same, Some(1)))], Some(1), &no_sr, &alive), und(3018), "W18a");
-        // W18b sysinfo 출생 어긋남 · 자체 판독 출생 맞음 → 자체 판독 명령줄로 Seen
-        assert!(seen(&scan_st(vec![(3018, argv(&["x"]), Some(T0S + 1), fx(o, same, Some(1)))], Some(1), &sr_fresh, &alive)), "W18b");
-        // W18c sysinfo 빈 값 · 자체 판독 핸들 = 다른 출생 → 판정 불가
-        assert_eq!(scan_st(vec![(3018, vec![], Some(T0S), fx(o, same, Some(1)))], Some(1), &sr_reused, &alive), und(3018), "W18c");
-        // W18d 열거 표 생성 시각 없음(None) → 어떤 명령줄도 쓰지 않음 · W18e sysinfo start 없음 → 자체 판독으로
-        assert_eq!(scan_st(vec![(3018, argv(&["claude", "--resume", S]), Some(T0S), WinFacts { birth: None, ..fx(o, same, Some(1)) })], Some(1), &sr_fresh, &alive), und(3018), "W18d");
-        assert!(seen(&scan_st(vec![(3018, vec![], None, fx(o, same, Some(1)))], Some(1), &sr_fresh, &alive)), "W18e");
-        // W18f 남의 것(SID 다름)은 출생과 무관하게 건너뜀(명령줄 판독 안 함)
-        assert_eq!(scan_st(vec![(3018, argv(&["claude", "--resume", S]), Some(T0S + 1), fx(o, other, Some(1)))], Some(1), &sr_reused, &alive), none, "W18f");
-        // 변환 경계(100ns FILETIME 1601 ↔ 유닉스 초 1970 · 내림 = sysinfo compute_start)
-        const E: u64 = 116_444_736_000_000_000; // 1970-01-01 의 FILETIME
-        assert_eq!(filetime_unix_secs(E), Some(0), "1970 정각");
-        assert_eq!(filetime_unix_secs(E - 1), None, "1970 직전 = 대조 불가");
-        assert_eq!(filetime_unix_secs(0), None, "1601 기준점(GetProcessTimes 실패 시 0)");
-        assert_eq!(filetime_unix_secs(E + 9_999_999), Some(0), "반올림 아님(0.9999999초 → 0)");
-        assert_eq!(filetime_unix_secs(E + 10_000_000), Some(1));
-        assert_eq!(filetime_unix_secs(T0 + 5_000_000), Some(T0S), "반 초 = 내림");
-        assert_eq!(filetime_unix_secs(u64::MAX), Some(u64::MAX / 10_000_000 - 11_644_473_600), "넘침 없음");
-        for t in [E, E + 1, T0, T0 + 9_999_999, 133_000_000_000_000_000u64] {
-            assert_eq!(filetime_unix_secs(t), Some(t / 10_000_000 - 11_644_473_600), "sysinfo compute_start 와 같은 값 {t}");
-        }
-        assert!(birth_matches(Some(T0), Some(T0S)) && birth_matches(Some(T0 + 9_998_765), Some(T0S)), "같은 초 = 같음");
-        assert!(!birth_matches(Some(T0), Some(T0S + 1)) && !birth_matches(Some(T0), Some(T0S - 1)), "1초 다름 = 다름");
-        assert!(!birth_matches(None, Some(T0S)) && !birth_matches(Some(T0), None) && !birth_matches(None, None), "없음 = 거짓");
-        assert!(!birth_matches(Some(E - 1), Some(0)) && !birth_matches(Some(0), Some(0)), "1970 전 = 거짓(sysinfo 감김 값과 우연 일치 금지)");
+        // ★W18 규칙 8(pid 재사용 · master#c699b44d 2) — 명령줄을 읽은 핸들의 생성 시각 ≠ 열거 표 CreateTime(100ns 그대로) → 쓰지 않는다(판정 불가 쪽).
+        let sr_at = |born: u64| move |p: u32| -> Option<(u64, Vec<String>)> { (p == 3018).then(|| (born, vec!["claude".to_string(), "--resume".to_string(), S.to_string()])) };
+        // W18a ★같은 초 · 다른 100ns(1 tick 뒤 태어난 같은 pid) → 판정 불가(초로 자르면 Seen/없음 으로 새는 자리 · codex 2R H2)
+        assert_eq!(scan_st(vec![(3018, fx(o, same, Some(1)))], Some(1), &sr_at(T0 + 1), &alive), und(3018), "W18a 같은 초 다른 100ns");
+        // W18b 출생 정확히 같음 → Seen · W18c 1초 뒤 → 판정 불가
+        assert!(seen(&scan_st(vec![(3018, fx(o, same, Some(1)))], Some(1), &sr_at(T0), &alive)), "W18b");
+        assert_eq!(scan_st(vec![(3018, fx(o, same, Some(1)))], Some(1), &sr_at(T0 + 10_000_000), &alive), und(3018), "W18c");
+        // W18d 열거 표 생성 시각 없음(None) → 명령줄을 쓰지 않음
+        assert_eq!(scan_st(vec![(3018, WinFacts { birth: None, ..fx(o, same, Some(1)) })], Some(1), &sr_at(T0), &alive), und(3018), "W18d");
+        // W18f 남의 것(SID 다름)은 명령줄을 읽지 않음
+        assert_eq!(scan_st(vec![(3018, fx(o, other, Some(1)))], Some(1), &sr_at(T0), &alive), none, "W18f");
+        // 출생 대조 = 100ns 그대로(:2499 뒤집기 — 예전 「같은 초 = 같음」)
+        assert!(birth_matches(Some(T0), Some(T0)), "정확히 같음");
+        assert!(!birth_matches(Some(T0), Some(T0 + 1)) && !birth_matches(Some(T0 + 9_999_999), Some(T0)), "같은 초 · 다른 100ns = 다름");
+        assert!(!birth_matches(None, Some(T0)) && !birth_matches(Some(T0), None) && !birth_matches(None, None), "없음 = 거짓");
+        // ★W19 행 사실 채택(row_facts · master#c699b44d 1 · codex 2R H1) — 열린 행은 핸들 출생 == 표 CreateTime 일 때만 · 토큰 SID 가 WTS 보다 우선.
+        let sid_me: Vec<u8> = vec![1, 2, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0, 7, 0, 0, 0];
+        let sid_sys: Vec<u8> = vec![1, 1, 0, 0, 0, 0, 0, 5, 18, 0, 0, 0]; // S-1-5-18
+        let spi = Some((0u32, Some(T0)));
+        let rf = |spi: Option<(u32, Option<u64>)>, h: WinHandleView, wts: Option<&[u8]>| row_facts(spi, h, wts, Some(&sid_me));
+        let fs = |open: WinOpen, sid: WinSid| WinFacts { open, sid, session: Some(0), birth: Some(T0) };
+        // W19a 열림 · 출생 같음 · 토큰 = 나 · WTS = SYSTEM(낡은 표) → 토큰 채택 = 같음
+        assert_eq!(rf(spi, Ok((Some(T0), Some(sid_me.clone()))), Some(&sid_sys)), fs(o, same), "W19a 토큰이 WTS 를 이김");
+        assert_eq!(rf(spi, Ok((Some(T0), Some(sid_sys.clone()))), Some(&sid_me)), fs(o, other), "W19a′ 토큰 = 다름");
+        // W19b 열림 · 출생 1 tick 다름(pid 재사용) → Unverified(WTS·토큰 모두 안 씀)
+        assert_eq!(rf(spi, Ok((Some(T0 + 1), Some(sid_me.clone()))), Some(&sid_sys)), fs(WinOpen::Unverified, unk), "W19b");
+        assert_eq!(rf(spi, Ok((Some(T0 + 1), None)), Some(&sid_sys)), fs(WinOpen::Unverified, unk), "W19b′ 출생 어긋남 ∧ 토큰 실패 → WTS 로 메우지 않음");
+        // W19c 출생 일치 ∧ 토큰 실패 → ② WTS SID 로 메움(master#d82fcb00 순서 + 출생) · 토큰 바이트 무효도 실패와 같음
+        assert_eq!(rf(spi, Ok((Some(T0), None)), Some(&sid_me)), fs(o, same), "W19c 토큰 실패 → WTS = 나");
+        assert_eq!(rf(spi, Ok((Some(T0), Some(vec![1, 3, 0, 0, 0, 0, 0, 5]))), Some(&sid_sys)), fs(o, other), "W19c′ 토큰 무효 → WTS");
+        // ★W19h eausvc 모양(사고 pid 5092 · 비관리자 cys): 열림 · 토큰 실패 · WTS = SYSTEM · 출생 일치 → 남의 것 → 건너뜀(93 재발 막음)
+        let eausvc = rf(spi, Ok((Some(T0), None)), Some(&sid_sys));
+        assert_eq!(eausvc, fs(o, other), "W19h eausvc 사실");
+        assert_eq!(scan_st(vec![(5092, eausvc)], Some(1), &|_p| None, &alive), none, "W19h eausvc 훑기 = 없음");
+        // W19i 출생 일치 ∧ 토큰·WTS 둘 다 없음 → 모름(규칙 2 세션 갈래를 탄다: 세션 0 ∧ 나 = 1 → 남의 것 · 세션 1 → 대상)
+        assert_eq!(rf(spi, Ok((Some(T0), None)), None), fs(o, unk), "W19i 모름");
+        assert_eq!(scan_st(vec![(3020, fs(o, unk))], Some(1), &|_p| None, &alive), none, "W19i 세션 0 모름 = 남의 것");
+        assert_eq!(scan_st(vec![(3021, WinFacts { session: Some(1), ..fs(o, unk) })], Some(1), &|_p| None, &alive), und(3021), "W19i′ 세션 1 모름 = 대상 → 판정 불가");
+        assert_eq!(sid_for_opened(Some(&sid_me), Some(&sid_sys)), Some(&sid_me[..]), "토큰 우선");
+        assert_eq!(sid_for_opened(None, Some(&sid_sys)), Some(&sid_sys[..]), "토큰 실패 → WTS");
+        assert_eq!(sid_for_opened(None, None), None, "둘 다 없음 = 모름");
+        // W19d 핸들 생성 시각 못 읽음 · 표에 그 pid 없음 → Unverified
+        assert_eq!(rf(spi, Ok((None, Some(sid_me.clone()))), None), fs(WinOpen::Unverified, unk), "W19d");
+        assert_eq!(rf(None, Ok((Some(T0), Some(sid_me.clone()))), None).open, WinOpen::Unverified, "W19d′");
+        // W19e 못 엶 → 오류 매핑 + WTS
+        assert_eq!(rf(spi, Err(5), Some(&sid_sys)), fs(f, other), "W19e 거부 + WTS 다름");
+        assert_eq!(rf(spi, Err(5), None), fs(f, unk), "W19e′ 거부 + WTS 없음");
+        assert_eq!(rf(spi, Err(87), Some(&sid_me)).open, g, "W19e″ 없음");
+        // W19f Unverified ∧ 세션 0 ∧ 나 = 세션 1 → 건너뛰지 않음(세션 규칙 안 탐) → 판정 불가
+        assert_eq!(scan_st(vec![(3019, fs(WinOpen::Unverified, unk))], Some(1), &|_p| None, &alive), und(3019), "W19f");
+        // W19g ★codex H1 끝까지: SYSTEM 프로세스(표·WTS)가 끝나고 같은 pid 를 같은 사용자 holder 가 받음 → 핸들 = 새 프로세스(출생 T1)
+        //   → Unverified → 대상 → 자체 판독도 T1 ≠ 표 → 판정 불가(예전: WTS SID 다름 → 남의 것 → 건너뜀 → 작성자 둘)
+        let t1 = T0 + 50_000;
+        let fh = rf(spi, Ok((Some(t1), Some(sid_me.clone()))), Some(&sid_sys));
+        assert_eq!(scan_st(vec![(5000, fh)], Some(1), &|p| (p == 5000).then(|| (t1, argv(&["claude", "--resume", S]))), &alive), und(5000), "W19g codex H1");
+        // ★W21 수집 순서 불변식 `collect_rows_order_spi_then_wts_then_handles`(master#d82fcb00 · 뮤턴트 MO): ① 표 → ② WTS(내 세션 id 와 함께) → ③④ 행마다 핸들.
+        //   ② 가 ③ 뒤로 가면 「④ 출생 일치 ⇒ ② SID 도 같은 프로세스」 추론이 무너진다.
+        let log = std::cell::RefCell::new(Vec::<String>::new());
+        let tbl: std::collections::HashMap<u32, (u32, Option<u64>)> = [(me, (1, Some(T0))), (5092, (0, Some(T0)))].into_iter().collect();
+        let got = collect_rows(
+            || {
+                log.borrow_mut().push("spi".into());
+                Some(tbl.clone())
+            },
+            |my| {
+                log.borrow_mut().push(format!("wts:{my:?}"));
+                [(5092u32, sid_sys.clone())].into_iter().collect()
+            },
+            |pid| {
+                log.borrow_mut().push(format!("open:{pid}"));
+                if pid == 5092 { Ok((Some(T0), None)) } else { Ok((Some(T0), Some(sid_me.clone()))) }
+            },
+            Some(&sid_me),
+        )
+        .expect("표 있음");
+        let l = log.borrow().clone();
+        assert_eq!(&l[..2], ["spi".to_string(), "wts:Some(1)".to_string()], "W21 collect_rows_order_spi_then_wts_then_handles: {l:?}");
+        assert!(l[2..].iter().all(|x| x.starts_with("open:")) && l.len() == 4, "W21 핸들은 WTS 뒤에만: {l:?}");
+        assert_eq!(got.0, Some(1), "W21 내 세션 = 표");
+        let rows: std::collections::HashMap<u32, WinFacts> = got.1.into_iter().collect();
+        assert_eq!(rows[&5092], WinFacts { session: Some(0), ..fs(o, other) }, "W21 eausvc 행 = WTS SYSTEM");
+        assert_eq!(rows[&me].sid, same, "W21 나 = 토큰");
+        assert!(collect_rows(|| None, |_| unreachable!("표 없으면 WTS 안 부름"), |_| unreachable!(), None).is_none(), "W21 표 못 읽음 = None");
+        // ★W20 WTS 표 = 모든 세션 → 실패하면 내 세션(master#c699b44d 3 · 검증 R2 ②)
+        let calls = std::cell::RefCell::new(Vec::new());
+        let en = |ok: &'static [u32]| {
+            let calls = &calls;
+            move |sess: u32| -> Option<u32> {
+                calls.borrow_mut().push(sess);
+                ok.contains(&sess).then_some(sess)
+            }
+        };
+        assert_eq!(wts_any_then_mine(en(&[WTS_ANY_SESSION, 1]), Some(1)), Some(WTS_ANY_SESSION), "W20a 모든 세션 성공 = 그것");
+        assert_eq!(calls.replace(Vec::new()), vec![WTS_ANY_SESSION], "W20a 두 번째 호출 없음");
+        assert_eq!(wts_any_then_mine(en(&[1]), Some(1)), Some(1), "W20b 모든 세션 실패 + 내 세션 성공");
+        assert_eq!(calls.replace(Vec::new()), vec![WTS_ANY_SESSION, 1], "W20b 내 세션으로 재호출");
+        assert_eq!(wts_any_then_mine(en(&[]), Some(1)), None, "W20c 둘 다 실패");
+        assert_eq!(wts_any_then_mine(en(&[1]), None), None, "W20d 내 세션 모름 = 재호출 없음");
         // 오류 → 사실 매핑(순수 · MC·MD·ME 를 지킨다)
         assert_eq!((open_err_kind(87), open_err_kind(5), open_err_kind(31)), (WinOpen::Gone, WinOpen::Failed, WinOpen::Failed), "MC open 오류 매핑");
         assert!(matches!(probe_verdict(Err(87), None), Err(Failure::Dead)), "MD 없음 = 죽음");

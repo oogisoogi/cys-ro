@@ -10890,6 +10890,253 @@ fn diag_claude_tui_for(dirs: &[std::path::PathBuf], windows: bool) -> DiagItem {
     )
 }
 
+// ───────────────── ★TICKET=cysr-doctor-rc-account-1121 · 원격 연결(RC) 계정 불일치 ─────────────────
+//
+// 원격 연결(Remote Control)은 같은 Claude 계정끼리만 서로 보인다(공식 문서 code.claude.com/docs/en/remote-control
+// 「Enable Remote Control for all sessions」: 자동 연결 세션은 "appears only in your own account's Claude apps" · 11-21 윈 실기:
+// 윈 Claude 가 다른 계정이라 맥 목록에 안 보이고 답신도 막힘). cys 는 RC 허용 역할(`cys::rc_allowed_roles` · 기본 master) 밖 좌석의
+// RC 를 끄므로(`disableRemoteControl` 기동 인자 + rc_guard) **RC 와 상관있는 것은 허용 역할 좌석과, 다음에 뜰 그 좌석이 쓸 기본 설정
+// 폴더(`${CYS_ACCOUNT_DIR:-~/.cys/claude}`)뿐**이다. 그 폴더들이 계정 둘 이상으로 갈리면 WARN(FAIL 아님 — 일부러 나눠 쓸 수 있다).
+// 신원 판독은 데몬의 정본(`surface.list` 좌석 `account` · `usage.accounts` 의 `current_profiles`·`label`)을 소비만 한다(재구현 0).
+// 계정 주소는 이 화면(사람·`--json`)에만 쓴다 — 바깥 전송 없음.
+
+/// RC 점검 폴더 비교 키 — 구분자 `\`→`/`·끝 `/` 제거 · 윈은 대소문자 무시(같은 폴더를 다른 표기로 두 번 세지 않는다).
+fn rc_folder_key(p: &str, windows: bool) -> String {
+    let s = p.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    if windows {
+        s.to_lowercase()
+    } else {
+        s.to_string()
+    }
+}
+
+/// 계정 표시(화면 전용) — 별명이 있으면 「별명(주소)」 · 주소가 없으면 계정 id 앞 8자.
+fn rc_account_display(accounts: Option<&Value>, id: &str) -> String {
+    let row = accounts
+        .and_then(|a| a.as_array())
+        .into_iter()
+        .flatten()
+        .find(|r| r["provider"] == "claude" && r["account_id"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(id)));
+    let label = row.and_then(|r| r["label"].as_str()).filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case(id));
+    let alias = row.and_then(|r| r["alias"].as_str()).filter(|s| !s.is_empty());
+    match (alias, label) {
+        (Some(a), Some(l)) => format!("{a}({l})"),
+        (None, Some(l)) => l.to_string(),
+        (Some(a), None) => a.to_string(),
+        (None, None) => format!("계정 {}…", id.chars().take(8).collect::<String>()),
+    }
+}
+
+/// `rc-account-mismatch` 판정(순수). `surfaces` = `surface.list` 의 `surfaces` 배열(Err = 데몬 판독 실패) · `accounts` = `usage.accounts` 의
+/// `accounts` 배열(None = 못 읽음 → 기본 폴더 계정은 모름 · 표시는 id 앞자리) · `default_short` = 기본 설정 폴더의 홈 상대 표기(데몬 `profile_short` 와 같은 꼴).
+///
+/// **기준(주) 계정** = 살아 있는 RC 허용 좌석이 가장 많이 쓰는 계정(동수면 기본 폴더의 계정 → 그래도 못 가르면 id 순 첫째 · 결정론) ·
+/// 그런 좌석이 없으면 기본 설정 폴더의 계정. 로그인 안 됨·못 읽음 폴더는 「다른 계정」이 아니다 — 비교에서 빼고 개수만 적는다.
+fn rc_account_item(
+    surfaces: Result<&Value, String>,
+    accounts: Option<&Value>,
+    rc_roles: &[String],
+    dept: bool,
+    default_short: Option<&str>,
+    windows: bool,
+) -> DiagItem {
+    let item = |status, detail: String, action: String| DiagItem { name: "rc-account-mismatch", status, detail, action };
+    const PREFIX: &str = "원격 연결(폰·다른 컴퓨터에서 이어 보기)은 같은 Claude 계정끼리만 서로 보여요";
+    if dept {
+        return item(DiagStatus::Skip, "부서 데몬의 좌석은 원격 연결을 쓰지 않아요 — 비교하지 않았어요".into(), String::new());
+    }
+    if rc_roles.is_empty() {
+        return item(
+            DiagStatus::Skip,
+            "원격 연결을 허용한 역할이 없어요(~/.cys/policy.json 의 rc_allowed_roles 가 빈 목록) — 비교하지 않았어요".into(),
+            String::new(),
+        );
+    }
+    let rows = match surfaces.map(|v| v.as_array()) {
+        Ok(Some(a)) => a,
+        Ok(None) | Err(_) => {
+            return item(
+                DiagStatus::Skip,
+                "cys 데몬에서 좌석 목록을 읽지 못했어요(데몬이 꺼져 있으면 정상) — 비교하지 않았어요".into(),
+                String::new(),
+            )
+        }
+    };
+    // 폴더 키 → (표시 폴더, 현재 계정 id(Some = 판독됨), 그 폴더를 쓰는 RC 좌석 수)
+    let mut folders: Vec<(String, String, Option<String>, usize)> = Vec::new();
+    let (mut no_login, mut unread) = (0usize, 0usize);
+    let mut other_seats: std::collections::BTreeMap<String, usize> = Default::default();
+    for s in rows {
+        if s["exited"].as_bool() == Some(true) {
+            continue;
+        }
+        let acct = &s["account"];
+        if acct["provider"] != "claude" {
+            continue;
+        }
+        let role = s["role"].as_str().unwrap_or("");
+        let known = (acct["state"] == "known").then(|| acct["account_id"].as_str()).flatten().map(str::to_lowercase);
+        if !rc_roles.iter().any(|r| r == role) {
+            // RC 가 꺼진 좌석 — 판정 밖(참고로만 센다).
+            if let Some(id) = known {
+                *other_seats.entry(id).or_default() += 1;
+            }
+            continue;
+        }
+        let Some(profile) = acct["profile"].as_str().filter(|p| !p.is_empty()) else {
+            unread += 1;
+            continue;
+        };
+        let key = rc_folder_key(profile, windows);
+        if let Some(f) = folders.iter_mut().find(|f| f.0 == key) {
+            f.3 += 1;
+            continue;
+        }
+        match (acct["state"].as_str(), known) {
+            (_, Some(id)) => folders.push((key, profile.to_string(), Some(id), 1)),
+            (Some("no_login"), None) => {
+                no_login += 1;
+                folders.push((key, profile.to_string(), None, 1));
+            }
+            _ => {
+                unread += 1;
+                folders.push((key, profile.to_string(), None, 1));
+            }
+        }
+    }
+    // 기본 설정 폴더(다음에 뜰 RC 좌석이 쓰는 폴더) — 데몬이 지금 그 폴더에 로그인된 계정으로 적은 `current_profiles` 에서만 찾는다
+    // (`profiles` 는 추가 전용이라 옛 로그인이 남는다 · 키 부재 = 그 행은 모름).
+    let mut default_acct: Option<String> = None;
+    if let Some(d) = default_short {
+        let dk = rc_folder_key(d, windows);
+        let hits: Vec<String> = accounts
+            .and_then(|a| a.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|r| r["provider"] == "claude")
+            .filter(|r| r["current_profiles"].as_array().into_iter().flatten().any(|p| p.as_str().is_some_and(|p| rc_folder_key(p, windows) == dk)))
+            .filter_map(|r| r["account_id"].as_str().map(str::to_lowercase))
+            .collect();
+        if hits.len() == 1 {
+            default_acct = Some(hits[0].clone());
+        }
+        if !folders.iter().any(|f| f.0 == dk) {
+            match &default_acct {
+                Some(id) => folders.push((dk, d.to_string(), Some(id.clone()), 0)),
+                None => no_login += 1, // 로그인 기록이 없는 기본 폴더(또는 못 읽음) — 다른 계정이 아니다
+            }
+        }
+    }
+    // 계정별 (RC 좌석 수, 폴더 표시 목록)
+    let mut by_acct: std::collections::BTreeMap<String, (usize, Vec<String>)> = Default::default();
+    for (_, shown, id, seats) in &folders {
+        if let Some(id) = id {
+            let e = by_acct.entry(id.clone()).or_default();
+            e.0 += seats;
+            e.1.push(shown.clone());
+        }
+    }
+    let mut notes: Vec<String> = Vec::new();
+    if no_login > 0 {
+        notes.push(format!("로그인 안 된 설정 폴더 {no_login}곳은 비교에서 뺐어요(다른 계정이 아니라 비어 있는 거예요)"));
+    }
+    if unread > 0 {
+        notes.push(format!("계정을 아직 못 읽은 좌석 {unread}개는 비교에서 뺐어요"));
+    }
+    let Some(main) = by_acct
+        .iter()
+        .max_by(|a, b| {
+            (a.1 .0, default_acct.as_deref() == Some(a.0.as_str()))
+                .cmp(&(b.1 .0, default_acct.as_deref() == Some(b.0.as_str())))
+                .then_with(|| b.0.cmp(a.0)) // 동수 → id 순 첫째
+        })
+        .map(|(id, _)| id.clone())
+    else {
+        let mut d = "원격 연결 좌석과 기본 설정 폴더의 계정을 읽지 못했어요 — 비교하지 않았어요".to_string();
+        for n in &notes {
+            d.push_str(&format!(" · {n}"));
+        }
+        return item(DiagStatus::Skip, d, String::new());
+    };
+    let main_shown = rc_account_display(accounts, &main);
+    let others: Vec<(String, usize)> = other_seats.iter().filter(|(id, _)| **id != main).map(|(id, n)| (id.clone(), *n)).collect();
+    if !others.is_empty() {
+        let n: usize = others.iter().map(|o| o.1).sum();
+        notes.push(format!(
+            "원격 연결을 쓰지 않는 좌석 {n}개는 다른 계정({})이에요 — cys 가 원래 원격 연결을 꺼 두는 좌석이라 이 점검과는 상관없어요",
+            others.iter().map(|o| rc_account_display(accounts, &o.0)).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    let tail = if notes.is_empty() { String::new() } else { format!(" · {}", notes.join(" · ")) };
+    let list = |id: &str| by_acct.get(id).map(|e| e.1.join(", ")).unwrap_or_default();
+    if by_acct.len() >= 2 {
+        let rest: Vec<String> = by_acct
+            .keys()
+            .filter(|id| **id != main)
+            .map(|id| format!("{}: {}", rc_account_display(accounts, id), list(id)))
+            .collect();
+        return item(
+            DiagStatus::Warn,
+            format!(
+                "{PREFIX}. 그런데 이 컴퓨터의 원격 연결 좌석이 계정 {}개로 나뉘어 있어요 — 기준 계정 {main_shown}: {} · 다른 계정 {} · 다른 계정 쪽 좌석은 \
+                 {main_shown} 으로 로그인한 폰·컴퓨터에서 보이지 않고 답장도 닿지 않아요{tail}",
+                by_acct.len(),
+                list(&main),
+                rest.join(" · ")
+            ),
+            format!(
+                "맞추는 법: 다른 계정 쪽 좌석 창(또는 그 설정 폴더로 띄운 Claude)에서 /login 을 입력해 {main_shown} 으로 다시 로그인하세요 \
+                 (일부러 계정을 나눠 쓰는 거라면 그대로 두셔도 돼요)"
+            ),
+        );
+    }
+    let n_folders = by_acct.get(&main).map_or(0, |e| e.1.len());
+    if n_folders < 2 {
+        return item(
+            DiagStatus::Skip,
+            format!(
+                "비교할 다른 설정 폴더가 없어요(계정 1개 · 폴더 {}) — 원격 연결 계정 = {main_shown} · 폰·다른 컴퓨터도 이 계정으로 로그인돼 있으면 돼요{tail}",
+                list(&main)
+            ),
+            String::new(),
+        );
+    }
+    item(
+        DiagStatus::Ok,
+        format!(
+            "원격 연결 계정 = {main_shown} — 설정 폴더 {n_folders}곳({})이 모두 같은 계정이에요 · 폰·다른 컴퓨터도 이 계정으로 로그인돼 있어야 이 좌석들이 보여요{tail}",
+            list(&main)
+        ),
+        String::new(),
+    )
+}
+
+/// [`rc_account_item`] 의 IO 껍데기 — 그 소켓에만 붙는다(자동 기동 없음 · 3초 상한 · 못 붙으면 SKIP).
+fn diag_rc_account(ctx: &DoctorCtx) -> DiagItem {
+    const T: std::time::Duration = std::time::Duration::from_secs(3);
+    let dept = cys::is_dept_socket(&ctx.socket_path);
+    let roles = cys::rc_allowed_roles();
+    if dept || roles.is_empty() {
+        return rc_account_item(Err(String::new()), None, &roles, dept, None, cfg!(windows));
+    }
+    let surf = request_on_timeout(&ctx.socket_path, "surface.list", json!({}), T);
+    let accts = surf.is_ok().then(|| request_on_timeout(&ctx.socket_path, "usage.accounts", json!({}), T).ok()).flatten();
+    // 홈 상대 표기 = 데몬 `profile_short` 와 같은 규칙(`dirs::home_dir()` 기준 strip · 홈 밖이면 절대 경로 그대로).
+    let default_short = dirs::home_dir().map(|h| match ctx.consumed_config_dir.strip_prefix(&h) {
+        Ok(rel) => rel.to_string_lossy().into_owned(),
+        Err(_) => ctx.consumed_config_dir.to_string_lossy().into_owned(),
+    });
+    rc_account_item(
+        surf.as_ref().map(|v| &v["surfaces"]).map_err(|e| e.clone()),
+        accts.as_ref().map(|v| &v["accounts"]),
+        &roles,
+        dept,
+        default_short.as_deref(),
+        cfg!(windows),
+    )
+}
+
 #[cfg(unix)]
 fn doctor_socket_connectable(p: &std::path::Path) -> bool {
     std::os::unix::net::UnixStream::connect(p).is_ok()
@@ -12153,6 +12400,8 @@ fn run_doctor_diagnostics_common(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         diag_app_seal(ctx),
         // 동봉 런타임 봉인 — app-seal 이 macOS 전용이라 비는 자리(특히 Windows)를 메운다.
         diag_runtime_seal(ctx),
+        // ★TICKET=cysr-doctor-rc-account-1121: 원격 연결 좌석·기본 설정 폴더의 계정이 갈리면 WARN(읽기 전용 · 데몬 정본 소비).
+        diag_rc_account(ctx),
     ]
 }
 
@@ -42346,6 +42595,182 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             agy_home: None, // 기본은 agy 점검 Skip(다른 doctor 테스트에 부작용 0)
             tui_home: None, // 기본은 원장 미판독(실 홈 무접촉)
         }
+    }
+
+    // ─── ★TICKET=cysr-doctor-rc-account-1121 · rc-account-mismatch ───
+
+    fn rc_seat(role: &str, profile: Option<&str>, state: &str, id: Option<&str>) -> Value {
+        json!({"surface_id": 1, "role": role, "exited": false, "agent": "claude",
+               "account": {"provider": "claude", "agent": "claude", "account_id": id, "profile": profile, "state": state}})
+    }
+
+    fn rc_acct(id: &str, label: &str, current: &[&str]) -> Value {
+        json!({"provider": "claude", "account_id": id, "label": label, "alias": null, "profiles": current, "current_profiles": current})
+    }
+
+    fn rc_roles() -> Vec<String> {
+        vec!["master".to_string()]
+    }
+
+    /// 양성 — 원격 연결 좌석 두 개가 서로 다른 계정 → WARN(FAIL 아님) · 문구에 두 계정·맞추는 법(/login + 기준 계정).
+    #[test]
+    fn rc_account_mismatch_warns_when_rc_seats_split_across_accounts() {
+        let seats = json!([
+            rc_seat("master", Some(".cys/claude"), "known", Some("aaa-1")),
+            rc_seat("master", Some(".cys/claude"), "known", Some("aaa-1")),
+            rc_seat("master", Some(".claude-2"), "known", Some("bbb-2")),
+        ]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude"]), rc_acct("bbb-2", "b@example.com", &[".claude-2"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.name, "rc-account-mismatch");
+        assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert!(it.detail.contains("기준 계정 a@example.com: .cys/claude"), "{}", it.detail);
+        assert!(it.detail.contains("b@example.com: .claude-2"), "{}", it.detail);
+        assert!(it.action.starts_with("맞추는 법:") && it.action.contains("/login") && it.action.contains("a@example.com"), "{}", it.action);
+    }
+
+    /// 양성(좌석 1개 + 기본 설정 폴더) — 지금 뜬 원격 연결 좌석은 B 인데 다음에 뜰 좌석의 기본 폴더는 A → WARN · 기준 = 좌석이 쓰는 B.
+    #[test]
+    fn rc_account_mismatch_warns_when_default_folder_differs_from_live_rc_seat() {
+        let seats = json!([rc_seat("master", Some(".claude-2"), "known", Some("bbb-2"))]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude"]), rc_acct("bbb-2", "b@example.com", &[".claude-2"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert!(it.detail.contains("기준 계정 b@example.com: .claude-2") && it.detail.contains("a@example.com: .cys/claude"), "{}", it.detail);
+    }
+
+    /// 음성 — 설정 폴더 두 곳이 같은 계정 → OK(계정 표시 + 폰·다른 컴퓨터 안내).
+    #[test]
+    fn rc_account_mismatch_ok_when_all_folders_same_account() {
+        let seats = json!([rc_seat("master", Some(".claude-3"), "known", Some("aaa-1"))]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude", ".claude-3"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.status, DiagStatus::Ok, "{}", it.detail);
+        assert!(it.detail.starts_with("원격 연결 계정 = a@example.com") && it.detail.contains("2곳"), "{}", it.detail);
+        assert!(it.action.is_empty());
+    }
+
+    /// 계정 하나뿐(폴더 1곳) → SKIP · 이유 + 그 계정 표시(폰과 맞춰 볼 수 있게).
+    #[test]
+    fn rc_account_mismatch_skips_with_single_folder_but_shows_account() {
+        let seats = json!([rc_seat("master", Some(".cys/claude"), "known", Some("aaa-1"))]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
+        assert!(it.detail.contains("비교할 다른 설정 폴더가 없어요") && it.detail.contains("원격 연결 계정 = a@example.com"), "{}", it.detail);
+    }
+
+    /// 판독 불가 — 데몬 연결 실패·스키마 스큐·부서 데몬·허용 역할 없음·계정 전부 모름 → 전부 SKIP(이유 표기 · WARN/FAIL 아님).
+    #[test]
+    fn rc_account_mismatch_skips_when_unreadable() {
+        let r = rc_roles();
+        let cases: Vec<(&str, DiagItem)> = vec![
+            ("데몬 실패", rc_account_item(Err("connect".into()), None, &r, false, Some(".cys/claude"), false)),
+            ("배열 아님", rc_account_item(Ok(&json!(null)), None, &r, false, Some(".cys/claude"), false)),
+            ("부서", rc_account_item(Ok(&json!([])), None, &r, true, Some(".cys/claude"), false)),
+            ("역할 없음", rc_account_item(Ok(&json!([])), None, &[], false, Some(".cys/claude"), false)),
+            (
+                "전부 모름",
+                rc_account_item(
+                    Ok(&json!([rc_seat("master", Some(".cys/claude"), "unread", None), rc_seat("master", None, "folder_unknown", None)])),
+                    None,
+                    &r,
+                    false,
+                    Some(".cys/claude"),
+                    false,
+                ),
+            ),
+        ];
+        for (what, it) in cases {
+            assert_eq!(it.status, DiagStatus::Skip, "{what}: {}", it.detail);
+            assert!(it.detail.contains("비교하지 않았어요"), "{what}: {}", it.detail);
+        }
+    }
+
+    /// 경계(전문가 칸) — 로그아웃된 폴더(빈 신원 `no_login`)·로그인 기록 없는 기본 폴더는 「다른 계정」이 아니다 → WARN 금지 · 뺀 개수만 적는다.
+    #[test]
+    fn rc_account_mismatch_logged_out_folder_is_not_a_mismatch() {
+        let seats = json!([
+            rc_seat("master", Some(".cys/claude"), "known", Some("aaa-1")),
+            rc_seat("master", Some(".claude-2"), "no_login", None),
+        ]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_ne!(it.status, DiagStatus::Warn, "{}", it.detail);
+        assert!(it.detail.contains("로그인 안 된 설정 폴더 1곳은 비교에서 뺐어요"), "{}", it.detail);
+        // 기본 폴더가 어느 계정의 current_profiles 에도 없다(로그아웃) + 좌석 1개 → WARN 아님.
+        let seats = json!([rc_seat("master", Some(".claude-2"), "known", Some("bbb-2"))]);
+        let accts = json!([rc_acct("bbb-2", "b@example.com", &[".claude-2"]), rc_acct("aaa-1", "a@example.com", &[])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
+        assert!(it.detail.contains("로그인 안 된 설정 폴더 1곳"), "{}", it.detail);
+        // current_profiles 키 부재(데몬이 이번에 못 읽은 행) → `profiles`(추가 전용 · 옛 로그인)로 단정하지 않는다.
+        let accts = json!([rc_acct("bbb-2", "b@example.com", &[".claude-2"]), {"provider": "claude", "account_id": "aaa-1", "label": "a@example.com", "profiles": [".cys/claude"]}]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_ne!(it.status, DiagStatus::Warn, "{}", it.detail);
+    }
+
+    /// RC 가 꺼진 좌석(비허용 역할 · 예: 두 계정 운영의 워커)의 다른 계정은 판정 밖 — WARN 금지 · 참고 한 줄만. 종료 좌석은 보지 않는다.
+    #[test]
+    fn rc_account_mismatch_ignores_non_rc_and_exited_seats() {
+        let mut gone = rc_seat("master", Some(".claude-9"), "known", Some("ccc-3"));
+        gone["exited"] = json!(true);
+        let seats = json!([
+            rc_seat("master", Some(".cys/claude"), "known", Some("aaa-1")),
+            rc_seat("worker", Some(".claude-acct2"), "known", Some("bbb-2")),
+            rc_seat("worker-2", Some(".claude-acct2"), "known", Some("bbb-2")),
+            gone,
+        ]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[".cys/claude", ".claude-3"]), rc_acct("bbb-2", "b@example.com", &[".claude-acct2"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".claude-3"), false);
+        assert_eq!(it.status, DiagStatus::Ok, "{}", it.detail);
+        assert!(it.detail.contains("원격 연결을 쓰지 않는 좌석 2개는 다른 계정(b@example.com)"), "{}", it.detail);
+        assert!(!it.detail.contains("ccc-3") && !it.detail.contains(".claude-9"), "종료 좌석이 섞였다: {}", it.detail);
+    }
+
+    /// 윈 경로 — 구분자(`\` ↔ `/`)·대소문자가 달라도 같은 폴더는 한 번만 센다(윈) · 계정 id 대소문자 무시. 맥은 대소문자를 가른다.
+    #[test]
+    fn rc_account_mismatch_windows_path_case_and_separators() {
+        let seats = json!([rc_seat("master", Some(r".cys\Claude"), "known", Some("AAA-1"))]);
+        let accts = json!([rc_acct("aaa-1", "a@example.com", &[r".cys\claude"])]);
+        // 윈: 같은 폴더 → 폴더 1곳 → SKIP(거짓 「2곳 같은 계정」·거짓 WARN 없음).
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), true);
+        assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
+        assert!(it.detail.contains("a@example.com"), "id 대소문자 무시로 주소를 찾는다: {}", it.detail);
+        // 맥: `Claude` ≠ `claude` → 다른 폴더 둘 · 같은 계정 → OK.
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(".cys/claude"), false);
+        assert_eq!(it.status, DiagStatus::Ok, "{}", it.detail);
+        // 윈 절대 경로(홈 밖 CYS_ACCOUNT_DIR) — 끝 구분자·대소문자 차이.
+        let seats = json!([rc_seat("master", Some(r"D:\Acct\"), "known", Some("bbb-2"))]);
+        let accts = json!([rc_acct("bbb-2", "b@example.com", &["d:/acct"])]);
+        let it = rc_account_item(Ok(&seats), Some(&accts), &rc_roles(), false, Some(r"D:\ACCT"), true);
+        assert_eq!(it.status, DiagStatus::Skip, "{}", it.detail);
+    }
+
+    /// 계정 주소가 없으면 id 앞 8자로 표시 · 별명이 있으면 「별명(주소)」.
+    #[test]
+    fn rc_account_display_label_alias_fallback() {
+        let accts = json!([
+            {"provider": "claude", "account_id": "aaa-1", "label": "a@example.com", "alias": "계정1"},
+            {"provider": "claude", "account_id": "bbb-2", "label": "bbb-2"},
+        ]);
+        assert_eq!(rc_account_display(Some(&accts), "aaa-1"), "계정1(a@example.com)");
+        assert_eq!(rc_account_display(Some(&accts), "bbb-2"), "계정 bbb-2…");
+        assert_eq!(rc_account_display(None, "0123456789abcdef"), "계정 01234567…");
+    }
+
+    /// 배선 — doctor 목록 끝에 붙고(--json 도 같은 DiagItem) 소켓이 없는 시험 상자에서는 SKIP(실 데몬 무접촉 · exit 무변).
+    #[test]
+    fn rc_account_mismatch_is_wired_into_doctor_and_skips_without_daemon() {
+        let base = std::env::temp_dir().join(format!("cys-doc-rcacct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let ctx = doctor_ctx_at(&base);
+        let items = run_doctor_diagnostics(&ctx, false);
+        let it = items.iter().find(|i| i.name == "rc-account-mismatch").expect("항목 배선");
+        assert_ne!(it.status, DiagStatus::Fail);
+        assert_ne!(it.status, DiagStatus::Warn, "{}", it.detail);
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// staging-residue 진단은 프로세스 전역 env `CYS_DOCTOR_STAGING_MIN_IDLE_SECS`(보호창)를 읽는다.

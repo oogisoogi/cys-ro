@@ -139,13 +139,20 @@ class FormationLane(_Home):
         if os.path.exists(self.fmlog):
             os.unlink(self.fmlog)
         r = self.run_dept("launch", self.NAME, **extra)
-        for _ in range(100):                      # 편성은 백그라운드 — 기록을 기다린다
+        # 편성은 백그라운드 — 기록을 기다린다. ★파일이 「있다」 ≠ 기록이 「끝났다」: 스텁은 open('a')(이때 빈 파일이
+        #   생긴다) 뒤에 한 줄을 쓰고 닫는다 — 존재만 보고 읽으면 그 사이에 빈 내용을 읽어 splitlines()[-1] 이
+        #   IndexError 로 죽었다(CI run 44883338513 a1 · FormationLaneWindows 1c). 줄 끝(\n)까지 와야 완결로 본다.
+        text = ""
+        for _ in range(100):
             if os.path.exists(self.fmlog):
-                break
+                text = _read(self.fmlog)
+                if text.endswith("\n"):
+                    break
             time.sleep(0.1)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue(os.path.exists(self.fmlog), "편성 스텁이 호출되지 않았다: %s" % r.stderr[-400:])
-        rec = json.loads(_read(self.fmlog).splitlines()[-1])
+        self.assertTrue(text.endswith("\n"), "편성 스텁 기록이 10초 안에 완결되지 않았다: %r" % text[-200:])
+        rec = json.loads(text.splitlines()[-1])
         self.assertIn("--socket", rec["argv"])
         return r, rec
 

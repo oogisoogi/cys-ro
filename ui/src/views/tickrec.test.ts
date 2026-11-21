@@ -169,7 +169,12 @@ describe("링 200칸 회전 · 크기 상한", () => {
     // 최악 장면은 상한을 넘을 수 있다 — 그래서 이 수는 「최악 장면 크기」의 기록이고, 상한은 실제 장면(좌석 12 · tickrec_gate.py)에서 잰다.
     expect(bytes).toBeGreaterThan(0);
     expect(TICKREC_MAX_DUMP_BYTES).toBe(2 * 1024 * 1024);
-  });
+    // ★TICKET=cys-ci-flaky-f1f2-1122: 이 검체는 시간을 재지 않는다 — 최악 장면 덤프(≈122MB · 기록 25% · 깊은 복사 32% · 직렬화 43%)를
+    //   만드는 고정 일감이라 걸리는 시간이 러너 CPU 속도에 비례하고, bun 기본 상한 5초가 그 분포 안에 있었다
+    //   (CI run 44883338513 a1 = 5288ms 「timed out after 5000ms」). 실측 분포: CI(bun 1.4.5 · macos-26-arm64) 8회 1.1~5.3초 ·
+    //   로컬 30회 1.6~5.9초(중앙 2.3) · 느린 CPU(taskpolicy -c background) 30회 5.8~15.4초(전부 TimeoutError · 판정 실패 0) —
+    //   판정은 그대로 두고 이 검체의 상한만 30초로 둔다(screensettings.test.ts 1.1.11 선례와 같은 처리).
+  }, 30_000);
 
   it("실제 크기 장면(좌석 12 · 소켓 3 · 200틱) 덤프 ≤ 상한", () => {
     const r = createTickRecorder({ salt: "k" });

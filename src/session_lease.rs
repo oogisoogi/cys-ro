@@ -1195,8 +1195,8 @@ pub fn probe_holder(h: &Holder) -> Liveness {
 
 /// 같은 사용자 프로세스 중 argv 에 그 대화 id 를 가진 것(나와 내 조상 · `exclude` 제외) — 바깥 증거 ⓑ.
 /// 같은 사용자 · 좀비 아님 · 명령줄을 못 읽은 프로세스가 1초 안 재시도 뒤에도 남으면 판정 불가(U6) · 전체 훑기가 3초를 넘으면 판정 불가(U2).
-/// `seat_bins` = 데몬 좌석 메타의 agent_bin(윈 주인 후보 이름 집합에 더한다 · 유닉스 = 쓰지 않음).
-pub fn scan_argv(norm: &str, exclude: &[u32], seat_bins: &[String]) -> Evidence {
+/// `seat_bins` = 데몬 좌석 메타의 agent_bin(윈 주인 후보 이름 집합에 더한다 · None = 판독 실패 → 이름 좁히기 끔 · 유닉스 = 쓰지 않음).
+pub fn scan_argv(norm: &str, exclude: &[u32], seat_bins: Option<&[String]>) -> Evidence {
     // SAFETY: getuid 는 부작용 없는 조회.
     #[cfg(unix)]
     let my_uid = Some(unsafe { libc::getuid() });
@@ -1206,8 +1206,9 @@ pub fn scan_argv(norm: &str, exclude: &[u32], seat_bins: &[String]) -> Evidence 
     #[cfg(windows)]
     return {
         let _ = my_uid;
-        let holders = holder_name_set(&agent_sources(), seat_bins);
-        scan_argv_fallible(norm, exclude, || win_scan::snapshot(&holders), win_scan::probe_dead)
+        // ★codex 5R H4(fail-closed): 출처 하나라도 판독 실패면 None = 이름 좁히기 전체 끔(읽을 수 없는 행 전부 후보) · 사유 토큰 꼬리 `:names-off`.
+        let holders = agent_sources().ok().zip(seat_bins).and_then(|(a, s)| holder_name_set(&a, s));
+        names_off_reason(scan_argv_fallible(norm, exclude, || win_scan::snapshot(holders.as_deref(), win_scan::self_read), win_scan::probe_dead), holders.is_none())
     };
     #[cfg(not(windows))]
     {
@@ -1217,12 +1218,37 @@ pub fn scan_argv(norm: &str, exclude: &[u32], seat_bins: &[String]) -> Evidence 
 }
 
 /// 주인 후보 이름의 설정 출처(윈 훑기) — 디스크 사용자본 `<pack>/agents.json`(사용자 지정 cmd · `cys launch-agent` 가 이것으로 좌석을 띄운다) +
-/// 임베드 기본본(디스크에 없는 에이전트는 load_agent_spec 이 이것으로 채운다). 읽기·해석 실패 = 그 출처만 빠짐(기본 집합·좌석 메타는 남는다).
+/// 임베드 기본본(디스크에 없는 에이전트는 load_agent_spec 이 이것으로 채운다).
+/// ★codex 5R H4(fail-closed): 디스크본이 **없음**(NotFound = 이 기계엔 사용자 정의 에이전트가 없다 · load_agent_spec 도 그때 기동을 거절)만 정상 ·
+/// 그 밖 읽기 오류·해석 실패(쓰는 중인 파일 포함)·임베드 해석 실패 = Err(= 이름 좁히기 끔).
 #[cfg_attr(not(windows), allow(dead_code))]
-fn agent_sources() -> Vec<serde_json::Value> {
-    let disk = std::fs::read_to_string(crate::pack::pack_dir().join("agents.json")).ok().and_then(|r| serde_json::from_str(&r).ok());
-    let embedded = crate::pack::PACK_ALL.iter().find(|(rel, _)| *rel == "agents.json").and_then(|(_, c)| serde_json::from_str(c).ok());
-    disk.into_iter().chain(embedded).collect()
+fn agent_sources() -> Result<Vec<serde_json::Value>, ()> {
+    agent_sources_at(&crate::pack::pack_dir())
+}
+
+/// [`agent_sources`] 의 폴더 주입판(시험용 · 같은 규칙).
+#[cfg_attr(not(windows), allow(dead_code))]
+fn agent_sources_at(pack: &Path) -> Result<Vec<serde_json::Value>, ()> {
+    let disk = match std::fs::read_to_string(pack.join("agents.json")) {
+        Ok(raw) => Some(parse_agents(Some(&raw))?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err(()),
+    };
+    let embedded = parse_agents(crate::pack::PACK_ALL.iter().find(|(rel, _)| *rel == "agents.json").map(|(_, c)| *c))?;
+    Ok(disk.into_iter().chain(Some(embedded)).collect())
+}
+
+/// agents.json 본문 해석(순수 · codex 5R H4) — 없음·JSON 아님·객체 아님 = Err.
+pub(crate) fn parse_agents(raw: Option<&str>) -> Result<serde_json::Value, ()> {
+    serde_json::from_str::<serde_json::Value>(raw.ok_or(())?).ok().filter(|v| v.is_object()).ok_or(())
+}
+
+/// 이름 좁히기를 껐을 때의 사유 표시(순수 · codex 5R H4) — `scan:argv:…` 판정 불가에만 `:names-off` 꼬리 · 그 밖 판정은 그대로.
+pub(crate) fn names_off_reason(ev: Evidence, off: bool) -> Evidence {
+    match ev {
+        Evidence::Undecided(r) if off && r.starts_with("scan:argv:") => Evidence::Undecided(format!("{r}:names-off")),
+        other => other,
+    }
 }
 
 /// 실제 프로세스 훑기 한 번(sysinfo) — 판정은 [`scan_argv_with`] 가 한다. (윈 = [`win_scan::snapshot`])
@@ -1561,8 +1587,9 @@ pub(crate) mod scan_order {
             .into_iter()
             .map(|(pid, h)| {
                 let (e1, e2) = (&spi1[&pid], spi2.get(&pid));
+                let h_birth = h.as_ref().map(|(b, _)| *b).map_err(|c| *c);
                 let facts = row_facts(Some((e1.0, e1.1)), e2.map(|e| (e.0, e.1)), h, wts.get(&pid).map(Vec::as_slice), Some(&me));
-                (pid, facts, trusted_image_name(Some(e1), e2).map(str::to_string))
+                (pid, facts, trusted_image_name(Some(e1), e2, &h_birth).map(str::to_string))
             })
             .collect();
         Ok((my_session, rows))
@@ -1582,9 +1609,11 @@ pub(crate) fn wts_any_then_mine<M>(enumerate: impl Fn(u32) -> Option<M>, my_sess
 
 /// 윈 프로세스 분류(순수 · master#d6185ede 정본) — Some(true) = 남의 것(건너뜀) · Some(false) = 훑기 대상 · None = 사라짐(목록에서 뺌).
 /// 1 SID 같음(확정) = 어떤 경우에도 남의 것 아님(세션·핸들 거부와 무관 — 세션 0 의 같은 사용자 claude(OpenSSH·예약 작업)를 건너뛰면 작성자 둘).
-/// 2 남의 것 = pid 0·4 ∨ SID 다름(확정) ∨ (SID 모름 ∧ 세션 0 ∧ 내 세션 ≠ 0).
-/// 3 그 밖(핸들 거부 단독 · SID 모름 ∧ 세션 0 아님) = 대상 — 명령줄을 못 읽으면 판정 불가(보호).
-pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>) -> Option<bool> {
+/// 2 남의 것 = pid 0·4 ∨ SID 다름(확정) ∨ (SID 모름 ∧ 세션 0 ∧ 내 세션 ≠ 0 ∧ **주인 후보 이름 아님**).
+/// 3 그 밖(핸들 거부 단독 · SID 모름 ∧ 세션 0 아님 · 세션 0 이어도 이름이 후보·모름) = 대상 — 명령줄을 못 읽으면 판정 불가(보호).
+/// ★5회차 고침(master#b6258847 ⑤ · VERIFY-R5 중-1 · VERIFY-R4 §4 H): `holder_candidate` = 그 행 이름이 주인 후보(또는 모름 · 좁히기 끔) —
+/// 세션 0 규칙은 후보 밖 이름에만 쓴다(관리자 ssh 등 세션 0 에서 상승한 같은 사용자 claude.exe/node.exe 를 건너뛰지 않는다).
+pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>, holder_candidate: bool) -> Option<bool> {
     if pid == 0 || pid == 4 {
         return Some(true);
     }
@@ -1597,7 +1626,7 @@ pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>) -> Op
     match f.sid {
         WinSid::Same => Some(false),
         WinSid::Other => Some(true),
-        WinSid::Unknown => Some(f.session == Some(0) && my_session.is_some_and(|m| m != 0)),
+        WinSid::Unknown => Some(f.session == Some(0) && my_session.is_some_and(|m| m != 0) && !holder_candidate),
     }
 }
 
@@ -1612,18 +1641,25 @@ pub(crate) fn win_view(
     f: &WinFacts,
     my_session: Option<u32>,
     name: Option<&str>,
-    holders: &[String],
+    holders: Option<&[String]>,
     self_read: impl Fn(u32) -> Option<(u64, Vec<String>)>,
 ) -> Option<ProcView> {
-    let foreign = win_foreign(pid, f, my_session)?;
+    let foreign = win_foreign(pid, f, my_session, is_holder_candidate(name, holders))?;
+    // 명령줄 판독 핸들의 출생이 표 출생과 다르면(그 사이 pid 재사용 · codex 5R H2) 그 행의 이름도 버린다(= 모름 = 후보).
+    let mut name = name;
     let cmd = if foreign {
         Vec::new()
     } else {
         match self_read(pid) {
             Some((born, argv)) if birth_matches(f.birth, Some(born)) => argv,
-            _ => Vec::new(),
+            Some(_) => {
+                name = None;
+                Vec::new()
+            }
+            None => Vec::new(),
         }
     };
+    // ⚠알려진 한계(codex 5R H1 · master 수용): 이름을 바꾼 claude 실행 파일 ∧ cysr 밖에서 기동(agents.json·좌석 agent_bin 에 없음) ∧ 상승/다른 세션(명령줄 못 읽음) = 건너뜀.
     let skip = !foreign && cmd.is_empty() && !is_holder_candidate(name, holders);
     Some(ProcView { pid, uid: None, skip, foreign, name: name.map(str::to_string), cmd })
 }
@@ -1648,47 +1684,121 @@ pub(crate) fn holder_stem(name: &str) -> String {
     base
 }
 
-/// 셸 감싸기 실행 파일(줄기) — 에이전트 cmd 가 이것으로 시작하면 그 셸 뒤 첫 실행 파일 낱말도 후보로 넣는다(`cmd /c claude …` · `pwsh -c claude …`).
+/// 셸 감싸기 실행 파일(줄기) — 에이전트 cmd 가 이것으로 시작하면 그 셸 뒤 **모든** 비옵션 낱말도 후보로 넣는다(`cmd /c claude …` · `pwsh -c "& 'X' …"` ·
+/// 남는 것이 많아도 안전 쪽 — 후보가 늘면 판정 불가가 늘 뿐 건너뛰기는 늘지 않는다).
 const WRAP_SHELLS: [&str; 3] = ["cmd", "powershell", "pwsh"];
+/// 실행 파일 앞에 오는 호출 낱말(건너뜀) — PowerShell `&`·`.` · cmd `call` · `start`(뒤 제목 `""`·`/옵션` 도 건너뜀).
+const CALL_WORDS: [&str; 4] = ["&", ".", "call", "start"];
 
-/// 에이전트 cmd 한 줄 → 실행 파일 줄기들(순수) — 앞 env 대입(`KEY=val`) 건너뛴 첫 낱말(cys.rs `extract_bin`·cysd `agent_candidates_from_json` 과 같은 규약 ·
-/// `cys launch-agent` 가 좌석 agent_bin 으로 등록하는 바로 그 낱말) + 그 낱말이 셸이면 셸 뒤 첫 비옵션 낱말.
-pub(crate) fn agent_cmd_stems(cmd: &str) -> Vec<String> {
+/// 명령줄 낱말 나누기(순수 · codex 5R H3) — 공백으로 나누되 `"…"`·`'…'` 안 공백은 지킨다(따옴표는 벗김 · 빈 따옴표 = 빈 낱말).
+/// 닫히지 않은 따옴표 = None(판독 못 함).
+pub(crate) fn split_cmdline(cmd: &str) -> Option<Vec<String>> {
+    let (mut out, mut cur, mut quote, mut has) = (Vec::new(), String::new(), None::<char>, false);
+    for c in cmd.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                has = true;
+            }
+            None if c.is_whitespace() => {
+                if has || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                has = false;
+            }
+            None => {
+                cur.push(c);
+                has = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if has || !cur.is_empty() {
+        out.push(cur);
+    }
+    Some(out)
+}
+
+/// 에이전트 cmd 한 줄 → 실행 파일 줄기들(순수 · codex 5R H3) — 앞 env 대입(`KEY=val`) 건너뜀 → 호출 낱말([`CALL_WORDS`]) 건너뜀 → 첫 실행 파일
+/// (따옴표·공백 경로 지킴 · `& "C:\Program Files\Acme\myagent.exe"` = myagent). 셸이면 셸 뒤 모든 비옵션 낱말(공백이 든 낱말 = 안쪽 명령으로 다시 해석).
+/// None = 판독 못 함(닫히지 않은 따옴표 · 실행 파일 낱말 없음 · 안쪽 명령 판독 실패) → 호출부가 이름 좁히기 전체를 끈다(master 5R ③④).
+/// 좌석 agent_bin(cys.rs `extract_bin` = 공백으로 나눈 첫 비-env 낱말)도 같은 함수로 해석한다.
+pub(crate) fn agent_cmd_stems(cmd: &str) -> Option<Vec<String>> {
     let env = |t: &str| t.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
-    let mut words = cmd.split_whitespace().skip_while(|t| env(t));
-    let Some(first) = words.next() else { return Vec::new() };
-    let first = holder_stem(first.trim_matches(['"', '\'']));
-    let mut out = vec![first.clone()];
-    if WRAP_SHELLS.contains(&first.as_str()) {
-        if let Some(next) = words.find(|t| !t.starts_with(['/', '-'])) {
-            out.push(holder_stem(next.trim_matches(['"', '\''])));
+    let words = split_cmdline(cmd)?;
+    let mut it = words.iter().map(String::as_str).skip_while(|t| env(t)).peekable();
+    let mut after_start = false;
+    let first = loop {
+        let t = it.next()?;
+        let low = t.to_lowercase();
+        if CALL_WORDS.contains(&low.as_str()) {
+            after_start = low == "start";
+            continue;
+        }
+        if after_start && (t.is_empty() || t.starts_with('/')) {
+            continue;
+        }
+        if t.trim().is_empty() {
+            return None;
+        }
+        break t;
+    };
+    let stem = holder_stem(first);
+    if stem.is_empty() {
+        return None;
+    }
+    let mut out = vec![stem.clone()];
+    if WRAP_SHELLS.contains(&stem.as_str()) {
+        for t in it.filter(|t| !t.is_empty() && !t.starts_with(['/', '-'])) {
+            if t.contains(char::is_whitespace) {
+                // 공백이 든 낱말 = 따옴표로 묶인 경로(`"C:\Program Files\x.exe"`) 또는 안쪽 명령(`"& 'C:\a b\x.exe' --y"`) — 둘 다로 읽어 넣는다(넘치는 쪽 = 안전).
+                out.push(holder_stem(t));
+                out.extend(agent_cmd_stems(t)?);
+            } else if !CALL_WORDS.contains(&t.to_lowercase().as_str()) {
+                out.push(holder_stem(t));
+            }
         }
     }
     out.retain(|s| !s.is_empty());
-    out
+    Some(out)
 }
 
 /// 주인 후보 이름 집합(순수 · 줄기) = [`HOLDER_BASE`] ∪ agents.json 들(디스크 사용자본 · 임베드 기본본)의 모든 에이전트 cmd 실행 파일 ∪ `extra`
 /// (데몬 좌석 메타 agent_bin — 그 뒤 agents.json 이 바뀌었어도 떠 있는 좌석의 실제 실행 파일).
-pub fn holder_name_set(agents: &[serde_json::Value], extra: &[String]) -> Vec<String> {
+/// ★codex 5R H3·H4(fail-closed): agents.json 이 객체가 아님 · 에이전트 항목의 `cmd` 가 문자열이 아님 · 어느 cmd/agent_bin 이든 판독 못 함 = None(= 좁히기 끔).
+/// `cmd` 키가 없는 항목(어댑터 아님)은 건너뛴다.
+pub fn holder_name_set(agents: &[serde_json::Value], extra: &[String]) -> Option<Vec<String>> {
     let mut set: Vec<String> = HOLDER_BASE.iter().map(|s| s.to_string()).collect();
-    let cmds = agents
-        .iter()
-        .filter_map(|v| v.as_object())
-        .flat_map(|o| o.iter())
-        .filter(|(k, _)| !k.starts_with('_'))
-        .filter_map(|(_, spec)| spec.get("cmd").and_then(|c| c.as_str()));
-    for stem in cmds.flat_map(agent_cmd_stems).chain(extra.iter().flat_map(|b| agent_cmd_stems(b))) {
-        if !set.contains(&stem) {
-            set.push(stem);
+    let mut cmds: Vec<&str> = Vec::new();
+    for v in agents {
+        for (k, spec) in v.as_object()? {
+            if k.starts_with('_') {
+                continue;
+            }
+            match spec.get("cmd") {
+                None => {}
+                Some(c) => cmds.push(c.as_str()?),
+            }
         }
     }
-    set
+    for c in cmds.into_iter().chain(extra.iter().map(String::as_str)) {
+        for stem in agent_cmd_stems(c)? {
+            if !set.contains(&stem) {
+                set.push(stem);
+            }
+        }
+    }
+    Some(set)
 }
 
-/// 명령줄을 못 읽은 행이 주인 후보인가(순수 · 뮤턴트 MN·MNN) — 이름 모름(None·빈 값) = 후보 · 8.3 짧은 이름(줄기에 `~숫자`) = 후보(긴 이름을 알 수 없음) ·
-/// 그 밖 = 줄기가 `holders` 에 있을 때만(대소문자·경로·확장자 무시).
-pub(crate) fn is_holder_candidate(name: Option<&str>, holders: &[String]) -> bool {
+/// 명령줄을 못 읽은 행이 주인 후보인가(순수 · 뮤턴트 MN·MNN) — 집합 없음(출처 판독 실패 = 좁히기 끔 · codex 5R H4) = 후보 · 이름 모름(None·빈 값) = 후보 ·
+/// 8.3 짧은 이름(줄기에 `~숫자`) = 후보(긴 이름을 알 수 없음) · 그 밖 = 줄기가 `holders` 에 있을 때만(대소문자·경로·확장자 무시).
+pub(crate) fn is_holder_candidate(name: Option<&str>, holders: Option<&[String]>) -> bool {
+    let Some(holders) = holders else { return true };
     let Some(stem) = name.map(holder_stem).filter(|s| !s.is_empty()) else { return true };
     if stem.char_indices().any(|(i, c)| c == '~' && stem[i + 1..].starts_with(|d: char| d.is_ascii_digit())) {
         return true;
@@ -1698,9 +1808,20 @@ pub(crate) fn is_holder_candidate(name: Option<&str>, holders: &[String]) -> boo
 
 /// 믿을 수 있는 이미지 이름(순수) — ①·③ 두 SPI 표가 같은 출생(CreateTime 100ns 같음 · [`birth_matches`])과 같은 이름을 보일 때만 그 이름.
 /// 출생 미확정(그 사이 pid 재사용 · 한쪽 표에 없음 · 생성 시각 없음) = None(= 이름 모름 = 후보 · codex 3R H1 시나리오에서 앞 프로세스 이름으로 건너뛰지 않는다).
-pub(crate) fn trusted_image_name<'a>(spi1: Option<&'a (u32, Option<u64>, Option<String>)>, spi2: Option<&'a (u32, Option<u64>, Option<String>)>) -> Option<&'a str> {
+/// ★codex 5R H2: 이름은 그 행의 **핸들 출생 확인과도** 묶는다 — `handle` = ④ 핸들(열림 = 그 핸들 생성 ticks · 못 엶 = 오류 코드):
+/// 열렸는데 핸들 생성 시각이 표 출생과 다르거나 못 읽음 = SPI2 뒤 pid 재사용 = 이름 모름. 못 엶(거부) = 두 표 출생 확인이 마지막 확인(그 뒤 탄생 = 스냅샷 한계 · REPORT 8-6).
+/// 명령줄 판독 핸들([`win_view`])의 출생 어긋남도 같은 규칙으로 이름을 버린다.
+pub(crate) fn trusted_image_name<'a>(
+    spi1: Option<&'a (u32, Option<u64>, Option<String>)>,
+    spi2: Option<&'a (u32, Option<u64>, Option<String>)>,
+    handle: &Result<Option<u64>, u32>,
+) -> Option<&'a str> {
     let (a, b) = (spi1?, spi2?);
-    (birth_matches(a.1, b.1) && a.2 == b.2).then_some(a.2.as_deref()).flatten()
+    let handle_ok = match handle {
+        Ok(hb) => birth_matches(a.1, *hb),
+        Err(_) => true,
+    };
+    (birth_matches(a.1, b.1) && a.2 == b.2 && handle_ok).then_some(a.2.as_deref()).flatten()
 }
 
 /// 윈 사실 수집(얇은 FFI · 판정·오류 매핑은 위 순수 함수) — 핸들 열기는 `PROCESS_QUERY_LIMITED_INFORMATION` 만(SYNCHRONIZE 없음).
@@ -1884,10 +2005,11 @@ mod win_scan {
         )
     }
 
-    /// 훑기 한 번 — Err = 사유 토큰(`scan:self` · `scan:enumerate`) · 남의 것은 명령줄을 읽지 않는다 · `holders` = 주인 후보 이름 집합.
-    pub(super) fn snapshot(holders: &[String]) -> Result<Vec<ProcView>, &'static str> {
+    /// 훑기 한 번 — Err = 사유 토큰(`scan:self` · `scan:enumerate`) · 남의 것은 명령줄을 읽지 않는다 · `holders` = 주인 후보 이름 집합 ·
+    /// `read` = 명령줄 자체 판독(운영 = [`self_read`] · 윈 러너 시험 ⓕ 가 「못 읽음」 을 넣어 holders 전달을 잰다 · VERIFY-R5 하-4).
+    pub(super) fn snapshot(holders: Option<&[String]>, read: impl Fn(u32) -> Option<(u64, Vec<String>)>) -> Result<Vec<ProcView>, &'static str> {
         let (my_session, rows) = collect()?;
-        Ok(rows.into_iter().filter_map(|(pid, f, name)| win_view(pid, &f, my_session, name.as_deref(), holders, self_read)).collect())
+        Ok(rows.into_iter().filter_map(|(pid, f, name)| win_view(pid, &f, my_session, name.as_deref(), holders, &read)).collect())
     }
 
     /// 죽음 확인(이 판정 한정 · SYNCHRONIZE 없음) — 판정은 [`probe_verdict`].
@@ -1931,7 +2053,7 @@ mod win_tests {
         assert_eq!(f.open, WinOpen::Opened, "{f:?} — Unverified 면 SPI1≠SPI2 또는 표 CreateTime(Reserved1[24..32]) ≠ 핸들 GetProcessTimes(100ns)");
         assert_eq!(f.sid, WinSid::Same, "{f:?}");
         assert!(my_session.is_some() && f.session == my_session, "{f:?} · 표 = {my_session:?}");
-        assert_eq!(win_foreign(me, &f, my_session), Some(false));
+        assert_eq!(win_foreign(me, &f, my_session, false), Some(false));
         let id = crate::process_observation::identity(me).expect("내 신원");
         let unix = f.birth.and_then(|t| t.checked_sub(116_444_736_000_000_000)).map(|t| (t / 10_000_000, (t % 10_000_000) / 10));
         assert_eq!(unix, Some((id.birth_seconds, id.birth_microseconds)), "표 CreateTime {:?} ↔ process_observation::identity", f.birth);
@@ -1946,7 +2068,7 @@ mod win_tests {
         let (my_session, rows) = collect().expect("실제 수집");
         let f = rows.iter().find(|r| r.0 == 4).map(|r| r.1).expect("표에 System(4) 이 없다");
         assert_eq!(rows.iter().find(|r| r.0 == 4).and_then(|r| r.2.clone()).as_deref(), Some("System"), "pid 4 이미지 이름");
-        assert_eq!(win_foreign(4, &f, my_session), Some(true), "{f:?}");
+        assert_eq!(win_foreign(4, &f, my_session, true), Some(true), "{f:?}");
         assert_eq!(f.session, Some(0), "System 은 세션 0");
     }
 
@@ -1958,7 +2080,7 @@ mod win_tests {
         assert_eq!(open_err_kind(code), WinOpen::Gone, "오류 코드 {code}");
         assert!(matches!(probe_dead(NO), Err(Failure::Dead)));
         let f = row_facts(None, None, Err(code), None, None);
-        assert_eq!(win_foreign(NO, &f, Some(1)), None, "{f:?}");
+        assert_eq!(win_foreign(NO, &f, Some(1), true), None, "{f:?}");
     }
 
     /// ⓓ 자식 프로세스(명령줄에 S) = Seen · 살아 있을 때 probe = Ok · 끝낸 뒤 = Dead.
@@ -1975,7 +2097,7 @@ mod win_tests {
             .spawn()
             .expect("powershell 자식");
         let pid = child.id();
-        let seen = scan_argv(&s, &[], &[]);
+        let seen = scan_argv(&s, &[], Some(&[]));
         let alive = probe_dead(pid);
         let _ = child.kill();
         let _ = child.wait();
@@ -1984,11 +2106,26 @@ mod win_tests {
         assert!(matches!(probe_dead(pid), Err(Failure::Dead)), "끝난 자식을 죽음으로 못 봤다");
     }
 
+    /// ⓕ(VERIFY-R5 하-4 · master#b6258847 ⑦) 실제 수집 → `snapshot` 의 holders 전달 — 명령줄을 「못 읽음」 으로 꾸미면 내 행은 내 실행 파일 줄기가
+    /// 집합에 있을 때만 후보(skip 아님) · 빈 집합이면 건너뜀(skip) · 집합 없음(좁히기 끔) = 후보. `snapshot` 안에서 holders 를 `Some(&[])` 로 바꾸는 변이를 붉게 한다.
+    #[test]
+    fn snapshot_passes_holders_into_view() {
+        use super::win_scan::snapshot;
+        let me = std::process::id();
+        let exe = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())).expect("내 실행 파일");
+        let mine = vec![super::holder_stem(&exe)];
+        let no_read = |_p: u32| -> Option<(u64, Vec<String>)> { None };
+        let row = |h: Option<&[String]>| snapshot(h, no_read).expect("실제 수집").into_iter().find(|p| p.pid == me).expect("내 행");
+        assert!(!row(Some(&mine)).skip, "내 이름 줄기가 집합에 있으면 후보여야 한다");
+        assert!(row(Some(&[])).skip, "빈 집합이면 내 행(명령줄 못 읽음 · 이름 후보 밖)은 건너뛴다");
+        assert!(!row(None).skip, "좁히기 끔 = 후보");
+    }
+
     /// ⓔ 아무도 쥐지 않은 대화 = NoneConfirmed(「시스템 pid 때문에 Undecided」 재발 탐지 · 사고 원형).
     #[test]
     fn unheld_conversation_is_none_confirmed_on_a_real_box() {
         let s = random_id("nobody");
-        assert_eq!(scan_argv(&s, &[], &[]), Evidence::NoneConfirmed);
+        assert_eq!(scan_argv(&s, &[], Some(&[])), Evidence::NoneConfirmed);
     }
 }
 
@@ -2653,7 +2790,7 @@ mod tests {
         let scan_st = |rows: Vec<(u32, WinFacts)>, my: Option<u32>, sr: &dyn Fn(u32) -> Option<(u64, Vec<String>)>, alive: &dyn Fn(u32) -> bool| {
             let mut v = vec![ProcView { pid: me, uid: None, skip: false, foreign: false, name: None, cmd: argv(&["cys.exe", "restore"]) }];
             // 이름 모름(None) = 주인 후보 → 1~4회차 판정 그대로(5회차 이름 좁히기는 아래 W23 이 따로 잰다).
-            v.extend(rows.into_iter().filter_map(|(pid, f)| win_view(pid, &f, my, None, &[], sr)));
+            v.extend(rows.into_iter().filter_map(|(pid, f)| win_view(pid, &f, my, None, Some(&[]), sr)));
             let probe = |p: u32| -> Result<(), Failure> { if alive(p) { Ok(()) } else { Err(Failure::Dead) } };
             scan_argv_with(S, &[], None, move || v.clone(), probe)
         };
@@ -2674,7 +2811,8 @@ mod tests {
         assert_eq!(scan(vec![(668, vec![], fx(f, other, Some(1)))], Some(1), &no_read, &alive), none, "W3");
         assert_eq!(scan(vec![(669, vec![], fx(f, unk, Some(1)))], Some(1), &no_read, &alive), und(669), "W3b");
         // W4 세션 0 · SID 모름 · 나 = 세션 1 → 건너뜀(열림이든 거부든)
-        assert_eq!(scan(vec![(900, vec![], fx(o, unk, Some(0))), (901, vec![], fx(f, unk, Some(0)))], Some(1), &no_read, &alive), none, "W4");
+        // (5회차 고침 ⑤: 세션 0 규칙은 후보 밖 이름에만 — 이 표 고정틀은 이름 모름(= 후보)이라 이제 판정 불가 · 서비스 이름이면 건너뜀 = W23-s0r)
+        assert_eq!(scan(vec![(900, vec![], fx(o, unk, Some(0))), (901, vec![], fx(f, unk, Some(0)))], Some(1), &no_read, &alive), und(900), "W4 이름 모름 = 판정 불가(⑤)");
         // ★H1 뒤집기: SID 같음 ∧ 세션 0 ∧ 나 = 세션 1 · 명령줄에 S → Seen(세션 0 의 같은 사용자 claude = OpenSSH·예약 작업 · 규칙 1)
         assert!(seen(&scan(vec![(902, argv(&["claude", "--resume", S]), fx(o, same, Some(0)))], Some(1), &no_read, &alive)), "H1 같은 SID 세션 0");
         // 핸들 거부 ∧ SID 같음(WTS) ∧ 세션 0 → 건너뛰지 않는다 · 자체 판독도 같은 LIMITED 열기라 실제로는 거부 → 판정 불가(검증 R2 4-4 하 · 현실 사실 조합)
@@ -2710,8 +2848,9 @@ mod tests {
             (2404, vec![], fx(f, unk, Some(0))), (1192, vec![], fx(f, winlogon_sid, Some(1))), (10748, vec![], fx(o, same, Some(1))),
         ];
         // ⓐ WTS 가 winlogon SID 를 준다(다름) → 없음(사고 해소) ⓑ 못 준다(모름 · 세션 1) → 판정 불가 = 보호(master#d6185ede 수용 · 실측으로 재결정)
-        assert_eq!(scan(real(other), Some(1), &sr_other, &alive), none, "W11-real ⓐ");
-        assert_eq!(scan(real(unk), Some(1), &sr_other, &alive), und(1192), "W11-real ⓑ");
+        // (⑤ 뒤: 세션 0 · SID 모름 행은 이름 모름이면 후보 → 첫 그런 행 15912 · 이름이 붙은 같은 표 = W23-real)
+        assert_eq!(scan(real(other), Some(1), &sr_other, &alive), und(15912), "W11-real ⓐ 이름 모름(⑤)");
+        assert_eq!(scan(real(unk), Some(1), &sr_other, &alive), und(15912), "W11-real ⓑ 이름 모름(⑤)");
         // ★W18 규칙 8(pid 재사용 · master#c699b44d 2) — 명령줄을 읽은 핸들의 생성 시각 ≠ 열거 표 CreateTime(100ns 그대로) → 쓰지 않는다(판정 불가 쪽).
         let sr_at = |born: u64| move |p: u32| -> Option<(u64, Vec<String>)> { (p == 3018).then(|| (born, vec!["claude".to_string(), "--resume".to_string(), S.to_string()])) };
         // W18a ★같은 초 · 다른 100ns(1 tick 뒤 태어난 같은 pid) → 판정 불가(초로 자르면 Seen/없음 으로 새는 자리 · codex 2R H2)
@@ -2750,7 +2889,7 @@ mod tests {
         assert_eq!(scan_st(vec![(5092, eausvc)], Some(1), &|_p| None, &alive), none, "W19h eausvc 훑기 = 없음");
         // W19i 출생 일치 ∧ 토큰·WTS 둘 다 없음 → 모름(규칙 2 세션 갈래를 탄다: 세션 0 ∧ 나 = 1 → 남의 것 · 세션 1 → 대상)
         assert_eq!(rf(spi, Ok((Some(T0), None)), None), fs(o, unk), "W19i 모름");
-        assert_eq!(scan_st(vec![(3020, fs(o, unk))], Some(1), &|_p| None, &alive), none, "W19i 세션 0 모름 = 남의 것");
+        assert_eq!(scan_st(vec![(3020, fs(o, unk))], Some(1), &|_p| None, &alive), und(3020), "W19i 세션 0 모름 ∧ 이름 모름 = 판정 불가(⑤)");
         assert_eq!(scan_st(vec![(3021, WinFacts { session: Some(1), ..fs(o, unk) })], Some(1), &|_p| None, &alive), und(3021), "W19i′ 세션 1 모름 = 대상 → 판정 불가");
         assert_eq!(sid_for_opened(Some(&sid_me), Some(&sid_sys)), Some(&sid_me[..]), "토큰 우선");
         assert_eq!(sid_for_opened(None, Some(&sid_sys)), Some(&sid_sys[..]), "토큰 실패 → WTS");
@@ -2876,8 +3015,9 @@ mod tests {
         assert_eq!(sid_verdict(None, Some(&sid_a)), WinSid::Unknown, "ME 내 SID 모름");
         assert_eq!(sid_verdict(Some(&sid_a), Some(&bad)), WinSid::Unknown, "ME 무효 = 모름(다름 아님)");
         // ★W23 5회차(master 설계 1·2·4) — 읽을 수 없는 행은 이미지 이름이 주인 후보 집합에 들 때만 판정 불가. 집합 = 기본 + agents.json + 좌석 agent_bin.
-        let holders = holder_name_set(&[serde_json::json!({"_doc": "x", "claude": {"cmd": "CLAUDE_CONFIG_DIR=/a claude --dangerously-skip-permissions"}, "my": {"cmd": "C:\\tools\\MyAgent.EXE --x"}})], &["D:\\bin\\seatbot.exe".to_string()]);
-        let scan_nm = |rows: Vec<(u32, Option<&str>, WinFacts)>, my: Option<u32>, hs: &[String], sr: &dyn Fn(u32) -> Option<(u64, Vec<String>)>| {
+        let holders = holder_name_set(&[serde_json::json!({"_doc": "x", "claude": {"cmd": "CLAUDE_CONFIG_DIR=/a claude --dangerously-skip-permissions"}, "my": {"cmd": "C:\\tools\\MyAgent.EXE --x"}, "noadapter": {"label": "cmd 없음 = 건너뜀"}})], &["D:\\bin\\seatbot.exe".to_string()]).expect("집합");
+        let hs_some = Some(&holders[..]);
+        let scan_nm = |rows: Vec<(u32, Option<&str>, WinFacts)>, my: Option<u32>, hs: Option<&[String]>, sr: &dyn Fn(u32) -> Option<(u64, Vec<String>)>| {
             let mut v = vec![ProcView { pid: me, uid: None, skip: false, foreign: false, name: Some("cys.exe".into()), cmd: argv(&["cys.exe", "restore"]) }];
             v.extend(rows.into_iter().filter_map(|(pid, n, f)| win_view(pid, &f, my, n, hs, sr)));
             scan_argv_with(S, &[], None, move || v.clone(), |_p| Ok(()))
@@ -2892,57 +3032,140 @@ mod tests {
             (2404, Some("IntelCpHDCPSvc.exe"), fx(f, unk, Some(0))), (8120, Some("CrossEXService.exe"), fx(f, unk, Some(1))), (10748, Some("oCamTask.exe"), fx(o, same, Some(1))),
             (9000, Some("winlogon.exe"), fx(f, unk, Some(1))), (9001, Some("Registry"), fx(f, unk, Some(0))), (9002, Some("Memory Compression"), fx(f, unk, Some(0))),
         ];
-        assert_eq!(scan_nm(real5.clone(), Some(1), &holders, &none_read), none, "W23-real 실기 12 pid → 없음");
+        assert_eq!(scan_nm(real5.clone(), Some(1), hs_some, &none_read), none, "W23-real 실기 12 pid → 없음");
         // W23-s0 세션 0 규칙 원인 재현(가설 = 훑는 프로세스 자신이 세션 0): 나 = 세션 0 → 세션 0 규칙이 설계대로 꺼짐 → 이름 없이는 판정 불가(실기 증상) · 이름 좁히기로 없음
         assert_eq!(scan(real5.iter().map(|r| (r.0, vec![], r.2)).collect(), Some(0), &no_read, &alive), und(700), "W23-s0 재현: 나 = 세션 0 · 이름 좁히기 전 = 판정 불가");
-        assert_eq!(scan_nm(real5.clone(), Some(0), &holders, &none_read), none, "W23-s0 나 = 세션 0 · 이름 좁히기 뒤 = 없음");
+        assert_eq!(scan_nm(real5.clone(), Some(0), hs_some, &none_read), none, "W23-s0 나 = 세션 0 · 이름 좁히기 뒤 = 없음");
         // W23-h 집합 안의 읽을 수 없는 행 = 판정 불가 유지(상승 claude.exe · npm node.exe · bun · deno · 대소문자·경로 무관)
         for (pid, n) in [(3101, "claude.exe"), (3102, "node.exe"), (3103, "BUN.EXE"), (3104, "deno.exe"), (3105, "Claude.exe")] {
-            assert_eq!(scan_nm(vec![(pid, Some(n), fx(f, unk, Some(1)))], Some(1), &holders, &none_read), und_n(pid, n), "W23-h {n} 거부 = 판정 불가");
-            assert_eq!(scan_nm(vec![(pid, Some(n), fx(o, same, Some(1)))], Some(1), &holders, &none_read), und_n(pid, n), "W23-h {n} 열림·명령줄 못 읽음 = 판정 불가");
+            assert_eq!(scan_nm(vec![(pid, Some(n), fx(f, unk, Some(1)))], Some(1), hs_some, &none_read), und_n(pid, n), "W23-h {n} 거부 = 판정 불가");
+            assert_eq!(scan_nm(vec![(pid, Some(n), fx(o, same, Some(1)))], Some(1), hs_some, &none_read), und_n(pid, n), "W23-h {n} 열림·명령줄 못 읽음 = 판정 불가");
         }
         // 실기 표 + 상승 claude.exe 하나 → 판정 불가(토큰에 그 행 이름)
         let mut with_claude = real5.clone();
         with_claude.push((3106, Some("claude.exe"), fx(f, unk, Some(1))));
-        assert_eq!(scan_nm(with_claude, Some(1), &holders, &none_read), und_n(3106, "claude.exe"), "W23-h 실기 표 + 상승 claude");
+        assert_eq!(scan_nm(with_claude, Some(1), hs_some, &none_read), und_n(3106, "claude.exe"), "W23-h 실기 표 + 상승 claude");
         // W23-a agents.json 사용자 지정 실행 파일(MyAgent.EXE) · 좌석 메타 agent_bin(seatbot.exe) = 판정 불가 유지 · 없는 이름 = 건너뜀
-        assert_eq!(scan_nm(vec![(3201, Some("myagent.exe"), fx(f, unk, Some(1)))], Some(1), &holders, &none_read), und_n(3201, "myagent.exe"), "W23-a agents.json 사용자 지정");
-        assert_eq!(scan_nm(vec![(3202, Some("SeatBot.exe"), fx(f, unk, Some(1)))], Some(1), &holders, &none_read), und_n(3202, "SeatBot.exe"), "W23-a 좌석 agent_bin");
-        assert_eq!(scan_nm(vec![(3203, Some("otheragent.exe"), fx(f, unk, Some(1)))], Some(1), &holders, &none_read), none, "W23-a 집합 밖");
+        assert_eq!(scan_nm(vec![(3201, Some("myagent.exe"), fx(f, unk, Some(1)))], Some(1), hs_some, &none_read), und_n(3201, "myagent.exe"), "W23-a agents.json 사용자 지정");
+        assert_eq!(scan_nm(vec![(3202, Some("SeatBot.exe"), fx(f, unk, Some(1)))], Some(1), hs_some, &none_read), und_n(3202, "SeatBot.exe"), "W23-a 좌석 agent_bin");
+        assert_eq!(scan_nm(vec![(3203, Some("otheragent.exe"), fx(f, unk, Some(1)))], Some(1), hs_some, &none_read), none, "W23-a 집합 밖");
         // W23-r 읽을 수 있는 행 = 이름 무관 명령줄 판정(집합 밖 이름 · 명령줄에 S → Seen · S 없음 → 없음 · 집합 안 이름 · S 없음 → 없음)
         let sr_s2 = |p: u32| -> Option<(u64, Vec<String>)> { (p == 3301 || p == 3303).then(|| (T0, argv(&["x", "--resume", S]))).or_else(|| (p == 3302).then(|| (T0, argv(&["node", "x.js"])))) };
-        assert!(seen(&scan_nm(vec![(3301, Some("weird-wrapper.exe"), fx(o, same, Some(1)))], Some(1), &holders, &sr_s2)), "W23-r 집합 밖 이름도 명령줄 S → Seen");
-        assert_eq!(scan_nm(vec![(3302, Some("node.exe"), fx(o, same, Some(1)))], Some(1), &holders, &sr_s2), none, "W23-r 집합 안 이름 · 명령줄 S 없음 → 없음");
-        assert!(seen(&scan_nm(vec![(3303, Some("svchost.exe"), fx(o, unk, Some(1)))], Some(1), &holders, &sr_s2)), "W23-r SID 모름이어도 읽히면 명령줄 판정");
+        assert!(seen(&scan_nm(vec![(3301, Some("weird-wrapper.exe"), fx(o, same, Some(1)))], Some(1), hs_some, &sr_s2)), "W23-r 집합 밖 이름도 명령줄 S → Seen");
+        assert_eq!(scan_nm(vec![(3302, Some("node.exe"), fx(o, same, Some(1)))], Some(1), hs_some, &sr_s2), none, "W23-r 집합 안 이름 · 명령줄 S 없음 → 없음");
+        assert!(seen(&scan_nm(vec![(3303, Some("svchost.exe"), fx(o, unk, Some(1)))], Some(1), hs_some, &sr_s2)), "W23-r SID 모름이어도 읽히면 명령줄 판정");
         // W23-u Unverified(출생 미확정) 행 = 이름 모름으로 들어온다 → 판정 불가 유지(codex 3R H1 · trusted_image_name)
-        assert_eq!(scan_nm(vec![(3401, None, fs(WinOpen::Unverified, unk))], Some(1), &holders, &none_read), und(3401), "W23-u");
+        assert_eq!(scan_nm(vec![(3401, None, fs(WinOpen::Unverified, unk))], Some(1), hs_some, &none_read), und(3401), "W23-u");
         // W23-n 이름 판정 경계: 이름 모름·빈 값 = 후보 · 8.3 짧은 이름 = 후보 · 확장자 없음 · 경로 붙음 · 대소문자
-        assert!(is_holder_candidate(None, &holders) && is_holder_candidate(Some(""), &holders), "이름 모름 = 후보");
-        assert!(is_holder_candidate(Some("CLAUDE~1.EXE"), &holders) && is_holder_candidate(Some("NODE~2.EXE"), &holders) && is_holder_candidate(Some("AB~1"), &holders), "8.3 = 후보");
-        assert!(!is_holder_candidate(Some("a~b.exe"), &holders), "~ 뒤 숫자 아님 = 8.3 아님");
-        assert!(is_holder_candidate(Some("claude"), &holders) && is_holder_candidate(Some(r"C:\x\Node.Exe"), &holders), "확장자 없음 · 경로 · 대소문자");
-        assert!(!is_holder_candidate(Some("claudette.exe"), &holders) && !is_holder_candidate(Some("node-gyp.exe"), &holders), "앞부분만 같음 ≠ 후보");
-        assert!(!is_holder_candidate(Some("svchost.exe"), &holders) && !is_holder_candidate(Some("System"), &holders), "시스템 이름 ≠ 후보");
+        assert!(is_holder_candidate(None, hs_some) && is_holder_candidate(Some(""), hs_some), "이름 모름 = 후보");
+        assert!(is_holder_candidate(Some("CLAUDE~1.EXE"), hs_some) && is_holder_candidate(Some("NODE~2.EXE"), hs_some) && is_holder_candidate(Some("AB~1"), hs_some), "8.3 = 후보");
+        assert!(!is_holder_candidate(Some("a~b.exe"), hs_some), "~ 뒤 숫자 아님 = 8.3 아님");
+        assert!(is_holder_candidate(Some("claude"), hs_some) && is_holder_candidate(Some(r"C:\x\Node.Exe"), hs_some), "확장자 없음 · 경로 · 대소문자");
+        assert!(!is_holder_candidate(Some("claudette.exe"), hs_some) && !is_holder_candidate(Some("node-gyp.exe"), hs_some), "앞부분만 같음 ≠ 후보");
+        assert!(!is_holder_candidate(Some("svchost.exe"), hs_some) && !is_holder_candidate(Some("System"), hs_some), "시스템 이름 ≠ 후보");
         // trusted_image_name: 두 표 출생 같음 ∧ 이름 같음일 때만
         let e = |b: u64, n: &str| (1u32, Some(b), Some(n.to_string()));
-        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe"))), Some("a.exe"), "확정");
-        assert_eq!(trusted_image_name(Some(&e(T0, "svchost.exe")), Some(&e(T0 + 1, "claude.exe"))), None, "출생 다름 = 모름");
-        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "b.exe"))), None, "이름 다름 = 모름");
-        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), None), None, "SPI2 에 없음 = 모름");
+        let (hok, hden) = (Ok(Some(T0)), Err(5u32));
+        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe")), &hok), Some("a.exe"), "확정(열림 · 핸들 출생 같음)");
+        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe")), &hden), Some("a.exe"), "확정(거부 · 두 표 출생 = 마지막 확인)");
+        assert_eq!(trusted_image_name(Some(&e(T0, "svchost.exe")), Some(&e(T0 + 1, "claude.exe")), &hden), None, "출생 다름 = 모름");
+        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "b.exe")), &hok), None, "이름 다름 = 모름");
+        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), None, &hok), None, "SPI2 에 없음 = 모름");
+        // ★codex 5R H2: 핸들 출생 ≠ 표 출생(SPI2 뒤 재사용) · 핸들 생성 시각 못 읽음 = 모름
+        assert_eq!(trusted_image_name(Some(&e(T0, "notepad.exe")), Some(&e(T0, "notepad.exe")), &Ok(Some(T0 + 7))), None, "H2 핸들 출생 다름 = 모름");
+        assert_eq!(trusted_image_name(Some(&e(T0, "notepad.exe")), Some(&e(T0, "notepad.exe")), &Ok(None)), None, "H2 핸들 생성 시각 못 읽음 = 모름");
         // holder_name_set · agent_cmd_stems — agents.json 규약(env 건너뜀 · 경로 · 확장자) + 셸 감싸기의 실제 실행 파일
         for want in ["claude", "node", "bun", "deno", "myagent", "seatbot"] {
             assert!(holders.iter().any(|h| h == want), "집합에 {want} 없음: {holders:?}");
         }
         assert!(!holders.iter().any(|h| h == "claude_config_dir=/a" || h == "_doc"), "env 대입·메타 키는 이름 아님: {holders:?}");
         // 실제 설정 출처(agent_sources = 디스크 agents.json + 임베드 기본본) — 기본 팩 에이전트 실행 파일이 모두 들어온다.
-        let real_set = holder_name_set(&agent_sources(), &[]);
+        let real_set = holder_name_set(&agent_sources().expect("출처"), &[]).expect("집합");
         for want in ["claude", "agy", "codex", "grok"] {
             assert!(real_set.iter().any(|h| h == want), "실제 출처 집합에 {want} 없음: {real_set:?}");
         }
-        assert_eq!(agent_cmd_stems("cmd /c claude --resume x"), vec!["cmd".to_string(), "claude".to_string()], "cmd /c 감싸기");
-        assert_eq!(agent_cmd_stems("pwsh.exe -NoProfile -Command \"C:\\a\\myclaude.ps1\" -x"), vec!["pwsh".to_string(), "myclaude".to_string()], "pwsh 감싸기");
-        assert_eq!(agent_cmd_stems("~/.local/bin/agy --x"), vec!["agy".to_string()], "경로");
-        assert!(agent_cmd_stems("   ").is_empty() && agent_cmd_stems("A=1 B=2").is_empty(), "실행 파일 없음");
+        let st = |c: &str| agent_cmd_stems(c);
+        let has = |c: &str, want: &str| st(c).is_some_and(|v| v.iter().any(|x| x == want));
+        assert_eq!(st("cmd /c claude --resume x").map(|v| v[..2].to_vec()), Some(vec!["cmd".to_string(), "claude".to_string()]), "cmd /c 감싸기");
+        assert!(has("pwsh.exe -NoProfile -Command \"C:\\a\\myclaude.ps1\" -x", "myclaude"), "pwsh 감싸기");
+        assert_eq!(st("~/.local/bin/agy --x"), Some(vec!["agy".to_string()]), "경로");
+        // ★codex 5R H3: 따옴표·공백 경로 · 호출 연산자 · 판독 못 함 = None
+        assert_eq!(st(r#"& "C:\Program Files\Acme\myagent.exe" --resume x"#), Some(vec!["myagent".to_string()]), "H3 PowerShell & 따옴표 공백 경로");
+        assert!(has(r#"cmd /c "C:\Program Files\Acme\myagent.exe" --x"#, "myagent"), "H3 cmd /c 뒤 따옴표 공백 경로: {:?}", st(r#"cmd /c "C:\Program Files\Acme\myagent.exe" --x"#));
+        assert!(has(r#"powershell -NoProfile -Command "& 'C:\Program Files\Acme\myagent.exe' --x""#, "myagent"), "H3 셸 안 명령의 & 따옴표 경로");
+        assert_eq!(st(r#"start "" "C:\Program Files\x\Claude.exe" --x"#), Some(vec!["claude".to_string()]), "H3 start 제목 건너뜀");
+        assert_eq!(st("call claude.cmd --x"), Some(vec!["claude".to_string()]), "H3 call");
+        assert_eq!(st(r#". .\agent.ps1"#), Some(vec!["agent".to_string()]), "H3 점 호출");
+        assert_eq!(st("'C:\\a b\\myagent.exe' -x"), Some(vec!["myagent".to_string()]), "홑따옴표 경로");
+        assert_eq!(st(r#""C:\Program Files\Acme\myagent.exe"#), None, "H3 닫히지 않은 따옴표 = 판독 못 함");
+        assert_eq!(st("&"), None, "H3 호출 연산자뿐 = 판독 못 함");
+        assert_eq!(st("   "), None, "빈 cmd = 판독 못 함");
+        assert_eq!(st("A=1 B=2"), None, "실행 파일 없음 = 판독 못 함");
+        assert_eq!(split_cmdline(r#"a "b c" '' d"#), Some(vec!["a".to_string(), "b c".to_string(), String::new(), "d".to_string()]), "낱말 나누기");
+        // ★codex 5R H3·H4: 출처 하나라도 판독 못 함 = 집합 None(좁히기 끔)
+        let ok_agents = serde_json::json!({"claude": {"cmd": "claude"}});
+        assert!(holder_name_set(&[ok_agents.clone()], &[]).is_some(), "정상");
+        assert_eq!(holder_name_set(&[serde_json::json!({"x": {"cmd": r#"& "C:\a"#}})], &[]), None, "H3 agents.json cmd 판독 못 함 = 끔");
+        assert_eq!(holder_name_set(&[serde_json::json!({"x": {"cmd": 7}})], &[]), None, "H4 cmd 문자열 아님 = 끔");
+        assert_eq!(holder_name_set(&[serde_json::json!([1])], &[]), None, "H4 agents.json 객체 아님 = 끔");
+        assert_eq!(holder_name_set(&[ok_agents.clone()], &["&".to_string()]), None, "H3 좌석 agent_bin 판독 못 함(같은 규약) = 끔");
+        assert_eq!(holder_name_set(&[ok_agents], &[r#""C:\Program"#.to_string()]), None, "H3 좌석 agent_bin 잘린 따옴표 = 끔");
+        assert!(parse_agents(None).is_err() && parse_agents(Some("{bad")).is_err() && parse_agents(Some("[]")).is_err() && parse_agents(Some(r#"{"claude":{"cmd":"claude"}"#)).is_err(), "H4 해석 실패(쓰는 중 잘린 파일 포함)");
+        assert!(parse_agents(Some("{}")).is_ok(), "빈 객체 = 정상");
+        // agent_sources_at: 디스크본 없음 = 임베드만(정상) · 깨진 디스크본 = Err · 정상 디스크본 = 둘
+        let td = std::env::temp_dir().join(format!("sl-agents-{}-{}", std::process::id(), T0));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        assert_eq!(agent_sources_at(&td).map(|v| v.len()), Ok(1), "디스크본 없음 = 임베드만");
+        std::fs::write(td.join("agents.json"), r#"{"claude": {"cmd": "cla"#).unwrap();
+        assert_eq!(agent_sources_at(&td).map(|v| v.len()), Err(()), "H4 깨진 디스크본(쓰는 중) = Err");
+        std::fs::write(td.join("agents.json"), r#"{"mine": {"cmd": "C:\\x\\mine.exe"}}"#).unwrap();
+        let both = agent_sources_at(&td).expect("정상");
+        assert_eq!(both.len(), 2, "디스크본 + 임베드");
+        assert!(holder_name_set(&both, &[]).is_some_and(|h| h.iter().any(|x| x == "mine") && h.iter().any(|x| x == "agy")), "디스크·임베드 둘 다 반영");
+        std::fs::remove_file(td.join("agents.json")).unwrap();
+        std::fs::create_dir(td.join("agents.json")).unwrap();
+        assert_eq!(agent_sources_at(&td).map(|v| v.len()), Err(()), "H4 읽기 오류(NotFound 아님) = Err");
+        let _ = std::fs::remove_dir_all(&td);
+        // ★H4 좁히기 끔: 집합 None → 실기 표 전체가 다시 후보 = 판정 불가 · 사유 꼬리 :names-off
+        let off = names_off_reason(scan_nm(real5.clone(), Some(1), None, &none_read), true);
+        assert_eq!(off, Evidence::Undecided("scan:argv:700:csrss.exe:names-off".into()), "H4 좁히기 끔 = 판정 불가 + 표시");
+        assert_eq!(names_off_reason(Evidence::NoneConfirmed, true), Evidence::NoneConfirmed, "판정 불가 아닌 것은 그대로");
+        assert_eq!(names_off_reason(Evidence::Undecided("scan:self".into()), true), Evidence::Undecided("scan:self".into()), "scan:argv 만 표시");
+        assert_eq!(names_off_reason(und_n(1, "x.exe"), false), und_n(1, "x.exe"), "켜짐 = 표시 없음");
+        assert!(is_holder_candidate(Some("svchost.exe"), None), "집합 없음 = 모든 이름 후보");
+        // ★H2 끝까지(수집 골격 → 훑기): SPI1·SPI2 = notepad(T0) · 핸들 = 새 프로세스(T0+7 · SPI2 뒤 재사용) → Unverified ∧ 이름 모름 → 판정 불가
+        let nt: super::scan_order::Table = [(me, (1, Some(T0), Some("cys.exe".to_string()))), (6100, (1, Some(T0), Some("notepad.exe".to_string())))].into_iter().collect();
+        let got3 = collect_rows(|| Some(sid_me.clone()), |_t| Some(nt.clone()), |_t, _m| [(6100u32, sid_me.clone())].into_iter().collect(), |_t, pid| {
+            if pid == 6100 { Ok((Some(T0 + 7), Some(sid_me.clone()))) } else { Ok((Some(T0), Some(sid_me.clone()))) }
+        })
+        .expect("표 있음");
+        let r6100 = got3.1.iter().find(|r| r.0 == 6100).cloned().expect("6100");
+        assert_eq!((r6100.1.open, r6100.2.clone()), (WinOpen::Unverified, None), "H2 notepad 재사용 = Unverified ∧ 이름 모름");
+        assert_eq!(scan_nm(vec![(6100, r6100.2.as_deref(), r6100.1)], Some(1), hs_some, &none_read), und(6100), "H2 notepad 재사용 → 판정 불가");
+        // H2′ 명령줄 판독 핸들에서 재사용이 드러남(사실 핸들 = T0 · 판독 핸들 = T0+9) → 이름 버림 → 판정 불가(예전 = notepad 이름으로 건너뜀)
+        let sr_reborn = |p: u32| -> Option<(u64, Vec<String>)> { (p == 6101).then(|| (T0 + 9, argv(&["claude", "--resume", S]))) };
+        assert_eq!(scan_nm(vec![(6101, Some("notepad.exe"), fx(o, same, Some(1)))], Some(1), hs_some, &sr_reborn), und(6101), "H2′ 판독 핸들 출생 다름 → 판정 불가");
+        // ★⑤(master#b6258847 · VERIFY-R5 중-1): 세션 0 ∧ SID 모름 ∧ 나 = 세션 1 — 이름이 후보(claude.exe·node.exe)·모름 = 판정 불가 · 후보 밖(svchost) = 건너뜀
+        for (pid, n) in [(7001, Some("claude.exe")), (7002, Some("node.exe")), (7003, None)] {
+            for open in [f, o] {
+                let want = if let Some(n) = n { und_n(pid, n) } else { und(pid) };
+                assert_eq!(scan_nm(vec![(pid, n, fx(open, unk, Some(0)))], Some(1), hs_some, &none_read), want, "⑤ 세션 0 · {n:?} · {open:?} = 판정 불가");
+            }
+        }
+        assert_eq!(scan_nm(vec![(7004, Some("svchost.exe"), fx(f, unk, Some(0))), (7005, Some("svchost.exe"), fx(o, unk, Some(0)))], Some(1), hs_some, &none_read), none, "W23-s0r ⑤ 세션 0 후보 밖 = 건너뜀");
+        // 세션 0 후보 이름이 명령줄을 읽히면 명령줄 판정(S → Seen · 없음 → 없음)
+        let sr_s0 = |p: u32| -> Option<(u64, Vec<String>)> { (p == 7006).then(|| (T0, argv(&["claude", "--resume", S]))).or_else(|| (p == 7007).then(|| (T0, argv(&["node", "x.js"])))) };
+        assert!(seen(&scan_nm(vec![(7006, Some("claude.exe"), fx(o, unk, Some(0)))], Some(1), hs_some, &sr_s0)), "⑤ 세션 0 claude 명령줄 S → Seen");
+        assert_eq!(scan_nm(vec![(7007, Some("node.exe"), fx(o, unk, Some(0)))], Some(1), hs_some, &sr_s0), none, "⑤ 세션 0 node 명령줄 S 없음 → 없음");
+        // 좁히기 끔(집합 없음) = 세션 0 서비스도 후보 → 판정 불가
+        assert_eq!(scan_nm(vec![(7008, Some("svchost.exe"), fx(f, unk, Some(0)))], Some(1), None, &none_read), und_n(7008, "svchost.exe"), "⑤ 좁히기 끔 = 세션 0 규칙도 끔");
+        // win_foreign 직접: 후보 여부가 세션 0 갈래만 바꾼다(SID 다름·같음·pid 4 무관)
+        let s0u = fx(f, unk, Some(0));
+        assert_eq!((win_foreign(7010, &s0u, Some(1), false), win_foreign(7010, &s0u, Some(1), true)), (Some(true), Some(false)), "⑤ 세션 0 갈래");
+        assert_eq!((win_foreign(7011, &fx(f, other, Some(0)), Some(1), true), win_foreign(7012, &fx(f, same, Some(0)), Some(1), false), win_foreign(4, &s0u, Some(1), true)), (Some(true), Some(false), Some(true)), "⑤ 다른 갈래 무관");
+        // Unverified 는 후보 여부와 무관하게 대상(세션 0 갈래보다 먼저 · 뮤턴트 MH1e — ⑤ 뒤 호출부에선 Unverified 이름이 언제나 모름이라 겉으론 같지만 함수 계약으로 지킨다)
+        assert_eq!(win_foreign(7013, &fs(WinOpen::Unverified, unk), Some(1), false), Some(false), "⑤ Unverified ∧ 세션 0 ∧ 후보 밖이어도 대상");
         // 사유 토큰(설계 4): 이름 있으면 :<name> · 윈에서 이름 모름 = :? · 유닉스 이름 칸 없음 = 종전
         let pv = |n: Option<&str>| ProcView { pid: 7, uid: None, skip: false, foreign: false, name: n.map(String::from), cmd: vec![] };
         assert_eq!(argv_reason(7, Some(&pv(Some("csrss.exe")))), "scan:argv:7:csrss.exe");
@@ -3095,7 +3318,7 @@ mod bench {
     impl World for Real {
         fn holder(&self, h: &Holder) -> Liveness { probe_holder(h) }
         fn seat(&self, _s: u64, _g: Option<&str>, _strict: bool) -> Liveness { Liveness::Dead }
-        fn evidence(&self, n: &str) -> Evidence { scan_argv(n, &self_and_ancestors(), &[]) }
+        fn evidence(&self, n: &str) -> Evidence { scan_argv(n, &self_and_ancestors(), Some(&[])) }
         fn now(&self) -> u64 { now_secs() }
     }
 

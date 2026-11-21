@@ -153,9 +153,9 @@ impl World for CliWorld {
         //   /resume 으로 이 대화에 돌아왔는데 등록(SessionStart)이 아직 안 닿은 순간과 가를 수 없다 → 제외하면 작성자 둘의 창이 생긴다.
         //   남는 것 = 낡은 argv 의 거짓 막힘(92 · 사유 줄에 pid · 안전 쪽) — DESIGN §13 에 적음.
         // ★5회차(master 설계 2): 윈 주인 후보 이름 집합에 데몬 좌석 메타 agent_bin 을 더한다(agents.json 이 그 뒤 바뀌었어도 떠 있는 좌석의 실제 실행 파일) ·
-        //   판독 실패 = 빈 목록(집합의 기본 이름·agents.json 은 남는다). 유닉스 = 이름 집합을 쓰지 않으므로 묻지 않는다.
-        let seat_bins = if cfg!(windows) { seat_agent_bins(request("surface.list", json!({})).ok().as_ref()) } else { Vec::new() };
-        sl::scan_argv(norm, &self.exclude, &seat_bins)
+        //   ★codex 5R H4(fail-closed): 판독 실패·형식 이상 = None → 이름 좁히기 전체 끔. 유닉스 = 이름 집합을 쓰지 않으므로 묻지 않는다(빈 목록).
+        let seat_bins = if cfg!(windows) { seat_agent_bins(request("surface.list", json!({})).ok().as_ref()) } else { Some(Vec::new()) };
+        sl::scan_argv(norm, &self.exclude, seat_bins.as_deref())
     }
 
     fn now(&self) -> u64 {
@@ -163,11 +163,18 @@ impl World for CliWorld {
     }
 }
 
-/// `surface.list` 응답 → 좌석 메타 agent_bin 목록(순수) — 문자열이 아닌 값·빈 값은 뺀다.
-pub(crate) fn seat_agent_bins(list: Option<&Value>) -> Vec<String> {
-    list.and_then(|l| l["surfaces"].as_array())
-        .map(|a| a.iter().filter_map(|s| s["agent_bin"].as_str()).filter(|b| !b.trim().is_empty()).map(String::from).collect())
-        .unwrap_or_default()
+/// `surface.list` 응답 → 좌석 메타 agent_bin 목록(순수 · codex 5R H4 fail-closed) — 응답 없음 · `surfaces` 가 배열 아님 · 좌석이 객체 아님 ·
+/// agent_bin 이 문자열·null·없음 외의 값 · 빈 문자열 = None(= 이름 좁히기 끔). null·키 없음 = 에이전트 메타 없는 좌석(건너뜀).
+pub(crate) fn seat_agent_bins(list: Option<&Value>) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for s in list?.get("surfaces")?.as_array()? {
+        match s.as_object()?.get("agent_bin") {
+            None | Some(Value::Null) => {}
+            Some(Value::String(b)) if !b.trim().is_empty() => out.push(b.clone()),
+            Some(_) => return None,
+        }
+    }
+    Some(out)
 }
 
 fn seat_word_ok(v: &Value) -> bool {

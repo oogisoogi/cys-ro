@@ -26,6 +26,7 @@ pub mod net;
 pub mod notify;
 pub mod packgate;
 pub mod payload;
+pub mod prime;
 pub mod quiesce;
 pub mod realops;
 pub mod runner;

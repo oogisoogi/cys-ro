@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="tokens.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+  .acc { color: var(--accent); }
+  .mono { font-family: var(--mono); }
+  #brand { position: absolute; left: var(--margin-x); top: 44px; font-size: var(--fs-brand); font-weight: var(--fw-brand); letter-spacing: -.5px; }
+  #chip { position: absolute; right: var(--margin-x); top: 44px; height: 48px; padding: 0 20px; border: 1.5px solid var(--line-2); border-radius: 10px;
+          display: flex; align-items: center; gap: 14px; font: 600 var(--fs-chip) var(--mono); color: var(--ink); }
+  #chip .sep { color: var(--mute); }
+  #card { position: absolute; left: var(--margin-x); right: var(--margin-x); top: var(--card-top); bottom: var(--card-bottom);
+          background-color: var(--card); border: 1.5px solid var(--line); border-radius: var(--radius); overflow: hidden;
+          background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+          background-size: var(--grid-step) var(--grid-step); }
+  #stage { position: absolute; inset: var(--pad); display: flex; flex-direction: column; }
+  #progress { position: absolute; left: 0; bottom: 0; height: var(--progress-h); background: var(--accent); }
+  #caption { position: absolute; left: var(--margin-x); right: var(--margin-x); bottom: 84px; height: 80px; display: flex; align-items: center; justify-content: center;
+             font-size: var(--fs-caption); font-weight: var(--fw-caption); letter-spacing: -.5px; white-space: nowrap; }
+  #source { position: absolute; left: var(--margin-x); bottom: 26px; font: 500 var(--fs-source) var(--mono); color: var(--mute); }
+  /* 단계 상태: 지난 것 · 지금 켜지는 것 · 아직 안 온 것 */
+  .st-past { opacity: 1; }
+  .st-now { opacity: calc(var(--dim) + (1 - var(--dim)) * var(--t)); transform: translateY(calc(var(--enter-shift) * (1 - var(--t)))); }
+  .st-future { opacity: var(--dim); }
+  .st-future .acc, .st-future.acc { color: var(--accent-dim); }
+  .kicker { font: 600 var(--fs-kicker) var(--mono); color: var(--ink-2); margin-bottom: 18px; }
+  .title { font-size: var(--fs-title); font-weight: var(--fw-title); letter-spacing: -1px; line-height: 1.2; margin-bottom: 40px; }
+  .ghost { background: var(--ghost); border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="brand"></div>
+<div id="chip"></div>
+<div id="card"><div id="stage"></div><div id="progress"></div></div>
+<div id="caption"></div>
+<div id="source"></div>
+<script>
+// ── 공용 도구 ───────────────────────────────────────────────
+const esc = s => String(s ?? "").replace(/[&<>]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;"}[c]));
+// *강조* → 형광 연두 · 그 밖은 그대로(이스케이프)
+const md = s => esc(s).replace(/\*([^*]+)\*/g, '<span class="acc">$1</span>');
+const fmt = v => typeof v === "number" ? v.toLocaleString("ko-KR") : md(v);
+// 단계 클래스: i 번째 요소가 지금 단계 step 에서 어떤 상태인가
+const st = (i, step) => i < step ? "st-past" : i === step ? "st-now" : "st-future";
+const TYPES = {};
+window.TYPES = TYPES;
+// 자막: 숫자·「」 는 자동 강조
+const capMd = s => esc(s).replace(/(「[^」]*」|\d[\d,.:~%]*\s?(?:시간|분|초|일|번|개|통|건|곳|대|%|명|배|년|월|주)?)/g, '<span class="acc">$1</span>');
+</script>
+<script src="templates/cover.js"></script>
+<script src="templates/statement.js"></script>
+<script src="templates/numbered.js"></script>
+<script src="templates/kpi.js"></script>
+<script src="templates/bars.js"></script>
+<script src="templates/columns.js"></script>
+<script src="templates/heat.js"></script>
+<script src="templates/ring.js"></script>
+<script src="templates/table.js"></script>
+<script src="templates/quote.js"></script>
+<script src="templates/checklist.js"></script>
+<script src="templates/cards.js"></script>
+<script>
+// frame = { scene, step, t(0~1 · 지금 켜지는 요소의 등장 진행), caption, progress }
+window.renderFrame = (deck, scene, f) => {
+  document.getElementById("brand").innerHTML = md(deck.brand || "");
+  const chip = scene.chip || [];
+  document.getElementById("chip").innerHTML = chip.map((c, i) => `<span class="${i ? "acc" : ""}">${esc(c)}</span>`).join('<span class="sep">·</span>');  // 칩은 조각 사이 gap 으로 띄운다
+  document.getElementById("chip").style.display = chip.length ? "flex" : "none";
+  document.getElementById("source").textContent = scene.source || deck.source || "";
+  const stage = document.getElementById("stage");
+  stage.style.setProperty("--t", f.t);
+  const fn = TYPES[scene.type];
+  if (!fn) throw new Error("모르는 장면 유형: " + scene.type);
+  stage.innerHTML = `<div id="fit" style="display:flex;flex-direction:column;flex:1;min-height:0">${fn(scene.data || {}, f.step)}</div>`;
+  // 넘치면 비율 축소(하한 0.8 — 그 아래로 줄여야 하면 장면을 나누라는 뜻이라 경고를 남긴다)
+  const fit = document.getElementById("fit");
+  fit.style.zoom = 1;
+  const over = fit.scrollHeight / stage.clientHeight;
+  if (over > 1.001) { fit.style.zoom = Math.max(0.8, 1 / over); if (over > 1.25) console.warn("OVERFLOW", scene.type, over.toFixed(2)); }
+  document.getElementById("caption").innerHTML = "<span>" + capMd(f.caption || "") + "</span>";
+  document.getElementById("progress").style.width = (f.progress * 100).toFixed(2) + "%";
+};
+window.typesLoaded = () => Object.keys(TYPES);
+</script>
+</body>
+</html>

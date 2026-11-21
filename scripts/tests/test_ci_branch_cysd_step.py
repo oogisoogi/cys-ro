@@ -508,6 +508,40 @@ class S2WindowsCell(unittest.TestCase):
         self.assertIn("--bin cysd root_registration::", required["windows-health"])
         self.assertEqual(list(ast.literal_eval(assignments["S2_REQUIRED_NAMES"])), self.REQUIRED)
 
+    def test_prebuild_step_immediately_precedes_s2_with_the_same_env(self):
+        """S2 의 6분 시한은 시험 실행 몫이다 — 같은 시험 바이너리를 S2 **바로 앞** 스텝이 S2 와 같은 env 로 `--no-run` 빌드해야
+        S2 안 컴파일이 0 이 된다(2026-11-19 런 S2 안 재컴파일 260초 · 다음 런 367초 = 시한 초과). 사이에 스텝이 끼거나
+        env 가 갈리면 S2 가 다시 컴파일할 수 있다."""
+        names = [line.strip()[len("- name: "):] for line in read_text(self.windows).split("\n")
+                 if line.startswith("      - name: ")]
+        pre_name = "A-ID S2 test binary prebuild (cysd · --no-run · S2 시한 밖 컴파일)"
+        self.assertIn(pre_name, names)
+        self.assertEqual(names.index(pre_name) + 1, names.index(self.NAME), "미리 빌드 스텝이 S2 바로 앞이 아니다")
+        # 같은 잡(같은 러너·같은 target 폴더)이어야 한다 — 이름 순서만 보면 앞 잡 끝/다음 잡 첫 스텝으로 갈라도 통과한다(codex 1R #5).
+        text_lines = read_text(self.windows).split("\n")
+        in_jobs, job_of, cur = False, {}, None
+        for line in text_lines:
+            if line.startswith("jobs:"):
+                in_jobs = True
+                continue
+            m = re.match(r"^  ([A-Za-z0-9_-]+):\s*(#.*)?$", line) if in_jobs else None
+            if m:
+                cur = m.group(1)
+            elif line.startswith("      - name: "):
+                job_of[line.strip()[len("- name: "):]] = cur
+        self.assertIsNotNone(job_of.get(self.NAME))
+        self.assertEqual(job_of.get(pre_name), job_of.get(self.NAME), "미리 빌드 스텝과 S2 가 다른 잡이다(러너·캐시 공유 안 됨)")
+        pre = extract_step(self.windows, pre_name)
+        self.assertNotIn("if", pre)
+        self.assertNotIn("continue-on-error", pre)
+        self.assertEqual(pre.get("shell"), "bash")
+        body = [l.strip() for l in pre["run"].splitlines() if l.strip() and not l.strip().startswith("#")]
+        s2 = [l.strip() for l in self.step["run"].splitlines() if l.strip()]
+        for line in ('s2_dir="$PWD/target/u-tmp/s2-registration-ci"', 'export CYS_PACK_DIR="$s2_dir/pack" CYS_STATE_DIR="$s2_dir/state"'):
+            self.assertIn(line, body, "미리 빌드 env 가 S2 와 다르다: " + line)
+            self.assertIn(line, s2, "S2 env 가 바뀌었다 — 미리 빌드 스텝도 같이 맞춰라: " + line)
+        self.assertEqual(body[-1], "cargo test --bin cysd --no-run")
+
     def gate_code(self):
         lines = read_text(WORKFLOW).splitlines()
         begin = next(i for i, line in enumerate(lines) if line.strip() == "python3 - <<'PY'") + 1

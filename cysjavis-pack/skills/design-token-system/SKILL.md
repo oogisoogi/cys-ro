@@ -1,6 +1,6 @@
 ---
 name: design-token-system
-description: 구조적 디자인 시스템 토큰·그리드·다크모드를 근거기반으로 구축: 2-tier(primitive→semantic) DTCG 토큰·테마=alias 재지정·APCA/WCAG2 대비 실측·타입단위 파생 Swiss 그리드+모듈러 스케일·데이터를 정체성으로(generative)·헤드리스 렌더 실측(+CSS주석 */ 트랩 점검). design 워커가 디자인 시스템/토큰/다크모드를 만들 때 발동.
+description: 디자인 토큰·그리드·다크모드를 근거 기반으로 구축한다(DTCG 2단 토큰·대비 실측·헤드리스 렌더). 「디자인 시스템 / 디자인 토큰 / 다크모드」 요청 때.
 ---
 
 # design-token-system
@@ -52,3 +52,7 @@ description: 구조적 디자인 시스템 토큰·그리드·다크모드를 �
 - 헤드리스 렌더 후 Read로 확인: 흰배경+검은글자=토큰 미적용 신호(주석/괄호 균형부터 의심).
 - 다크/라이트 양 테마 각각 렌더해 대비·구조 확인.
 - ★CVD(색각이상) 검증(data-viz/색 시리즈): Brettel 1997 시뮬(★linear RGB·정확 행렬=libDaltonLens public domain·Lokno gist 행렬은 저자 자인 부정확=금지)→ΔE76. 시퀀셜=L*(명도) 단조 보존이면 CVD-safe 확증·카테고리=쌍 ΔE76 <11이면 색만 불충분(shape/라벨 필수). 'CVD-safe' 주장은 박제 전 시뮬로 자기검증(producer≠evaluator). 하네스 예=cys-homepage _cvd_verify.mjs(결정론·무서버).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+구조적 디자인 시스템 토큰·그리드·다크모드를 근거기반으로 구축: 2-tier(primitive→semantic) DTCG 토큰·테마=alias 재지정·APCA/WCAG2 대비 실측·타입단위 파생 Swiss 그리드+모듈러 스케일·데이터를 정체성으로(generative)·헤드리스 렌더 실측(+CSS주석 */ 트랩 점검). design 워커가 디자인 시스템/토큰/다크모드를 만들 때 발동.

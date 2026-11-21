@@ -83,10 +83,12 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
     const cancel = body.indexOf("if (!ok) {");
     expect(cancel).toBeGreaterThan(-1);
     expect(body.slice(cancel, body.indexOf("}", cancel) + 1)).toContain("return;"); // 취소 가지는 return 으로 끝난다
-    const recheck = body.indexOf("if (!ws.tree || !collectSids(ws.tree).includes(sid)) return;");
+    const recheck = body.indexOf("if (!ws.tree || !seatVisible(ws, sid)) return;"); // (948 D1 ⓑ) 보기 트리 기준
     expect(recheck).toBeGreaterThan(cancel);
     // 낡은 포커스(이 탭에 없는 창)는 처음부터 닫지 않는다
-    expect(body.indexOf("if (!collectSids(ws.tree).includes(sid)) return;")).toBeLessThan(body.indexOf("needsCloseConfirm("));
+    const stale = body.indexOf("if (!seatVisible(ws, sid)) return;"); // (948 D1 ⓑ) ws.tree 가 아니라 보기 트리 — 숨은 탭 좌석도 낡은 포커스
+    expect(stale).toBeGreaterThan(-1);
+    expect(stale).toBeLessThan(body.indexOf("needsCloseConfirm("));
   });
 
   it("(Fable MAJOR-1) Control Center 가 열려 있으면 확인 창을 띄우기 **전에** 닫는다(확인 창이 그 뒤에 숨지 않게)", () => {
@@ -113,9 +115,10 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
   });
 
   it("(opus 뮤턴트 X1) 낡은 포커스 가드는 판정보다 앞 · close_surface 경로에 우회 0", () => {
-    const stale = body.indexOf("if (!collectSids(ws.tree).includes(sid)) return;");
+    const stale = body.indexOf("if (!seatVisible(ws, sid)) return;"); // (948 D1 ⓑ) 보기 트리 기준
     expect(stale).toBeGreaterThan(-1);
     expect(stale).toBeLessThan(body.indexOf("const key = paneKey(sid, ws.socket);"));
+    expect(body).not.toContain("if (!collectSids(ws.tree).includes(sid)) return;"); // 옛 전 좌석 트리 검사로 되돌아가지 않는다
   });
 
   it("확인 창 겹침 0 — 진행 중 플래그", () => {

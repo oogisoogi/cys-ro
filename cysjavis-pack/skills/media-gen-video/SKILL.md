@@ -1,9 +1,12 @@
 ---
 name: media-gen-video
 description: 이미지를 시네마틱 영상 클립(B-roll)으로 애니메이트하는 하위 스킬 — fal.ai 영상 모델(Kling·Seedance 등)로 이미지→영상, 초당 종량제라 길이·비용을 정밀 제어한다. media-gen 영상 관문. "이미지를 영상으로 / B-roll 생성 / image to video / kling seedance" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-video
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 이미지를 움직이는 클립으로 만든다(B-roll). **초당 과금**이라 길이가 곧 비용 — 정밀하게 잡는다.
 

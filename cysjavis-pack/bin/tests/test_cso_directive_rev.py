@@ -2453,10 +2453,22 @@ class CsoDirectiveRevision(unittest.TestCase):
         #     주던 것을 걷는다. 지침을 만지는 가지(review-a·b)가 모두 들어온 뒤의 크기다.
         #   ④ 2026-10-26 상향(1.1.11 · TICKET=cu-1111-precedent · master 결정 A = master#1da2515c): MASTER 84,987 → 85,382 · CEO 100,473 → 100,868
         #     (+395 B 씩 = 「★ 컴퓨터 통제 — 선례로 먼저 정하고 보고」 절 1개 · 박사님 10-26 「매번 묻지 않게」 · 조건 ≤ 400 B · 근거 상세는 SKILL/DESIGN).
+        #   ⑤ 2026-11-18 상향(1.1.16 · TICKET=cysr-1116-integ-1118 · master#41422dd8 「⑴ 줄이기 먼저 · 안 되면 ⑵」): MASTER 85,365 → 86,306 · CEO 100,851 → 101,792
+        #     (+941 B 씩 = cysr 대화 화면 표식 절 1개 · 4d20d25a·e1cd0f76·12e8bc95 가 +1,277 B 로 넣은 것을 뜻 불변으로 940 B 로 줄인 뒤 남는 몫 ·
+        #     표식 꼴 4줄은 화면 판정(confirms.ts)과 글자 그대로 맞아야 해 못 줄인다 · 더 줄이려면 다른 조항을 고쳐야 해 이 티켓 밖).
+        #   ⑥ 2026-11-18 상향(1.1.16 · TICKET=cysr-no-hands-gui-1118 · master#30990c7b A 「줄이기 먼저 · 안 되면 상향」): MASTER 86,306 → 86,625 · CEO 101,792 → 102,111
+        #     (+319 B 씩 = 「★ 사용자와 함께 쓰는 컴퓨터 — 손을 빌리지 않기」 절 1개 · 469 B 를 뜻 유지로 319 B 로 줄인 뒤 남는 몫 · 세부는 스킬 computer-control).
+        #   ⑦ 2026-11-19 상향(1.1.16 · TICKET=cysr-1116-s6-1119 · master#4a485888 조각 6 「팩 지침 문장 = 별도 커밋」): MASTER 86,625 → 87,810 · CEO 102,111 → 103,296
+        #     (+1,185 B 씩 = 「★ 대화 화면 표식」 절 안 표식 꼴 1줄(⟪부서 제안⟫·⟪부서로 올리는 중⟫ — 화면 judge/rail.ts 와 글자 그대로) + 팀 만들기·D7 먼저 제안·promote-check·닫은 뒤 1회 질문 1문단
+        #     · P2-DESIGN §5-4·§16-3·§16-4 가 「지침 문장」으로 정한 것 · 새 절 0 · 옛 조항을 줄여 맞추는 것은 이 티켓 밖).
         size = lambda name: os.path.getsize(os.path.join(REAL_DIRECTIVES_DIR, name))   # 실제 파일(전체 검체 재실행이 DIRECTIVES_DIR 을 임시 사본으로 바꿔도 영향 없다)
         self.assertLessEqual(size("CSO_DIRECTIVE.md"), 57687, "CSO_DIRECTIVE.md 바이트 예산(57,687) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 85382, "MASTER_DIRECTIVE.md 바이트 예산(85,382) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 100868, "CEO_TEMPLATE.md 바이트 예산(100,868) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        #   ⑥ 2026-11-20 상향(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③ 가벼운 시작 손잡이 1줄): ④ 문단을 433 → 501 B 로 줄여 쓴 뒤 남는 +68 B — MASTER 86,625 → 86,693 · CEO 102,111 → 102,179
+        #   ⑥ 2026-11-20 상향(같은 티켓 · 독립 검증 V-3 · master#afc55645): light 일 때 빠지는 것 4가지 + CSO 여는 명령 + 진실원 = 데몬 — ④ 줄 수 유지(§2 줄 번호 핀) · MASTER 86,949 · CEO 102,435
+        #   ⑧ 2026-11-20 통합(TICKET=cysr-1116-integ-1120): b23 ⑥(86,949 / 102,435) + s6 「★ 대화 화면 표식」 +1,185 B(s6 갈래 86,625 → 87,810 · 103,296) —
+        #     두 문단이 겹치지 않아 합 = 실측 MASTER 88,134 · CEO 103,620(gen_ceo_template --check GREEN · 103620 bytes)
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 88134, "MASTER_DIRECTIVE.md 바이트 예산(88,134) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103620, "CEO_TEMPLATE.md 바이트 예산(103,620) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

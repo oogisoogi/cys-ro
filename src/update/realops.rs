@@ -215,6 +215,9 @@ pub struct RealOps {
     pub canon_override: Option<Canon>,
     #[cfg(test)]
     pub verify_ok: bool,
+    /// 시험 전용(codex skt6a-r1): 되감기 옛 번들 판정(맥 codesign·build-info 실물)을 대신한다 — 그 밖(점검·종료·재기동)은 실물.
+    #[cfg(test)]
+    pub old_bundle_override: Option<PathBuf>,
 }
 
 fn fail(code: ErrCode, step: &str, d: impl Into<String>) -> Fail {
@@ -244,6 +247,8 @@ impl RealOps {
             canon_override: None,
             #[cfg(test)]
             verify_ok: false,
+            #[cfg(test)]
+            old_bundle_override: None,
         }
     }
 
@@ -313,6 +318,78 @@ impl RealOps {
             Ok(())
         } else {
             Err(fail(ErrCode::RotateFailed, if stop_only { "S7" } else { "S10" }, format!("rotate rc {:?}", o.status.code())))
+        }
+    }
+
+    /// T6b S7 앞 점검: 옛 데몬(org.status)에 입양 칸이 있을 때만 스테이지 번들의 cysd 로 `--adopt-check --as-bundle <정식>`
+    /// (교체 뒤 정식 자리 기준 신원) — 막힘·해석 실패(새 판이 점검을 모름) = Err(S7).
+    fn seat_adopt_precheck(&self, j: &Journal) -> Step {
+        // ★codex skt6a-r1 #3: 응답 없음·모양 다름 = 막힘(S6 보류) — 「입양 칸 없음」(노브 끔)만 점검 없음.
+        let Some(sa) = seat_adopt_status((self.env.rpc)("org.status", json!({}))).map_err(|d| fail(ErrCode::RotateFailed, "S6", d))? else {
+            return Ok(());
+        };
+        let pending: Vec<String> = sa["pending"].as_array().map(|a| a.iter().filter_map(|p| p["skid"].as_str().map(str::to_string)).collect()).unwrap_or_default();
+        let staged = super::mac::staged_path(&self.env.canonical_app, j.release_seq);
+        super::mac::verify_signature_pin(&staged)?;
+        let canon = self.env.canonical_app.to_string_lossy().into_owned();
+        let o = self.child(&staged.join("Contents/MacOS/cysd"), &["--adopt-check", "--json", "--as-bundle", &canon])?;
+        let already = seat_adopt_precheck_verdict(o.status.code(), &o.stdout, &pending).map_err(|d| fail(ErrCode::RotateFailed, "S6", d))?;
+        if !already.is_empty() {
+            eprintln!("[update] S6 입양 점검: 지금 데몬도 못 다루는 미결 seatkeep {}개({}) — 막힘으로 세지 않음", already.len(), already.join(", "));
+        }
+        Ok(())
+    }
+
+    /// 되감기로 돌아갈 옛 번들(맥) — `rb_swap` 과 같은 판정(서명 핀 통과 후보 중 신원 = 옛 판인 **유일한** 것) · 못 고름 = None.
+    fn rb_old_bundle(&self, j: &Journal) -> Option<PathBuf> {
+        #[cfg(test)]
+        if let Some(p) = &self.old_bundle_override {
+            return Some(p.clone());
+        }
+        let recorded = j.prev_bundle.as_ref().map(|p| PathBuf::from(&p.path));
+        let cands: Vec<(PathBuf, Option<super::mac::Ident>)> =
+            super::mac::prev_candidates(&self.env.canonical_app, Path::new(&j.stage_path), j.from_release_seq, recorded.as_deref())
+                .into_iter()
+                .map(|c| {
+                    let id = if super::mac::verify_signature_pin(&c).is_ok() { super::mac::bundle_ident(&c) } else { None };
+                    (c, id)
+                })
+                .collect();
+        super::mac::pick_unique_old(&cands, &self.expect_old())
+    }
+
+    /// T6b 되감기 전 판정(무접촉): 정식 자리가 새 판이고 되돌아갈 옛 번들의 cysd 가 `--adopt-check` 를 모르면(JSON 아님) true =
+    /// 데몬을 멈춘 뒤 `--end-keepers` 대상. ★codex skt6a-r1 #1: 이 판정은 데몬을 멈추기 **전에** 한다. 옛 번들을 못 고르면(= 이어지는
+    /// `rb_swap` 도 같은 판정으로 실패) 끝내지 않는다(산 채 사람 필요 = 종전 · 끝내면 되감기 실패 + 좌석 손실 · skt6 경미 6).
+    fn old_unaware_for_rollback(&mut self, j: &Journal) -> bool {
+        if self.canonical(j) != Canon::New {
+            return false;
+        }
+        let Some(old) = self.rb_old_bundle(j).filter(|b| b.join("Contents/MacOS/cysd").is_file()) else { return false };
+        let aware = self
+            .child(&old.join("Contents/MacOS/cysd"), &["--adopt-check", "--json"])
+            .ok()
+            .is_some_and(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).is_ok_and(|v| v.is_object()));
+        !aware
+    }
+
+    /// T6b 새 판 cysd `--end-keepers`(데몬이 멈춘 뒤). ★codex skt6a-r1 #2: 「끝남 확인」 = rc 0 + JSON `failed` 빈 배열 — 그 밖(rc 1·rc 3
+    /// 상한 초과·실행 실패·해석 실패) = Err(사유). 데몬이 소켓을 지운 직후 잠금을 놓기 전이면 rc 3 → 200ms 간격 3초까지 다시(skt6 경미 8).
+    fn end_keepers_confirmed(&mut self) -> Result<String, String> {
+        let new_cysd = self.env.canonical_app.join("Contents/MacOS/cysd");
+        let t0 = std::time::Instant::now();
+        loop {
+            let o = self.child(&new_cysd, &["--end-keepers", "--json"]).map_err(|f| format!("실행 실패: {}", f.detail))?;
+            let out = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            match o.status.code() {
+                Some(3) if t0.elapsed() < std::time::Duration::from_secs(3) => {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                Some(0) if serde_json::from_str::<serde_json::Value>(&out).is_ok_and(|v| v["failed"].as_array().is_some_and(|a| a.is_empty())) => {
+                    return Ok(out);
+                }
+                rc => return Err(format!("rc {rc:?} {out}")),
+            }
         }
     }
 
@@ -716,8 +793,15 @@ impl Ops for RealOps {
         Ok(())
     }
 
-    fn confirm(&mut self, _j: &Journal) -> Step {
-        reconfirm(&self.env.update_dir, &self.env.channel, &self.cand)
+    fn confirm(&mut self, j: &Journal) -> Step {
+        reconfirm(&self.env.update_dir, &self.env.channel, &self.cand)?;
+        if self.env.os == Os::Mac {
+            // ★T6b(TICKET=cysr-1116-seatkeep-1119 · T6-DESIGN 2-2): 옛 데몬을 내리기 **전**(S6 · 아무것도 안 바꾼 단계)에 새 판이 산 seatkeep 을
+            //   입양할 수 있나 — 막히면 S6 실패 = 보류(정비 모드 해제 · 스테이지 삭제 · **데몬 무접촉**). S7 에 두면 런너가 옛 데몬을 재기동한다
+            //   (독립 검증 skt6 주요 2). 입양 노브 끔 데몬 = 점검 없음(종전).
+            self.seat_adopt_precheck(j)?;
+        }
+        Ok(())
     }
 
     fn stop(&mut self, _j: &Journal) -> Step {
@@ -877,6 +961,12 @@ impl Ops for RealOps {
 
     fn start_new(&mut self, _j: &Journal) -> Step {
         super::win_install::release_installer_mutex(); // S9b 끝 = 뮤텍스 놓음(§3-7 ⑦)
+        // ★1.1.16 ⑤(TICKET=cysr-1116-debt-d-1119): 교체 직후 · 새 데몬 기동 전 — 새 cys·cysd·cysr 첫 실행(OS 검사)을 여기서 떠안는다(실패 무시 · 로그 1줄).
+        //   맥만 — 윈 교체(S9)는 NSIS 설치기 실행이고 그 POSTINSTALL 이 이미 `cys daemon prime` 1회를 돈다(두 번 돌지 않는다).
+        if let (Os::Mac, Some(dir)) = (self.env.os, self.new_cys().parent()) {
+            // 맥 cysr = 서명된 새 번들 안의 별칭(cys 를 가리키는 심링크) — 배치는 번들 교체가 증명 · 같은 바이트는 prime 이 다시 확인.
+            eprintln!("[update] {}", super::prime::prime_log_line(&super::prime::prime_binaries(dir, true)));
+        }
         self.rotate(&self.new_cys(), false)
     }
 
@@ -1027,8 +1117,8 @@ impl Ops for RealOps {
     }
 
     fn rb_prepare(&mut self, j: &Journal) -> Step {
-        let _ = self.child(&self.new_cys(), &["drain", "--verify", "--timeout", "60"]);
-        let _ = self.rotate(&self.new_cys(), true);
+        // ★codex skt6a-r1 #1(blocking): 되감기 전제를 데몬을 멈추고 seatkeep 을 끝내기 **전에** 모두 본다 — 뒤에서 실패하면 데몬 0 · 좌석 소실
+        //   (되돌릴 수 없음). 스냅숏 검증은 백업 사본만 읽는다(데몬·라이브 상태 무관) · 옛 판 입양 앎 판정도 무접촉.
         let root = PathBuf::from(&j.snapshot_dir);
         for (name, _) in self.snapshot_roots() {
             let got = super::snapshot::verify(&root.join(name)).map_err(|e| fail(ErrCode::RollbackBlocked, "RB_PREPARED", e))?;
@@ -1036,6 +1126,23 @@ impl Ops for RealOps {
             let want = journal_snapshot_sha(j, name).ok_or_else(|| fail(ErrCode::RollbackBlocked, "RB_PREPARED", format!("저널에 {name} 매니페스트 sha 없음")))?;
             if !super::snapshot::digest_eq(&got, &want) {
                 return Err(fail(ErrCode::RollbackBlocked, "RB_PREPARED", format!("{name} 매니페스트 sha256 ≠ 저널 고정값")));
+            }
+        }
+        // ★T6b(T6-DESIGN 2-4): 되돌아갈 옛 판이 입양을 모르면 멈춘 뒤 지금 판 cysd 로 산 seatkeep 을 먼저 끝낸다(옛 판 = 고아·작성자 둘 방지).
+        let end_needed = self.env.os == Os::Mac && self.old_unaware_for_rollback(j);
+        let _ = self.child(&self.new_cys(), &["drain", "--verify", "--timeout", "60"]);
+        let _ = self.rotate(&self.new_cys(), true);
+        if end_needed {
+            if let Err(why) = self.end_keepers_confirmed() {
+                // ★codex skt6a-r1 #2: 끝남을 확인 못 하면 입양 모르는 옛 판으로 되감지 않는다(살아남은 seatkeep = 고아 · phoenix 복원과 작성자 둘).
+                //   새 판 데몬을 다시 띄워(산 seatkeep 입양) 좌석을 살리고 RB_FAILED(사람 필요)로 정직하게 남긴다 — 무한 대기 아님.
+                let restored = self.rotate(&self.new_cys(), false);
+                let r = match &restored {
+                    Ok(()) => "새 판 데몬 복원됨".to_string(),
+                    Err(f) => format!("새 판 데몬 복원 실패({})", f.detail),
+                };
+                eprintln!("[update] RB_PREPARED: seatkeep 관리용 종료 확인 불가 — 되감기 멈춤 · {r} · {why}");
+                return Err(fail(ErrCode::RollbackBlocked, "RB_PREPARED", format!("seatkeep 관리용 종료 확인 불가({why}) — 되감기 안 함 · {r}")));
             }
         }
         Ok(())
@@ -1623,6 +1730,21 @@ pub fn latest_verified_snapshot(update_dir: &Path, seq: u64) -> Option<PathBuf> 
     c.into_iter().rev().map(|(_, p)| p).find(|p| ["state", "cys"].iter().all(|n| super::snapshot::verify(&p.join(n)).is_ok()))
 }
 
+/// ★codex skt6a-r1 #3(rotate·업데이터 사전 점검 공용 · 순수): `org.status` 응답 → 입양 상태. 「칸 없음」(입양 노브 끔 · 옛 판) = Ok(None) ·
+/// 칸 = 객체 = Ok(Some) · 응답 못 받음 · 응답이 객체 아님 · `daemon` 객체 없음(초판부터 있는 칸) · 칸이 객체 아님 = Err(막힘 사유).
+/// 실패를 「노브 끔」으로 읽으면(fail-open) 산 seatkeep 을 쥔 데몬을 입양 못 하는 판으로 바꿀 수 있다.
+pub fn seat_adopt_status(org: Result<Value, String>) -> Result<Option<Value>, String> {
+    let v = org.map_err(|e| format!("입양 점검: org.status 응답 없음({e})"))?;
+    let Some(d) = v.get("daemon").filter(|d| d.is_object()) else {
+        return Err("입양 점검: org.status 모양 다름(daemon 칸 없음)".into());
+    };
+    match d.get("seat_adopt") {
+        None | Some(Value::Null) => Ok(None),
+        Some(sa) if sa.is_object() => Ok(Some(sa.clone())),
+        Some(_) => Err("입양 점검: org.status 모양 다름(seat_adopt 가 객체 아님)".into()),
+    }
+}
+
 /// 저널 `snapshot_manifest_sha256`(= `state:<sha>,cys:<sha>`)에서 뿌리 하나의 값.
 pub fn journal_snapshot_sha(j: &Journal, name: &str) -> Option<String> {
     j.snapshot_manifest_sha256.split(',').find_map(|kv| kv.split_once(':').filter(|(k, _)| *k == name).map(|(_, v)| v.to_string()))
@@ -1694,8 +1816,274 @@ pub fn tree_sha(root: &Path) -> Result<String, String> {
     Ok(format!("{:x}", h.finalize()))
 }
 
+/// T6b S6 입양 점검 판정(순수): JSON 아님(새 판이 점검 모름) = 막힘 · 막힘 중 **지금 데몬의 미결**(`current_pending`)은 빼고 보고만
+/// (독립 검증 skt6 주요 1 — 세면 업데이트가 영영 막힘) · 나머지가 있으면 막힘 · Ok = 뺀 skid.
+pub(crate) fn seat_adopt_precheck_verdict(rc: Option<i32>, stdout: &[u8], current_pending: &[String]) -> Result<Vec<String>, String> {
+    let v: serde_json::Value =
+        serde_json::from_slice(stdout).map_err(|_| format!("seat_adopt_precheck_unreadable: 새 판 cysd 가 입양 점검을 모름(rc {rc:?})"))?;
+    let blocked = v["blocked"].as_array().cloned().unwrap_or_default();
+    if blocked.is_empty() && rc != Some(0) {
+        return Err(format!("seat_adopt_precheck_unreadable: rc {rc:?} 와 내용(막힘 0)이 어긋남"));
+    }
+    let (already, new): (Vec<&serde_json::Value>, Vec<&serde_json::Value>) =
+        blocked.iter().partition(|b| b["skid"].as_str().is_some_and(|k| current_pending.iter().any(|p| p == k)));
+    if new.is_empty() {
+        return Ok(already.iter().filter_map(|b| b["skid"].as_str().map(str::to_string)).collect());
+    }
+    let list: Vec<String> = new.iter().map(|b| format!("{}:{}", b["skid"].as_str().unwrap_or("?"), b["reason"].as_str().unwrap_or("?"))).collect();
+    Err(format!("seat_adopt_precheck_blocked: 새 판이 입양 못 하는 seatkeep {}개 [{}] (rc {rc:?})", new.len(), list.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
+    /// ★codex skt6a-r1 #3: `org.status` 응답 → 입양 상태 판정표. 칸 없음(노브 끔·옛 판) = None · 응답 실패·모양 다름 = 막힘.
+    #[test]
+    fn seat_adopt_status_fails_closed_on_error_or_shape() {
+        assert_eq!(seat_adopt_status(Ok(json!({"daemon": {"version": "1.1.15"}}))), Ok(None), "칸 없음 = 노브 끔");
+        assert_eq!(seat_adopt_status(Ok(json!({"daemon": {"seat_adopt": null}}))), Ok(None));
+        let sa = json!({"pending": [], "adoptable_surfaces": []});
+        assert_eq!(seat_adopt_status(Ok(json!({"daemon": {"seat_adopt": sa.clone()}}))), Ok(Some(sa)));
+        for (case, org) in [
+            ("응답 없음", Err("connection refused".to_string())),
+            ("객체 아님", Ok(json!("x"))),
+            ("daemon 없음", Ok(json!({"surfaces": []}))),
+            ("daemon 객체 아님", Ok(json!({"daemon": 1}))),
+            ("seat_adopt 객체 아님", Ok(json!({"daemon": {"seat_adopt": true}}))),
+        ] {
+            assert!(seat_adopt_status(org).is_err(), "{case} = 막힘이어야 한다");
+        }
+    }
+
+    /// ★codex skt6a-r1 #3: 업데이터 S6 점검 — org.status 실패 = S6 Err(보류) · 점검 cysd 실행 0. 칸 없음 = 점검 없음(Ok).
+    #[cfg(unix)]
+    #[test]
+    fn s6_precheck_blocks_when_org_status_fails() {
+        let (d, _upd, _root, mut ops) = recon_rig("s6org");
+        let j = super::super::journal::Journal::new("fedcba9876543210fedcba9876543210", 2);
+        ops.env.rpc = Box::new(|_, _| Err("데몬 응답 없음".into()));
+        let e = ops.seat_adopt_precheck(&j).expect_err("응답 실패 = 막힘");
+        assert_eq!((e.code, e.step.as_str()), (ErrCode::RotateFailed, "S6"), "{e:?}");
+        ops.env.rpc = Box::new(|_, _| Ok(json!({"daemon": {"seat_adopt": "?"}})));
+        assert!(ops.seat_adopt_precheck(&j).is_err(), "모양 다름 = 막힘");
+        ops.env.rpc = Box::new(|_, _| Ok(json!({"daemon": {"version": "x"}})));
+        assert!(ops.seat_adopt_precheck(&j).is_ok(), "칸 없음 = 점검 없음");
+        assert!(calls(&d).is_empty(), "점검 cysd 실행 0: {:?}", calls(&d));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 되감기 시험 틀: recon_rig + 스냅숏 2뿌리(저널에 sha 고정) · 정식 자리 = 새 판 · 새 판 cysd(`--end-keepers` = `ek.rc`·`ek.out`) ·
+    /// 옛 번들 cysd(`--adopt-check` = `old.aware` 있으면 JSON · 없으면 rc 2) · 호출은 모두 calls.log.
+    #[cfg(unix)]
+    fn rb_rig(tag: &str) -> (PathBuf, RealOps, super::super::journal::Journal) {
+        use std::os::unix::fs::PermissionsExt;
+        let (d, _upd, root, mut ops) = recon_rig(tag);
+        std::fs::create_dir_all(d.join("state")).unwrap();
+        std::fs::write(d.join("state/s.json"), "{}").unwrap();
+        let snap = d.join("snap");
+        let a = super::super::snapshot::take(&d.join("state"), &snap.join("state"), &|_| true).unwrap();
+        let b = super::super::snapshot::take(&root, &snap.join("cys"), &RealOps::cys_filter).unwrap();
+        let mut j = super::super::journal::Journal::new("fedcba9876543210fedcba9876543210", 2);
+        j.snapshot_dir = snap.to_string_lossy().into_owned();
+        j.snapshot_manifest_sha256 = format!("state:{a},cys:{b}");
+        let log = d.join("calls.log");
+        let new_cysd = format!(
+            "#!/bin/sh\necho \"cysd $*\" >> '{l}'\ncase \"$*\" in\n  *--end-keepers*) cat '{d}/ek.out' 2>/dev/null; exit $(cat '{d}/ek.rc' 2>/dev/null || echo 0);;\nesac\nexit 0\n",
+            l = log.display(),
+            d = d.display()
+        );
+        let old_cysd = format!(
+            "#!/bin/sh\necho \"oldcysd $*\" >> '{l}'\n[ -e '{d}/old.aware' ] && {{ echo '{{}}'; exit 0; }}\necho 'error: unexpected argument' >&2\nexit 2\n",
+            l = log.display(),
+            d = d.display()
+        );
+        for (p, body) in [(d.join("app/Contents/MacOS/cysd"), new_cysd), (d.join("oldb/Contents/MacOS/cysd"), old_cysd)] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, body).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::write(d.join("ek.out"), r#"{"ended":1,"failed":[],"foreign":0}"#).unwrap();
+        ops.canon_override = Some(Canon::New);
+        ops.old_bundle_override = Some(d.join("oldb"));
+        (d, ops, j)
+    }
+
+    /// ★codex skt6a-r1 #1(blocking) 실패 주입: 스냅숏 검증 실패 = 데몬을 멈추지도 seatkeep 을 끝내지도 않고 RB_PREPARED 실패
+    /// (데몬 산 채 · 호출 0). 뮤턴트 = 검증을 종료 뒤로 되돌리면 정지·종료 호출이 남아 붉음.
+    #[cfg(unix)]
+    #[test]
+    fn rb_prepare_checks_snapshots_before_stopping_or_ending_keepers() {
+        for (case, spoil) in [("매니페스트 sha ≠ 저널", 0), ("백업 파일 손상", 1), ("저널 sha 없음", 2)] {
+            let (d, mut ops, mut j) = rb_rig(&format!("rbsnap{spoil}"));
+            match spoil {
+                0 => j.snapshot_manifest_sha256 = j.snapshot_manifest_sha256.replace("state:", "state:00"),
+                1 => std::fs::write(d.join("snap/state/files/s.json"), "tampered").unwrap(),
+                _ => j.snapshot_manifest_sha256 = String::new(),
+            }
+            let e = ops.rb_prepare(&j).expect_err(case);
+            assert_eq!((e.code, e.step.as_str()), (ErrCode::RollbackBlocked, "RB_PREPARED"), "{case}: {e:?}");
+            assert!(d.join("daemon.up").exists(), "{case}: 새 데몬은 산 채");
+            assert!(calls(&d).is_empty(), "{case}: 저장·정지·점검·종료 호출 0: {:?}", calls(&d));
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+
+    /// 정상: 옛 판 입양 모름 → 판정(멈추기 전) → 정지 → `--end-keepers` 끝남 확인 = Ok · 옛 판 입양 앎 = 종료 호출 0.
+    #[cfg(unix)]
+    #[test]
+    fn rb_prepare_ends_keepers_after_stop_only_when_old_unaware() {
+        let (d, mut ops, j) = rb_rig("rbok");
+        ops.rb_prepare(&j).expect("끝남 확인 = 진행");
+        let c = calls(&d);
+        let pos = |p: &str| c.iter().position(|l| l.contains(p)).unwrap_or_else(|| panic!("{p} 없음: {c:?}"));
+        assert!(pos("oldcysd --adopt-check") < pos("--stop-only") && pos("--stop-only") < pos("cysd --end-keepers"), "순서: {c:?}");
+        assert!(!d.join("daemon.up").exists(), "되감기로 넘어감 = 새 데몬 내려간 채");
+        let (d2, mut ops2, j2) = rb_rig("rbaware");
+        std::fs::write(d2.join("old.aware"), "1").unwrap();
+        ops2.rb_prepare(&j2).unwrap();
+        assert!(!calls(&d2).iter().any(|l| l.contains("--end-keepers")), "입양 앎 = 종료 0: {:?}", calls(&d2));
+        for x in [d, d2] {
+            let _ = std::fs::remove_dir_all(&x);
+        }
+    }
+
+    /// ★codex skt6a-r1 #2 실패 주입: `--end-keepers` 끝남 확인 실패(rc 1 · rc 0 인데 failed 있음 · 출력 해석 불가 · 실행 파일 없음) =
+    /// 되감기 진행 금지(RB_PREPARED Err) + 새 판 데몬 복원(rotate 재기동 · daemon.up 다시 있음). 복원도 실패하면 사유에 그대로.
+    #[cfg(unix)]
+    #[test]
+    fn rb_prepare_refuses_rollback_and_restores_daemon_when_end_keepers_unconfirmed() {
+        for (case, rc, out) in [
+            ("rc 1", "1", r#"{"ended":0,"failed":[{"skid":"a","reason":"end_lock_free"}],"foreign":0}"#),
+            ("rc 0 + failed", "0", r#"{"ended":0,"failed":[{"skid":"a","reason":"x"}],"foreign":0}"#),
+            ("rc 0 해석 불가", "0", "garbage"),
+            ("실행 파일 없음", "rm", ""),
+        ] {
+            let (d, mut ops, j) = rb_rig(&format!("rbek{}", case.len()));
+            std::fs::write(d.join("ek.rc"), rc).unwrap();
+            std::fs::write(d.join("ek.out"), out).unwrap();
+            if rc == "rm" {
+                std::fs::remove_file(d.join("app/Contents/MacOS/cysd")).unwrap();
+            }
+            let e = ops.rb_prepare(&j).expect_err(case);
+            assert_eq!((e.code, e.step.as_str()), (ErrCode::RollbackBlocked, "RB_PREPARED"), "{case}: {e:?}");
+            assert!(e.detail.contains("되감기 안 함") && e.detail.contains("새 판 데몬 복원됨"), "{case}: {}", e.detail);
+            assert!(d.join("daemon.up").exists(), "{case}: 새 판 데몬 복원");
+            let c = calls(&d);
+            assert!(c.last().is_some_and(|l| l.starts_with("rotate --skip-drain") && !l.contains("--stop-only")), "{case}: 마지막 = 재기동: {c:?}");
+            let _ = std::fs::remove_dir_all(&d);
+        }
+        let (d, mut ops, j) = rb_rig("rbekrf");
+        std::fs::write(d.join("ek.rc"), "1").unwrap();
+        std::fs::write(d.join("restart.fail"), "1").unwrap();
+        let e = ops.rb_prepare(&j).unwrap_err();
+        assert!(e.detail.contains("새 판 데몬 복원 실패"), "복원 실패도 정직하게: {}", e.detail);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★codex skt6a-r1 #2: rc 3(데몬 잠금 아직 쥠)이 상한(3초)을 넘으면 끝남 확인 실패 = 무한 대기 아님.
+    #[cfg(unix)]
+    #[test]
+    fn rb_prepare_end_keepers_rc3_is_bounded() {
+        let (d, mut ops, j) = rb_rig("rbek3");
+        std::fs::write(d.join("ek.rc"), "3").unwrap();
+        std::fs::write(d.join("ek.out"), r#"{"ended":0,"failed":[],"foreign":0,"refused":"daemon_running"}"#).unwrap();
+        let t0 = std::time::Instant::now();
+        let e = ops.rb_prepare(&j).unwrap_err();
+        assert!(t0.elapsed() < std::time::Duration::from_secs(20), "상한");
+        assert!(e.detail.contains("rc Some(3)") && d.join("daemon.up").exists(), "{}", e.detail);
+        assert!(calls(&d).iter().filter(|l| l.contains("--end-keepers")).count() >= 2, "rc 3 은 다시 시도");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// ★codex skt6a-r1 격리 실물(업데이터 되감기 모의): 진짜 `RealOps::rb_prepare` 가 진짜 `cys rotate --txn`·`cysd --end-keepers` 를
+    /// 격리 데몬·산 좌석 앞에서 부른다(잠금 = 이 시험이 실제로 쥠 · 정식 자리 = `SKA_RB_ROOT/apps/cysr.app` · 옛 번들 = `.cysr.app.old-1`).
+    /// 단독 실행 금지 — `scripts/seatkeep-adopt-e2e.py <bin> rbprep 1` 이 격리 env(CYS_SOCKET·HOME·CYS_UPDATE_STATE_DIR)로 부르고 판정한다.
+    /// `SKA_RB_CASE` = ok | snapbad(스냅숏 망가뜨림). 결과 = `RBLIVE {json}` 한 줄.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "e2e seatkeep-adopt-e2e.py rbprep 전용(격리 데몬·좌석 필요)"]
+    fn rb_prepare_live() {
+        let root = PathBuf::from(std::env::var("SKA_RB_ROOT").expect("SKA_RB_ROOT"));
+        assert!(root.to_string_lossy().starts_with("/private/tmp/ska-rbp-"), "격리 폴더만: {}", root.display());
+        // 격리 실물 규칙: 자식 cys 가 붙을 소켓 = 격리 폴더 안(아니면 실사용 데몬을 건드린다 → 즉시 중단).
+        assert!(std::env::var("CYS_SOCKET").is_ok_and(|s| Path::new(&s).starts_with(&root)), "CYS_SOCKET 이 격리 폴더 밖");
+        let case = std::env::var("SKA_RB_CASE").unwrap_or_default();
+        let upd = PathBuf::from(std::env::var(super::super::buildinfo::ENV_STATE_DIR).expect("격리 갱신 폴더"));
+        assert!(upd.starts_with(&root), "갱신 폴더 = 격리 폴더 안");
+        super::super::ensure_private_dir(&upd).unwrap();
+        let g = super::super::lock::acquire(&upd, "runner").expect("갱신 잠금");
+        let (st, cr) = (root.join("rb/state"), root.join("rb/cys"));
+        for (p, b) in [(st.join("s.json"), "{}"), (cr.join("pack/x.md"), "x")] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b).unwrap();
+        }
+        let snap = root.join("rb/snap");
+        let _ = std::fs::remove_dir_all(&snap);
+        let a = super::super::snapshot::take(&st, &snap.join("state"), &|_| true).unwrap();
+        let b = super::super::snapshot::take(&cr, &snap.join("cys"), &RealOps::cys_filter).unwrap();
+        let mut j = super::super::journal::Journal::new("fedcba9876543210fedcba9876543210", 2);
+        j.snapshot_dir = snap.to_string_lossy().into_owned();
+        j.snapshot_manifest_sha256 = format!("state:{a},cys:{b}");
+        if case == "snapbad" {
+            std::fs::write(snap.join("state/files/s.json"), "tampered").unwrap();
+        }
+        let app = root.join("apps/cysr.app");
+        let env = Env {
+            os: Os::Mac,
+            update_dir: upd.clone(),
+            cys_root: cr.clone(),
+            daemon_state_dir: st.clone(),
+            canonical_app: app.clone(),
+            install_dir: st.clone(),
+            channel: "stable".into(),
+            old_cys: app.join("Contents/MacOS/cys"),
+            rpc: Box::new(|_, _| Err("이 시험은 RPC 를 쓰지 않는다".into())),
+            settle_secs: 0,
+            dry_run: false,
+            counsel_dir: Some(root.join("rb/counsel")),
+        };
+        let a: crate::update::feed::Asset = serde_json::from_value(json!({"url": "", "size": 0, "sha256": "", "max_unpacked": 0, "target": "x", "release_seq": 9})).unwrap();
+        let cand = Candidate { asset: a, version: "1.1.9".into(), release_seq: 9, installed_revoked: false, notes_ko: None, feed_rev: None,
+            envelope_sha256: None, envelope_signed_at: None, release_b64: None, release_sig_b64: None };
+        let mut ops = RealOps::new(env, g.token().render(), cand, "1.1.8".into());
+        ops.canon_override = Some(Canon::New);
+        ops.old_bundle_override = Some(root.join("apps/.cysr.app.old-1"));
+        let t0 = std::time::Instant::now();
+        let r = ops.rb_prepare(&j);
+        let v = json!({"case": case, "ok": r.is_ok(), "ms": t0.elapsed().as_millis() as u64,
+            "err": r.err().map(|f| json!({"code": format!("{:?}", f.code), "step": f.step, "detail": f.detail}))});
+        println!("RBLIVE {v}");
+        drop(g);
+    }
+
+    /// T6b S7 앞 점검: 막힘 0 + rc 0 만 진행 · 막힘·옛 판(JSON 아님)·rc 어긋남 = S7 실패(옛 바이너리 재기동 + 보류).
+    #[test]
+    fn seat_adopt_precheck_verdict_table() {
+        let v = super::seat_adopt_precheck_verdict;
+        assert_eq!(v(Some(0), br#"{"adoptable":1,"blocked":[],"foreign":0,"dead":0}"#, &[]), Ok(vec![]));
+        let one = br#"{"blocked":[{"skid":"a-1-0","reason":"core_version_mismatch"}]}"#;
+        let e = v(Some(1), one, &[]).unwrap_err();
+        assert!(e.starts_with("seat_adopt_precheck_blocked") && e.contains("a-1-0:core_version_mismatch"), "{e}");
+        assert_eq!(v(Some(1), one, &["a-1-0".to_string()]), Ok(vec!["a-1-0".to_string()]), "지금 데몬의 미결 = 막힘 아님(skt6 주요 1)");
+        assert!(v(Some(2), b"cysd: unknown argument", &[]).unwrap_err().starts_with("seat_adopt_precheck_unreadable"));
+        assert!(v(Some(1), br#"{"blocked":[]}"#, &[]).is_err());
+    }
+
+    /// 배선 핀(독립 검증 skt6 경미 9 · 뮤턴트 S7·RB 가 살아남았던 자리): 입양 점검 = S6 `confirm` 안(S7 `stop` 에 없음 = 실패해도 옛 데몬
+    /// 재기동 길을 안 탐) · 되감기 관리용 종료 = `rb_prepare` 안. 주석 줄은 빼고 본다.
+    #[test]
+    fn seat_adopt_wiring_pins() {
+        let src = include_str!("realops.rs");
+        let body = |head: &str| -> String {
+            let i = src.find(head).unwrap_or_else(|| panic!("{head} 없음"));
+            let rest = &src[i..];
+            let end = rest[1..].find("\n    fn ").map(|e| e + 1).unwrap_or(rest.len());
+            rest[..end].lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+        };
+        assert!(body("    fn confirm(&mut self").contains("self.seat_adopt_precheck(j)?"), "S6 입양 점검 배선이 빠졌다");
+        assert!(!body("    fn stop(&mut self").contains("seat_adopt_precheck"), "S7 에 점검이 있으면 막힘 = 옛 데몬 재기동");
+        assert!(body("    fn rb_prepare(&mut self").contains("self.end_keepers_confirmed()"), "되감기 전 관리용 종료 배선이 빠졌다");
+    }
+
     use super::*;
 
     #[test]
@@ -1780,17 +2168,32 @@ mod tests {
 
     /// 이름이 `cysd` 인 오래 사는 가짜 프로세스용 바이너리 — `/bin/sleep` 사본은 플랫폼 서명이라 이 맥에서 실행 즉시 SIGKILL(rc 137 · 3판 V2
     /// 시험은 좀비의 이름을 보고 통과하던 경주였다) → 사본을 ad-hoc 재서명한다.
+    /// ★TICKET=cysr-test-gatekeeper-crash-1118: 시험마다 새로 만들어 실행 → 지우던 것을 고정 자리 1회로 — `target/<profile>/cys-test-fixtures/
+    /// fake-cysd/cysd`(용도별 고정 이름) 에 없을 때만 임시 이름에 복사·서명 → rename 으로 놓고 재사용 · 지우지 않는다(새 Mach-O 실행 → 삭제 =
+    /// syspolicyd 검사 도중 파일 소실 충돌 후보). 호출자는 돌려받은 경로를 실행한다.
     #[cfg(unix)]
-    pub(crate) fn fake_cysd_bin(dir: &Path) -> PathBuf {
-        let p = dir.join("cysd");
-        let _ = std::fs::remove_file(&p);
-        std::fs::copy("/bin/sleep", &p).unwrap();
-        #[cfg(target_os = "macos")]
-        {
-            let o = std::process::Command::new("/usr/bin/codesign").args(["-s", "-", "-f"]).arg(&p).output().unwrap();
-            assert!(o.status.success(), "ad-hoc 재서명 실패");
-        }
-        p
+    pub(crate) fn fake_cysd_bin() -> PathBuf {
+        static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        BIN.get_or_init(|| {
+            let exe = std::env::current_exe().expect("시험 실행 파일 경로");
+            let deps = exe.parent().expect("deps");
+            let profile = if deps.file_name().map(|n| n == "deps").unwrap_or(false) { deps.parent().expect("profile") } else { deps };
+            let dir = profile.join("cys-test-fixtures/fake-cysd");
+            std::fs::create_dir_all(&dir).unwrap();
+            let p = dir.join("cysd");
+            if !p.is_file() {
+                let tmp = dir.join(format!("cysd.part-{}", std::process::id()));
+                std::fs::copy("/bin/sleep", &tmp).unwrap();
+                #[cfg(target_os = "macos")]
+                {
+                    let o = std::process::Command::new("/usr/bin/codesign").args(["-s", "-", "-f"]).arg(&tmp).output().unwrap();
+                    assert!(o.status.success(), "ad-hoc 재서명 실패");
+                }
+                std::fs::rename(&tmp, &p).unwrap();
+            }
+            p
+        })
+        .clone()
     }
 
     /// ★1.1.11 S10 rc 표: 끝까지 돈 rotate 의 25 = 성공 쪽(rc 는 V3 재료로 남는다) · 0 = 성공 · 그 밖 = 실패 · `--stop-only` 는 25 도 실패(그 길에 그런 rc 없음).
@@ -2636,11 +3039,8 @@ mod tests {
         use super::super::runner::{attempt_set_baseline, tests::Sim, Fault, Outcome, Runner};
         use std::os::unix::fs::PermissionsExt;
         let bi = super::super::buildinfo::build_info();
-        let fake = std::env::temp_dir().join(format!("cys-u2-n2e-bin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&fake);
-        std::fs::create_dir_all(&fake).unwrap();
-        fake_cysd_bin(&fake);
-        let mut daemons: Vec<std::process::Child> = (0..3).map(|_| std::process::Command::new(fake.join("cysd")).arg("60").spawn().unwrap()).collect();
+        let fake = fake_cysd_bin();
+        let mut daemons: Vec<std::process::Child> = (0..3).map(|_| std::process::Command::new(&fake).arg("60").spawn().unwrap()).collect();
         let mut other = std::process::Command::new("/bin/sleep").arg("60").spawn().unwrap();
         for _ in 0..60 {
             if daemons.iter().all(|k| hq_daemon_count(&json!({"daemon_pid": k.id()})) == 1) {
@@ -2702,7 +3102,6 @@ mod tests {
             let _ = k.kill();
             let _ = k.wait();
         }
-        let _ = std::fs::remove_dir_all(&fake);
     }
 
     /// ★4판(codex 3R N3′ 반례): 지난 시도(told)의 기록·스냅샷이 남은 채 새 시도가 S3 에서 죽고 저널이 손상 → 복구기는 지난 시도의 옛
@@ -2858,10 +3257,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn v2_counts_only_the_hq_daemon_identified_by_socket() {
-        let d = std::env::temp_dir().join(format!("cys-u2-v2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        let fake = fake_cysd_bin(&d);
+        let fake = fake_cysd_bin();
         let mut kids: Vec<std::process::Child> = (0..2).map(|_| std::process::Command::new(&fake).arg("30").spawn().unwrap()).collect();
         // 부하 중엔 exec 직후 이름이 늦게 보인다(전수 병렬 1회 적색) — 3초까지 기다린다
         let mut n = 0;
@@ -2881,7 +3277,6 @@ mod tests {
             let _ = k.wait();
         }
         assert_eq!(hq_daemon_count(&json!({"daemon_pid": kids[1].id()})), 0, "죽은 pid");
-        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// ★cysr-118-a2-sigformat: 실 발행물 A2 `.sig` 꼴(minisign 서명 텍스트의 base64 겉포장 · tauri 번들러 · 1.1.8 윈 실기 17:07

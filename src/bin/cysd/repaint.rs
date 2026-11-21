@@ -514,11 +514,7 @@ pub(crate) fn nudge_resize(s: &Surface, settle: Duration) -> Result<NudgeOutcome
 pub(crate) const REPAINT_MIN_ROWS: u16 = 4;
 
 fn resize_pty(s: &Surface, rows: u16, cols: u16) -> Result<(), String> {
-    s.master
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .resize(portable_pty::PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
-        .map_err(|e| format!("PTY 크기 변경 실패({rows}x{cols}): {e}"))
+    crate::seat_proc::resize(&s.master, rows, cols)
 }
 
 /// (A6) 파서 크기 변경 — `catch_unwind` 로 감싼다. 파서 락을 쥔 채 안에서 패닉이 나면 가드가 unwinding 중에 떨어져 락이

@@ -8,6 +8,9 @@
 //! rotate 안의 `cys restore` 와 피닉스 복원은 경합이라 rc 가 0/25 로 갈린다 — 대본이 25 를 0 으로 접어 rc 0 갈래를 고정한다(`calls.log` 에 실제 rc 를 남긴다).
 #![cfg(target_os = "macos")]
 
+#[path = "support/fixed_fixture.rs"]
+mod fixed_fixture;
+
 use cys::update::errors::ErrCode;
 use cys::update::journal::{self, Journal, Os, State};
 use cys::update::realops::{Candidate, Env, RealOps};
@@ -107,9 +110,8 @@ fn fixture(tag: &str) -> Fixture {
     std::env::set_var("AITERM_SOCKET", &sock);
     std::env::set_var("XDG_STATE_HOME", home.join("st"));
     std::env::set_var("CYS_UPDATE_STATE_DIR", &upd);
-    let fake = root.join("fake");
-    std::fs::create_dir_all(&fake).unwrap();
-    assert!(std::process::Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(fake.join("claude")).arg(FAKE_CLAUDE).status().unwrap().success(), "가짜 claude 빌드 실패");
+    // 가짜 claude(Mach-O) = 고정 자리 1회 빌드·재사용 · 상자째 지워도 실행 파일은 남는다(fixed_fixture 머리말 · TICKET=cysr-test-gatekeeper-crash-1118).
+    let fake = fixed_fixture::cc_fixed("drainhold-claude", "claude", &std::fs::read_to_string(FAKE_CLAUDE).unwrap()).parent().unwrap().to_path_buf();
     std::env::set_var("PATH", format!("{}:{}:/usr/bin:/bin", fake.display(), Path::new(CYS).parent().unwrap().display()));
     let mut f = Fixture { root, upd, sock, daemon_pid: None };
     let start = Instant::now();

@@ -5,6 +5,7 @@
 // (knownIds 밖만 친다)에는 영원히 걸리지 않는다 — 그래서 축을 따로 세운다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
+const TICK_SRC = readFileSync(new URL("./views/judge/tick.ts", import.meta.url), "utf8"); // (cysr-1116-s2) 3초 고리 판정이 옮겨 간 곳
 import { exitedSweepTargets, armSweep, sweepArmedFor, sweepScopeFor, settleSweep, SWEEP_ARM_TTL_MS } from "./exitedsweep";
 import { formationIfRowOnly, type LayoutNode } from "./formation";
 
@@ -118,7 +119,7 @@ describe("B17 배선", () => {
     expect(finBlock).toContain("exitedSweepArm = settleSweep(sweepArm, sweptSockets, Date.now())");
     expect(finBlock).not.toContain("exitedSweepArm = null");
     // 「쓸렸다」 표시는 소켓 조회가 **성공한 경로 안**(try · 스윕 루프 뒤)에만 있다 — catch·건너뜀 경로엔 없다.
-    const sweep = body.indexOf("exitedSweepTargets(sweepHere, sweepSids, r.surfaces)");
+    const sweep = body.indexOf("for (const sid of pre.sweepTargets) {"); // (cysr-1116-s2) 판정 = tick.ts decideSockPre · 여기는 쓸기 집행
     const mark = body.indexOf('if (sweepHere) sweptSockets.push(sk ?? "")');
     const sockCatch = body.indexOf("★소켓 하나의 실패가 다른 소켓의 갱신·렌더를 막지 않는다");
     expect(sweep).toBeGreaterThan(-1);
@@ -134,8 +135,11 @@ describe("B17 배선", () => {
   });
 
   it("스윕은 유령 수렴과 **다른 함수**로 판정한다(두 축을 뭉치지 않는다)", () => {
-    expect(main).toContain("exitedSweepTargets(sweepHere, sweepSids, r.surfaces)");
-    expect(main).toContain("advanceGhostStrikes(ghostStrike,");
+    // (cysr-1116-s2) 두 판정은 views/judge/tick.ts decideSockPre 안에서 각자의 함수로 — main.ts 는 결과(pre.evict · pre.sweepTargets)를 따로 집행한다.
+    expect(TICK_SRC).toContain("exitedSweepTargets(sweepHere, sweepScope, input.surfaces)");
+    expect(TICK_SRC).toContain("advanceGhostStrikes(input.ghostStrike,");
+    expect(main).toContain("for (const sid of pre.evict) {");
+    expect(main).toContain("for (const sid of pre.sweepTargets) {");
   });
 });
 
@@ -189,8 +193,8 @@ describe("B16 결선 — 닫기가 먼저, 배치가 나중", () => {
   //   좌열에서 튀어나가지 않게). 축(닫힌 좌석이 열을 차지하지 않는다 · 닫기 → 배치 순서)은 그대로다.
   it("배선이 그 순서다 — 스윕이 detachPane(닫기+배치)을 부르고 입양 배치는 그 뒤", () => {
     const body = main.slice(main.indexOf("async function refreshPaneTitles() {"));
-    const sweep = body.indexOf("exitedSweepTargets(sweepHere");
-    expect(body).toContain("const sweepSids = sweepScope ? sockSids.filter((sid) => sweepScope.has(sid)) : [];");
+    const sweep = body.indexOf("for (const sid of pre.sweepTargets) {"); // (cysr-1116-s2) 쓸기 집행 자리 · 범위 식은 tick.ts 로
+    expect(TICK_SRC).toContain("const sweepScope = scope ? tree.filter((sid) => scope.has(sid)) : [];");
     const place = body.indexOf("arrangeWs(ws, { add: [{ sid: s.surface_id }] });");
     expect(sweep).toBeGreaterThan(-1);
     expect(place).toBeGreaterThan(-1);

@@ -1,6 +1,6 @@
 ---
 name: rsi-learning-loop
-description: RSI(재귀적 자기개선) 5단계 학습 루프의 운영 플레이북 — "학습하라/공부하라/RSI하라" 명령을 받거나 master가 능력 갭을 감지해 오너 승인이 나면, ①검색·탐색 ②패턴·철학 추출 ③LOCKED ref eval 평가 ④저장 ⑤skill/harness 제작·발전을 순서대로 돌려 배운 것을 도구화하고 채택물을 다음 사이클 베이스라인으로 재기록(루프 폐쇄)한다. 결정론 엔진=javis_learn.py, 전체 계약=RSI_LEARNING_DIRECTIVE.md, 봉쇄 강제자=rsi-gate.sh를 배선한다. 무결성 8장치(LOCKED eval·retention gate·측정실패 hard fail·학습물=데이터·staging·실패 검역·트리거 2채널·기계한계 판별) 불가침. 트리거: RSI 학습 착수, 학습 티켓(learn-) 실행, skill/harness 진화, "재귀적 자기개선/rsi-learning-loop".
+description: RSI 5단계 학습 루프(검색→추출→잠근 eval 평가→저장→도구화)를 돌린다. 「학습하라 / 공부하라 / RSI하라 / 재귀적 자기개선」 명령이나 학습 티켓 실행 때.
 ---
 
 # rsi-learning-loop — RSI 오너 5단계 학습 루프 (운영 플레이북)
@@ -108,3 +108,7 @@ description: RSI(재귀적 자기개선) 5단계 학습 루프의 운영 플레�
 - 8장치 전건 발동 확인(특히 retention gate 회귀 거부 · staging skillscan 차단).
 - 채택물이 차기 베이스라인에 재기록됨(루프 폐쇄). 실패 학습물은 검역(/clear)·Rejected 기록.
 - 디렉티브·soul·CLAUDE 변경은 오너 승인 게이트 통과분만 반영(자동 저장 금지).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+RSI(재귀적 자기개선) 5단계 학습 루프의 운영 플레이북 — "학습하라/공부하라/RSI하라" 명령을 받거나 master가 능력 갭을 감지해 오너 승인이 나면, ①검색·탐색 ②패턴·철학 추출 ③LOCKED ref eval 평가 ④저장 ⑤skill/harness 제작·발전을 순서대로 돌려 배운 것을 도구화하고 채택물을 다음 사이클 베이스라인으로 재기록(루프 폐쇄)한다. 결정론 엔진=javis_learn.py, 전체 계약=RSI_LEARNING_DIRECTIVE.md, 봉쇄 강제자=rsi-gate.sh를 배선한다. 무결성 8장치(LOCKED eval·retention gate·측정실패 hard fail·학습물=데이터·staging·실패 검역·트리거 2채널·기계한계 판별) 불가침. 트리거: RSI 학습 착수, 학습 티켓(learn-) 실행, skill/harness 진화, "재귀적 자기개선/rsi-learning-loop".

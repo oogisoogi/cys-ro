@@ -1,9 +1,12 @@
 ---
 name: appbuild-plan-debate
 description: AI 2명(gemini·codex)이 10턴+ 스스로 토론해 웹/앱 기획을 좁히는 기획 모드 하위 스킬 — 인간 개입 없이 시장·차별점·기술 합의를 도출한다(§6 LLM 라운드 배선). appbuild-plan 모드 2. "기획 디베이트 / AI 토론 기획 / 자동 기획" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-plan-debate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 인간이 답을 주지 않고 **AI 둘이 토론해** 기획을 만든다. cysjavis의 §6 LLM 오케스트레이션
 (gemini·codex 라운드 루프)을 그대로 쓴다 — 재구현이 아니라 배선.
@@ -12,6 +15,9 @@ description: AI 2명(gemini·codex)이 10턴+ 스스로 토론해 웹/앱 기획
 
 1. **페인 준비** → 검증: cys 멀티페인에 리뷰어 2종(gemini·codex) 기동(`cys boot`/launch-agent).
    없으면 신설. (master가 라운드를 중재한다.)
+   ★cysr 기본(Antigravity(agy) 좌석 문 닫힘): gemini 자리는 `javis_orchestra.py boot-reviewers --spawn` 이 Claude 대체
+   검토자(reviewer-claude-1 · 반증 페르소나)로 채워 **codex·Claude 대체 둘이 토론**한다(벤더 다양성 약화는 리포트에 표기) —
+   agy 를 직접 띄우지 마라(구글 개인 요금제 약관 · 계정 정지 위험).
 2. **토론 라운드** → 검증: 주제(아이디어)를 두 AI에 던져 **10턴+ 토론**(시장 조사·핵심 기능·
    차별점·기술 합의). §6 라운드 루프(리뷰→반박→재반박→수용)로 운영. 산출 = 디베이트 리포트.
 3. **사용자 게이트** → 검증: 리포트를 사용자에게 제시. 사용자는 (a) 그대로 진행 (b) 리포트

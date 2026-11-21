@@ -23,6 +23,7 @@
 //   · ★(1.1.8 DS-1 · master#114e0c71 ⑨) 우리 3석은 전부 claude — check(「15분이 지났어요」)·stall(「자리가 더 늘지 않아요」)은 고장 신호라 **경고(watchdog)** 이고, 본문은 왕초보 말투
 //     「…(3자리 중 M자리) — 자비스를 다시 열어 주세요」 다. 위·아래 주석의 「일반 알림」·「15분 경과」·「자리가 더 붙지 않습니다」 는 그 이전 이력이다.
 import { describe, it, expect } from "bun:test";
+import { seatDot } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 // (1.1.8 병합 UNW · master#c6a9de68) 휴면·미수용 기능의 배선 시험 묶음 — 휴면-on 레인(CYS_UI_DORMANT_LANE=1)에서만 돈다(삭제·무조건 skip 0 · 기본 CI 미실행 · BACKLOG 「휴면-on CI 레인 = 1.1.9」).
 const itDormant = it.if((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.CYS_UI_DORMANT_LANE === "1");
 import { readFileSync } from "node:fs";
@@ -44,6 +45,7 @@ import {
 import { toastTtl, needsExpiryBanner, expiryBannerText, VOLATILE_TTL_MS, STICKY_TTL_MS } from "./toastttl";
 import { seatPriority, annotateRoles, tidyHoles } from "./seatlayout";
 import { advanceGhostStrikes } from "./wsreconcile";
+import { decideSockPre, decidePlaceholders, homeWsOf } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정(실제 순수 함수)
 import { feedCreatedToastTitle } from "./feedclass";
 import { TEAM_CREATE_KIND } from "./teamproposal";
 // ★R1F-UB: 자리 판정 도우미(deptLiveRoles · deptFormationVerdict)는 네임스페이스로 받는다 — 이름이 모듈에 없으면 그 검체만 개별로 적색이 된다(import 연결 오류로 파일 전체가 죽지 않는다).
@@ -515,6 +517,7 @@ describe("addDeptWorkspace — 실제 본문 실행(진행 id · createdAt 은 �
       },
       collectSids: (tree: unknown): number[] => (tree ? [1] : []),
       setFocus: (): void => void events.push("focus"),
+      noteDeptDaemonUp: (): void => {}, // (ChatGPT F7) 같은 소켓 재기동 때 옛 종료 기록 지우기 — 이 검체의 축 밖
       showDeptFormation: (ws: unknown, state: string, seated: unknown): void => {
         events.push("show");
         shown.push({ ws, state, seated });
@@ -2159,20 +2162,26 @@ describe("★S4 B1 — 실제 3초 틱(refreshPaneTitles 실제 본문)으로: �
       formationTrack: new WeakMap<object, unknown>(), // ★R2F-UI: 그 팀 좌석 목록을 마지막으로 받은 때의 기록(모듈 수준 WeakMap 의 대역)
       // ── (1.1.8 병합 · X1 = 우리 배치) 우리 판 refreshPaneTitles 의 자유 변수 대역 — 이 검체가 보는 축(팀원 안내 판정)과 무관한 우리 배선(B17 옛 자리 스윕 ·
       //    새 부서 감지 M7① · 자동 정렬 역할 표 · 빈 자리표 회수 · 표시 번호 · 본부 판정 · 사이드바 사용량 패널)은 무동작으로 둔다(파일 머리 주석: 「새 외부 이름 → 대역 갱신」).
+      // (cysr-1116-s2) 고리 분리 — 판정 = 실제 views/judge/tick.ts 순수 함수 · 미룬 런타임 = 없음(늘 작업 화면 = 종전 흐름 그대로) · tickWsModel·seatAttached = 실제 main.ts 함수(같은 범위에서 연다)
+      decideSockPre, decidePlaceholders, homeWsOf, workRuntimeWanted: () => true, deferSeatRuntime: nothing, deferredRuntimes: new Map<string, unknown>(), ensureSeatRuntimes: async () => {}, DEFERRED_PER_TICK: 4,
+      tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
       exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
       openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
       displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+      lastSeatRow: new Map<string, unknown>(), noteSeatSize: () => {}, forgetEndedSeatGroup: () => {}, // (948·1R) 좌석 끝 기록·크기 대조 — 이 검체의 축 밖
       surfaceWorking: () => false, titleColorRole: false, roleDotColor: () => null, paneTitleText: (sid: number) => String(sid), ruleTitleOf: () => null,
       placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
       hqMasterSids: null, renderWsTabs: nothing, current: () => null,
       lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
       // ── ★F-01 활동 패스(실제 pumpRoleActivity) — 요청은 바쁨 가드 앞에서 끝점마다 소유 원 호출 1개로 나가고, 위 본문은 그 응답을 소비한다.
       //   해석기 대역은 항등(기본 데몬 null 은 미해석 → 종전 인자 그대로 undefined) · 점 칠하기는 이 검체의 대상이 아니다(sweepRoleDots 무동작).
       listTransport: new SurfaceListTransport({ now: () => clock.now, deadlineMs: 8000, resolve: (eps) => Promise.resolve(eps), onArrival: nothing }),
       roleActivity: new RoleActivityStore(31_000),
       sweepRoleDots: nothing,
     };
-    const { fns, scope } = loadWith(["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "pumpRoleActivity", "refreshPaneTitles"], deps);
+    const { fns, scope } = loadWith(["collectSids", "showDeptFormation", "checkDeptFormationNotices", "noteToastClosedByUser", "pumpRoleActivity", "tickWsModel", "seatAttached", "refreshPaneTitles"], deps);
     // 첫 안내(addDeptWorkspace 성공 직후 한 번)
     fns.showDeptFormation(wsDept, "booting");
     return { clock, toasts, stickyToasts, lists, invokes, wsDept, wsBase, fns, scope };

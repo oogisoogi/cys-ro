@@ -118,6 +118,14 @@ def main():
                 time.sleep(0.05)
             raise AssertionError('S5 bounded observation timed out')
         def surfaces(): return rpc('surface.list')['surfaces']
+        def seat_runs(sid, argv):
+            # TICKET=cysr-1116-leasee2e-1121: 좌석이 로그인 셸 프로필을 다 돌고 명령(argv 완전 일치)을 띄웠고 데몬 seat 캐시도 그것을 본다.
+            #   자손 0 인 프로필 단계의 좌석은 seat=empty 로 읽혀 phoenix 가 「빈 좌석 = 부활 대상」으로 센다(설계) — 운영 경로는 spawn 뒤
+            #   stage_ready(에이전트 기동 확인)가 run_restore 안에서 그 단계를 기다리지만 이 고정장치는 stage_ready 를 대역으로 바꿨다.
+            row = next((s for s in surfaces() if s['surface_id'] == sid), None)
+            if not row or row.get('seat') != 'occupied': return False
+            ps = subprocess.run(['/bin/ps', '-axo', 'ppid=,command='], capture_output=True, text=True, check=True, timeout=3)
+            return any(len(f := line.split(None, 1)) == 2 and f[0] == str(row['pid']) and f[1].strip() == argv for line in ps.stdout.splitlines())
         def record_surface(sid):
             capture([next(s for s in surfaces() if s['surface_id'] == sid)['pid']])
         def create(role, command):
@@ -184,6 +192,9 @@ def main():
                     assert 'surface:%d' % old not in first['c6_reaped']
                     assert first['target_roles'] == ['worker-s5-native'] and len(spawn_ids) == 1
                     new = spawn_ids[0]
+                    # 두 번째 복원은 대체 좌석이 앉은 뒤에 — CI 러너(C8 run 44850374411)는 그 좌석이 아직 프로필 단계(seat=empty)일 때
+                    #   두 번째 run_restore 가 돌아 역할을 다시 대상으로 잡았다(S5 duplicate restore · 로컬 느린 .profile 로 재현).
+                    until(lambda: seat_runs(new, 'sleep 120'), 20)
                     second = p.run_restore(str(endpoint),ticket='s5-second',stub=True,no_breaker=True,print_result=False)
                     assert second['target_roles'] == [] and spawn_ids == [new], 'S5 duplicate restore'
                 until(lambda: any(e['id'] == queue_id and e.get('surface_id') == new and not e.get('restored') for e in rpc('queue.list')['entries']))

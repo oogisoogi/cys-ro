@@ -119,8 +119,8 @@ describe("B16 호출부 — 3경로가 같은 함수를 부른다", () => {
     expect(main).toContain('import { autoArrange, arrangeWithoutRoles, defaultLeftShare, LEFT_CHROME_FALLBACK_PX, migrateOldDefaultShare, type ArrangeChange, type LeftShareMode } from "./formation";');
     const eq = main.slice(main.indexOf("async function actionEqualize()"), main.indexOf("// ---------- workspace tabs ----------"));
     expect(eq).toContain('arrangeWs(ws, { remove: all.filter((sid) => !live.includes(sid)) }, "standard");');
-    // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2)
-    expect((main.match(/arrangeWs\(ws, \{ add: \[\{ sid: s\.surface_id \}\] \}\);/g) || []).length).toBe(2);
+    // 입양(3초 틱)·복원 입양 = 붙는 좌석마다 그 자리에서(Opus 적대 1R F2) · (cysr-1116-s2) 3초 틱은 두 갈래(런타임 지금 · 대화 화면 = 런타임 미룸) 모두 같은 줄 = 3
+    expect((main.match(/arrangeWs\(ws, \{ add: \[\{ sid: s\.surface_id \}\] \}\);/g) || []).length).toBe(3);
     expect(main).not.toContain("formationIfRowOnly(");
   });
 });

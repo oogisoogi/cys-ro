@@ -1,5 +1,9 @@
 use crate::term::BufWrite as _;
 
+/// cys 패치(1.1.16 · cysr-1116-s2): 격자마다 새 세대 번호 — 파서를 새로 만들면(패닉 격리·RIS) 행 커서가 0 부터 다시 세므로
+/// 옛 커서를 새 격자에 잘못 대지 않게 세대로 가른다. 프로세스 전역 단조.
+static NEXT_SCROLL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 #[derive(Clone, Debug)]
 pub struct Grid {
     size: Size,
@@ -13,6 +17,11 @@ pub struct Grid {
     scrollback: std::collections::VecDeque<crate::row::Row>,
     scrollback_len: usize,
     scrollback_offset: usize,
+    // cys 패치(1.1.16 · cysr-1116-s2): 스크롤백으로 밀려난 물리 행의 단조 누적 수(FIFO 퇴출과 무관) + 격자 세대.
+    scroll_epoch: u64,
+    scrolled_rows: u64,
+    // cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): ED 3 으로 스크롤백을 지운 그때의 행 커서 — 그 앞 행은 「지움」(잘림 아님).
+    scrollback_cleared_at: u64,
 }
 
 impl Grid {
@@ -29,6 +38,10 @@ impl Grid {
             scrollback: std::collections::VecDeque::new(),
             scrollback_len,
             scrollback_offset: 0,
+            scroll_epoch: NEXT_SCROLL_EPOCH
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            scrolled_rows: 0,
+            scrollback_cleared_at: 0,
         }
     }
 
@@ -64,6 +77,16 @@ impl Grid {
     }
 
     pub fn set_size(&mut self, size: Size) {
+        // cys 패치(1.1.16 · cysr-1116-s2 · codex 4R blocking): 높이를 줄이면 아래 행을 버린다(상류 그대로 · 스크롤백으로 안 감) — 버리는 행에
+        //   글자가 있으면 그 출력은 다시 그리기에서 사라지므로 세대를 바꿔 옛 행 커서를 무효로 한다(받는 쪽 = 모르는 커서 → 스냅숏 + 안내).
+        if usize::from(size.rows) < self.rows.len()
+            && self.rows[usize::from(size.rows)..]
+                .iter()
+                .any(crate::row::Row::has_any_contents)
+        {
+            self.scroll_epoch = NEXT_SCROLL_EPOCH
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         if size.cols != self.size.cols {
             for row in &mut self.rows {
                 row.wrap(false);
@@ -188,6 +211,82 @@ impl Grid {
 
     pub fn set_scrollback(&mut self, rows: usize) {
         self.scrollback_offset = rows.min(self.scrollback.len());
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): (격자 세대, 스크롤백으로 밀려난 물리 행 누적 수).
+    pub fn scroll_cursor(&self) -> (u64, u64) {
+        (self.scroll_epoch, self.scrolled_rows)
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2): 행 커서 `since` 이후 스크롤백으로 밀려난 행을 오래된 것부터 — 최대 `max` 행 · 칸 합 `max_cells`(최근 쪽을 남긴다).
+    /// 반환 = (첫 행 번호, 행들, 잘림 = 요청 구간 일부가 FIFO 에서 이미 빠졌거나 상한으로 잘림). `since` 가 누적 수보다 크면 None(모르는 커서).
+    /// ED 3 으로 지운 앞부분(`scrollback_cleared_at` 앞)은 잘림이 아니다 — 살아 있는 터미널도 지웠다.
+    pub fn scrollback_rows_since(
+        &self,
+        since: u64,
+        max: usize,
+        max_cells: usize,
+    ) -> Option<(u64, Vec<&crate::row::Row>, bool)> {
+        if since > self.scrolled_rows {
+            return None;
+        }
+        let len = self.scrollback.len() as u64;
+        let oldest = self.scrolled_rows - len;
+        let want = since.max(self.scrollback_cleared_at);
+        let mut start = want.max(oldest);
+        let mut truncated = want < oldest;
+        let avail = self.scrolled_rows - start;
+        if avail > max as u64 {
+            start = self.scrolled_rows - max as u64;
+            truncated = true;
+        }
+        let skip = (start - oldest) as usize;
+        let mut rows: Vec<&crate::row::Row> = self.scrollback.iter().skip(skip).collect();
+        // 칸 상한 — 최근 행부터 세어 넘치면 앞을 버린다(잘림)
+        let mut cells = 0usize;
+        let mut keep = 0usize;
+        for r in rows.iter().rev() {
+            cells += usize::from(r.width());
+            if cells > max_cells {
+                break;
+            }
+            keep += 1;
+        }
+        if keep < rows.len() {
+            let drop = rows.len() - keep;
+            rows.drain(..drop);
+            start += drop as u64;
+            truncated = true;
+        }
+        Some((start, rows, truncated))
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): ED 3 — 스크롤백을 지우고 그때 커서를 적는다(행 커서·세대는 그대로).
+    pub fn clear_scrollback(&mut self) {
+        self.scrollback.clear();
+        self.scrollback_offset = 0;
+        self.scrollback_cleared_at = self.scrolled_rows;
+    }
+
+    /// cys 패치(1.1.16 · cysr-1116-s2 · codex 4R): 스크롤백을 뺀 사본(보이는 행·커서·영역·세대) — 파서 락 밖에서 화면 서식용.
+    /// 스크롤백 보기 위치(offset)가 0 일 때만 원본과 같은 화면이다(호출자가 확인).
+    pub fn clone_visible(&self) -> Self {
+        Self {
+            size: self.size,
+            pos: self.pos,
+            saved_pos: self.saved_pos,
+            rows: self.rows.clone(),
+            scroll_top: self.scroll_top,
+            scroll_bottom: self.scroll_bottom,
+            origin_mode: self.origin_mode,
+            saved_origin_mode: self.saved_origin_mode,
+            scrollback: std::collections::VecDeque::new(),
+            scrollback_len: self.scrollback_len,
+            scrollback_offset: 0,
+            scroll_epoch: self.scroll_epoch,
+            scrolled_rows: self.scrolled_rows,
+            scrollback_cleared_at: self.scrollback_cleared_at,
+        }
     }
 
     pub fn write_contents(&self, contents: &mut String) {
@@ -557,6 +656,7 @@ impl Grid {
             let removed = self.rows.remove(usize::from(self.scroll_top));
             if self.scrollback_len > 0 && !self.scroll_region_active() {
                 self.scrollback.push_back(removed);
+                self.scrolled_rows += 1; // cys 패치(1.1.16 · cysr-1116-s2) 단조 행 커서
                 while self.scrollback.len() > self.scrollback_len {
                     self.scrollback.pop_front();
                 }

@@ -120,7 +120,33 @@ with open(os.path.join(os.environ["HOME"], "fake-org.log"), "a") as f:
 '''
 
 
+def prime_exec(path):
+    """새 실행 파일의 macOS **첫 exec 검사**를 데드라인 밖에서 미리 치른다(자리표시 본문으로).
+
+    ★TICKET=cysr-1116-flaky-1120: macOS 는 새 실행 파일(vnode)의 첫 exec 에 정책 검사(syspolicyd)를
+      붙인다. 이 맥 실측(2026-11-20 · macOS 26.6.2): 새 셸 스텁 첫 실행 중앙값 1.6s · 상위 10% 2.1s ·
+      최대 3.3s(load 9.7 에서도) · 재실행 0.005s. 같은 경로에 본문을 다시 써도 검사는 다시 붙지 않는다
+      (50회 최대 0.23s) · 다른 파일은 다시 느리다 · `xattr -c` 무효 · 그동안 syspolicyd CPU 가 는다.
+      스텁을 부르는 쪽(`cys_timeout_run 2`·`QUERY_TIMEOUT_S` 2s·발송 시간 상한)은 그 첫 실행을
+      데드라인 안에서 치르게 되어 스텁이 기록 전에 죽고, 검체가 「조회 없음」으로 붉었다(매번 다른
+      케이스). 데드라인은 제품 계약이라 시험이 늘리지 않는다 — 비용을 창 밖으로 옮길 뿐이다.
+    사용: **진짜 본문을 쓰기 전에** 부른다. 자리표시(`exit 0`)만 실행되므로 스텁 본문의 부작용
+    (호출 기록·파일 삭제)은 일어나지 않는다. 실패는 삼킨다 — 예열은 판정이 아니다(실행 불가
+    환경이면 본 시험이 종전대로 잰다).
+    """
+    path = str(path)
+    try:
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("#!/bin/sh\nexit 0\n")
+        os.chmod(path, 0o700)
+        subprocess.run([path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, timeout=60, env={"PATH": "/usr/bin:/bin"})
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _exe(path, text):
+    prime_exec(path)  # 첫 exec 검사를 데드라인 밖에서(prime_exec)
     with open(path, "w") as f:
         f.write(text)
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -1780,6 +1806,106 @@ class TestChatHook(Base):
         rc, o2 = self.run_cmd("confirm", rid)
         self.assertEqual(rc, 0, o2)
 
+
+
+class TestPromoteCheck(Base):
+    """(cysr-1116-s6 · P2-DESIGN §16-3 · PRD FR-L5) 팀 → 부서 승격을 물을지 = 이 도구 출력만(결정론)."""
+
+    def _stats(self, teams):
+        p = os.path.join(self.tmp, "stats.json")
+        with open(p, "w") as f:
+            json.dump({"teams": teams, "paused": []}, f)
+        return p
+
+    def _team(self, name="홍보팀", r60=4, working=2, days=3, extra_old=0):
+        now = time.time()
+        ts = [now - (i + 1) for i in range(r60)]                             # 지난 60분 안(몇 초 전 — 자정 걸침으로 날 수가 흔들리지 않게)
+        ts += [now - 86400 * d for d in range(1, days)]                      # 앞 날들(하루 1건씩 · 같은 시각 = 다른 날)
+        ts += [now - 86400 * 9 - 60 * i for i in range(extra_old)]           # 7일 밖 = 셈 밖
+        return {"team": name, "live_workers": working, "working": working, "report_ts": ts}
+
+    def check(self, path, team="홍보팀"):
+        return self.run_cmd("promote-check", "--team", team, "--stats-file", path)
+
+    def test_threshold_met_asks_once_per_day(self):
+        p = self._stats([self._team(), self._team("기획팀")])
+        rc, o = self.check(p)
+        self.assertEqual(rc, 0, o)
+        self.assertEqual((o["ask"], o["R"], o["C"], o["D"], o["reason"]), (True, 4, 2, 3, "threshold_met"), o)
+        rc, o2 = self.check(p, "기획팀")                                        # 하루 1회(전체) 상한
+        self.assertEqual((o2["ask"], o2["reason"]), (False, "asked_today"), o2)
+        rc, o3 = self.check(p)
+        self.assertFalse(o3["ask"], o3)
+
+    def test_each_threshold_is_needed(self):
+        for kw, field in (({"r60": 3}, "R"), ({"working": 1}, "C"), ({"days": 2}, "D")):
+            with self.subTest(field=field):
+                sp = self.m.promote_state_path()
+                if os.path.exists(sp):
+                    os.remove(sp)
+                rc, o = self.check(self._stats([self._team(**kw)]))
+                self.assertEqual((o["ask"], o["reason"]), (False, "below_threshold"), o)
+
+    def test_old_reports_and_future_do_not_count(self):
+        t = self._team(r60=4, days=2, extra_old=5)
+        t["report_ts"].append(time.time() + 3600)                             # 미래 시각 = 버림
+        rc, o = self.check(self._stats([t]))
+        self.assertEqual((o["R"], o["D"], o["ask"]), (4, 2, False), o)
+
+    def test_decline_cools_down_14_days_for_that_team_only(self):
+        p = self._stats([self._team(), self._team("기획팀")])
+        rc, d = self.run_cmd("promote-decline", "--team", "홍보팀")
+        self.assertEqual(rc, 0, d)
+        self.assertAlmostEqual(d["cooldown_until"] - time.time(), 14 * 86400, delta=60)
+        self.assertIn("2주 동안은 다시 묻지 않을게요", d["say"])
+        rc, o = self.check(p)
+        self.assertEqual((o["ask"], o["reason"]), (False, "cooldown"), o)
+        self.assertIsNotNone(o["cooldown_until"])
+        rc, o2 = self.check(p, "기획팀")
+        self.assertEqual((o2["ask"], o2["reason"]), (True, "threshold_met"), o2)
+
+    def test_decline_say_particles_follow_final_consonant(self):
+        """(검증 i11) 받침 있음 = 은·을 · 없음 = 는·를 · 한글 아님 = 은(는)·을(를)."""
+        for team, want in (("홍보팀", ("홍보팀은 ", "홍보팀을 부서로")), ("카페", ("카페는 ", "카페를 부서로")),
+                           ("site", ("site은(는) ", "site을(를) 부서로"))):
+            with self.subTest(team=team):
+                rc, d = self.run_cmd("promote-decline", "--team", team)
+                self.assertEqual(rc, 0, d)
+                for w in want:
+                    self.assertIn(w, d["say"])
+
+    def test_days_survive_daemon_restart_via_state_file(self):
+        # 첫 실행: 지난 날들 기록을 본다 → 상태 파일에 날을 남긴다
+        rc, o = self.check(self._stats([self._team(r60=1, days=3)]))
+        self.assertEqual(o["D"], 3, o)
+        # 데몬 재시작 = 보고 기록이 비었다(오늘 4건만) — 날 수는 상태 파일로 이어진다
+        rc, o2 = self.check(self._stats([self._team(r60=4, days=1)]))
+        self.assertEqual((o2["D"], o2["ask"]), (3, True), o2)
+
+    def test_unknown_stats_or_team_never_asks(self):
+        rc, o = self.check(os.path.join(self.tmp, "없음.json"))
+        self.assertEqual((o["ask"], o["reason"]), (False, "stats_unavailable"), o)
+        rc, o = self.check(self._stats([self._team("다른팀")]))
+        self.assertEqual((o["ask"], o["reason"]), (False, "no_such_team"), o)
+
+    def test_cli_path_uses_cys_team_stats(self):
+        # --stats-file 없이 = `cys team-stats`(가짜 cys 는 rc 0 · 빈 출력 = 해석 실패 → 묻지 않음)
+        rc, o = self.run_cmd("promote-check", "--team", "홍보팀")
+        self.assertEqual((o["ask"], o["reason"]), (False, "stats_unavailable"), o)
+        self.assertIn(["team-stats"], self.cys_log())
+
+
+class TestCloseCardStopsWork(Base):
+    """(cysr-1116-s6 · P2-DESIGN §16-4 ① · master#e597149a) 닫기 = 강제 종료 — 카드가 「하던 일이 멈춰요」를 말한다."""
+
+    def test_close_card_says_running_work_stops(self):
+        self.proposed_confirmed()
+        self.tick()
+        self.set_formation("dept-1", "partial:x")
+        rc, o = self.run_cmd("propose", "--close", "설교준비부")
+        self.assertEqual(rc, 0, o)
+        self.assertIn("하던 일이 있으면 그 자리에서 멈춰요.", o["card"])
+        self.assertLess(o["card"].index("멈춰요"), o["card"].index("닫을까요"))
 
 if __name__ == "__main__":
     unittest.main()

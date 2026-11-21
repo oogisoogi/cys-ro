@@ -30,6 +30,8 @@ struct Box_ {
     helper_gate: Option<PathBuf>,
     /// 이 상자가 띄운 데몬 pid 들(내림 대조 · master#4199fa4f).
     daemons: std::cell::RefCell<Vec<i32>>,
+    /// 이 시험이 마지막에 손으로 쓴 저장 핀(파일 본문 · 그때의 live) — [`Box_::write_saved_pin`] 의 「덜 끝난 영속 없음」 판정 ⑵.
+    pin_written: std::cell::RefCell<Option<(String, Vec<(String, Option<String>)>)>>,
 }
 
 impl Box_ {
@@ -60,7 +62,7 @@ impl Box_ {
         let entries = vec![json!({"role": ROLE, "agent": "claude", "cwd": proj, "session_id": sid,
                                   "claude_config_dir": cfg})];
         std::fs::write(base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None, daemons: Default::default() }
+        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None, daemons: Default::default(), pin_written: Default::default() }
     }
 
     /// 같은 상자(같은 HOME = 같은 임대 폴더 · 같은 프로젝트 폴더)의 **두 번째 데몬**(소켓·상태 폴더 `run2`).
@@ -78,7 +80,7 @@ impl Box_ {
         }
         let entries = vec![json!({"role": role, "agent": "claude", "cwd": proj, "session_id": sid, "claude_config_dir": cfg})];
         std::fs::write(run.join("topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone(), daemons: Default::default() }
+        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone(), daemons: Default::default(), pin_written: Default::default() }
     }
 
     /// 이 대화의 임대 파일(상자 HOME 의 임대 폴더 · 키 = sha256("v1\0" + 소문자 id)).
@@ -89,6 +91,39 @@ impl Box_ {
         h.update(self.sid.trim().to_ascii_lowercase().as_bytes());
         let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
         self.base.join("home/.local/state/cys/session-leases").join(format!("{hex}.lease"))
+    }
+
+    /// 저장 핀(topology.json)을 손으로 쓴다 — **데몬의 덜 끝난 영속이 없을 때만**(TICKET=cysr-1116-leasee2e-1121 2차 · C9 run 44868392427 IR).
+    /// 데몬은 역할 쥠·핀 바뀜마다 topology.json 을 다시 쓴다(`persist_topology` · 메모리 반영 → 파일 쓰기 순). 시험이 메모리 쪽 변화
+    /// (topology live)를 보자마자 S 핀을 쓰면 아직 덜 끝난 그 영속이 뒤에 착지해 S 를 지운다 → `--resume-saved` 가 저장 핀 = W 의 대화로 읽고
+    /// 「다른 좌석이 저장 대화를 잇고 있다」 rc 93(CI 관측 · 로컬 = 등록 관측 주기 1ms 로 재현).
+    /// 덜 끝난 영속 없음 = ⑴ 파일이 live 역할마다 같은 session_id(데몬이 마지막으로 쓴 것이 지금 메모리) · 또는 ⑵ 파일이 이 시험이 마지막에 쓴
+    /// 그대로이고 그 뒤 live 가 안 바뀜(데몬이 다시 쓸 계기 없음 · RN 반복처럼 연달아 쓰는 자리).
+    fn write_saved_pin(&self, topo: Value) {
+        let file = self.sock.parent().unwrap().join("topology.json");
+        let live_now = || -> Vec<(String, Option<String>)> {
+            self.rpc("system.topology").ok().and_then(|v| v["live"].as_array().cloned()).unwrap_or_default()
+                .iter().filter_map(|e| Some((e["role"].as_str()?.to_string(), e["session_id"].as_str().map(String::from)))).collect()
+        };
+        let t = Instant::now();
+        let mut last = String::new();
+        loop {
+            let live = live_now();
+            let raw = std::fs::read_to_string(&file).unwrap_or_default();
+            let disk: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+            let on_disk = |r: &str| disk["entries"].as_array().into_iter().flatten().find(|e| e["role"].as_str() == Some(r)).map(|e| e["session_id"].as_str().map(String::from));
+            let caught_up = live.iter().all(|(r, sid)| on_disk(r) == Some(sid.clone()));
+            let untouched = self.pin_written.borrow().as_ref().is_some_and(|(c, l)| *c == raw && *l == live);
+            if caught_up || untouched {
+                break;
+            }
+            last = format!("live={live:?} · 파일={}", raw.chars().take(600).collect::<String>());
+            assert!(t.elapsed() < Duration::from_secs(20), "데몬 영속(topology.json)이 메모리를 따라잡지 않음(20s): {last}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let body = topo.to_string();
+        std::fs::write(&file, &body).unwrap();
+        *self.pin_written.borrow_mut() = Some((body, live_now()));
     }
 
     fn cmd(&self, args: &[&str]) -> Command {
@@ -529,8 +564,7 @@ fn resume_saved_into_a_renamed_worker_seat_records_the_seat_it_made() {
         // W1 생성이 영속본의 `worker` 칸을 W1(대화 없음)로 덮었다 — 저장 핀 S 를 되돌려 「launch-agent 가 핀 S 를 읽은 뒤 W1 이 `worker` 를 쥔」
         // 창(핀 판독 ↔ surface.create 사이)을 결정론으로 만든다(데몬 `system.topology` 의 saved = 매번 디스크 판독).
         let cfg = a.base.join("home/.claude");
-        std::fs::write(a.base.join("run2/topology.json"),
-            json!({"entries": [{"role": "worker", "agent": "claude", "cwd": proj, "session_id": a.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+        b.write_saved_pin(json!({"entries": [{"role": "worker", "agent": "claude", "cwd": proj, "session_id": a.sid, "claude_config_dir": cfg}]}));
         let o2 = b.cys(&["launch-agent", "--role", "worker", "--agent", "claude", "--resume-saved", "--cwd", &proj]);
         let w2 = seat_of(&o2).unwrap_or_else(|| panic!("#{i} W2 기동: {}", out(&o2)));
         assert_eq!(o2.status.code(), Some(0), "#{i} W2 rc: {}", out(&o2));
@@ -544,8 +578,7 @@ fn resume_saved_into_a_renamed_worker_seat_records_the_seat_it_made() {
         let _ = b.rpcp("surface.close", json!({"surface_id": w1, "cause": "reap", "only_if_empty": true}));
         let n3: usize = std::env::var("SLE_RN3").ok().and_then(|v| v.parse().ok()).unwrap_or(3);
         for j in 0..n3 {
-            std::fs::write(a.base.join("run2/topology.json"),
-                json!({"entries": [{"role": "worker", "agent": "claude", "cwd": proj, "session_id": a.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+            b.write_saved_pin(json!({"entries": [{"role": "worker", "agent": "claude", "cwd": proj, "session_id": a.sid, "claude_config_dir": cfg}]}));
             let o3 = b.cys(&["launch-agent", "--role", "worker", "--agent", "claude", "--resume-saved", "--cwd", &proj]);
             let w = b.writers();
             // ★1.1.16 편입(skt1): 조각 1 의 `launch_pin_verdict` 가 임대보다 먼저 「다른 좌석이 저장 대화를 잇고 있다」(rc 93 · 새 대화 0)로
@@ -600,8 +633,7 @@ fn a_saved_conversation_never_gets_another_conversations_seat_back() {
     // r5(codex r4 #1 대조군): W 가 **대화 T 로 등록된** 정상 흐름 — 등록(SessionStart 훅이 하는 `usage.register`)을 시험이 대신 하고 데몬 핀이 T 가 될 때까지.
     let cfg = b.base.join("home/.claude");
     register_conversation(&b, w, "7e7e0000-0000-4000-8000-00000000000a");
-    std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}));
     let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
     let writers = b.settle_writers(3);
     let w2 = seat_of(&o2);
@@ -659,8 +691,7 @@ fn a_live_seat_of_unknown_conversation_is_not_given_a_second_writer() {
     let reg = topo["live"].as_array().into_iter().flatten().find(|e| e["surface_id"].as_u64() == Some(w)).map(|e| e["session_id"].clone());
     assert_eq!(reg, Some(Value::Null), "전제: W 등록 없음(훅 부재) {topo}");
     let cfg = b.base.join("home/.claude");
-    std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}));
     let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
     std::thread::sleep(Duration::from_secs(3));
     let seats = b.role_seats();
@@ -716,8 +747,7 @@ fn a_seat_revealed_as_another_conversation_frees_the_saved_restore() {
     // 가짜 claude 는 등록을 자식 셸(이름 session-start.sh)에 미뤄 둔다 · S 작성자는 0.
     assert_eq!((b.fakes().is_empty(), b.writers().len(), registered_of(&b, w)), (false, 0, None), "전제: W 에 claude · 등록 전 {}", out(&o1));
     let cfg = b.base.join("home/.claude");
-    let pin_s = || std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    let pin_s = || { b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]})); };
     pin_s();
     let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
     assert_eq!((o2.status.code(), b.role_seats(), b.writers().len()), (Some(93), vec![w], 0), "전제: 등록 전 W 옆 = 93 · 새 좌석 0: {}", out(&o2));
@@ -768,8 +798,7 @@ fn a_heuristic_pin_on_a_hookless_seat_never_frees_the_saved_restore() {
     }
     assert_eq!((b.fakes().len(), registered_of(&b, w)), (1, None), "전제: W 에 claude 하나 · 핀 없음 {}", out(&o1));
     let cfg = b.base.join("home/.claude");
-    let pin_s = || std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    let pin_s = || { b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]})); };
     pin_s();
     let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
     assert_eq!((o2.status.code(), b.role_seats(), b.writers().len()), (Some(93), vec![w], 0), "전제: 등록 없는 W 옆 = 93 · 새 좌석 0: {}", out(&o2));
@@ -818,8 +847,7 @@ fn a_hookless_seat_pinned_by_heuristic_before_restore_is_still_unverified() {
         std::thread::sleep(Duration::from_millis(500));
     }
     assert_eq!((b.fakes().len(), registered_of(&b, w).as_deref()), (1, Some(tid)), "전제: W 에 claude 하나 · 휴리스틱 핀 T(등록 아님)");
-    std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}));
     let o2 = b.cys(&["launch-agent", "--role", ROLE, "--agent", "claude", "--resume-saved", "--cwd", &proj]);
     let writers = b.settle_writers(3);
     let seats = b.role_seats();
@@ -853,8 +881,7 @@ fn unknown_at_w(b: &Box_, proj: &str) -> u64 {
 
 fn pin_saved(b: &Box_, proj: &str) {
     let cfg = b.base.join("home/.claude");
-    std::fs::write(b.base.join("run/topology.json"),
-        json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}).to_string()).unwrap();
+    b.write_saved_pin(json!({"entries": [{"role": ROLE, "agent": "claude", "cwd": proj, "session_id": b.sid, "claude_config_dir": cfg}]}));
 }
 
 /// skt1(codex r5c #1-2 · blocking) — 좌석 밖 사람·도구의 **가짜 등록**(`cys usage-register --surface W --transcript /…/T.jsonl` · 발신 좌석 없음 =

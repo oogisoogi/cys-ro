@@ -205,8 +205,17 @@ pub fn next_action(reason: &str, norm: &str, file: &Path) -> String {
             file.display()
         ),
         "daemon" => "`cys status` 로 데몬이 응답하는지 확인한 뒤 다시 실행하세요".into(),
-        "scan" => format!("`ps -axo pid,command | grep -i {short}` 로 이 대화를 쥔 프로세스를 확인한 뒤 다시 실행하세요"),
-        _ => format!("`cys status` 와 `ps -axo pid,command | grep -i {short}` 로 확인한 뒤 다시 실행하세요"),
+        "scan" => format!("{} 로 이 대화를 쥔 프로세스를 확인한 뒤 다시 실행하세요", ps_hint(&short)),
+        _ => format!("`cys status` 와 {} 로 확인한 뒤 다시 실행하세요", ps_hint(&short)),
+    }
+}
+
+/// 이 대화 id 를 인자로 쥔 프로세스를 찾는 명령 1줄 — 윈 = PowerShell(Win32_Process) · 그 밖 = ps(TICKET=cysr-1116-win-restore-1121).
+fn ps_hint(short: &str) -> String {
+    if cfg!(windows) {
+        format!("PowerShell `Get-CimInstance Win32_Process | Where-Object CommandLine -match '{short}' | Select-Object ProcessId,CommandLine`")
+    } else {
+        format!("`ps -axo pid,command | grep -i {short}`")
     }
 }
 
@@ -1192,10 +1201,15 @@ pub fn scan_argv(norm: &str, exclude: &[u32]) -> Evidence {
     let my_uid = Some(unsafe { libc::getuid() });
     #[cfg(not(unix))]
     let my_uid: Option<u32> = None;
+    // ★TICKET=cysr-1116-win-restore-1121: 윈 = 「같은 사용자」 축(win_scan) 이 붙은 훑기 · 죽음 확인은 SYNCHRONIZE 없이(LIMITED + 종료 코드).
+    #[cfg(windows)]
+    return scan_argv_with(norm, exclude, my_uid, win_scan::snapshot, win_scan::probe_dead);
+    #[cfg(not(windows))]
     scan_argv_with(norm, exclude, my_uid, || real_snapshot(my_uid), |p| crate::process_observation::identity(p).map(|_| ()))
 }
 
-/// 실제 프로세스 훑기 한 번(sysinfo) — 판정은 [`scan_argv_with`] 가 한다.
+/// 실제 프로세스 훑기 한 번(sysinfo) — 판정은 [`scan_argv_with`] 가 한다. (윈 = [`win_scan::snapshot`])
+#[cfg_attr(windows, allow(dead_code))]
 fn real_snapshot(my_uid: Option<u32>) -> Vec<ProcView> {
     use sysinfo::{ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System, UpdateKind};
     let kind = ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always).with_user(UpdateKind::Always);
@@ -1215,6 +1229,7 @@ fn real_snapshot(my_uid: Option<u32>) -> Vec<ProcView> {
             #[cfg(not(unix))]
             uid: None,
             skip: matches!(p.status(), ProcessStatus::Zombie) || p.thread_kind().is_some(),
+            foreign: false,
             cmd: p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect(),
         })
         .collect()
@@ -1313,8 +1328,200 @@ pub(crate) struct ProcView {
     pub uid: Option<u32>,
     /// 좀비 · 스레드.
     pub skip: bool,
+    /// 이 사용자의 프로세스가 아님 확정(윈 = [`win_foreign`] · 유닉스 = 늘 false — UID 축이 같은 일을 한다).
+    pub foreign: bool,
     /// 빈 값 = 명령줄을 못 읽음.
     pub cmd: Vec<String>,
+}
+
+// ───────── 윈 「같은 사용자」 축 (TICKET=cysr-1116-win-restore-1121 · master#5ff009c9) ─────────
+// 결함: 윈은 UID 축이 없어(my_uid = None) SYSTEM·보호 프로세스까지 훑었고, 그 명령줄은 못 읽고(sysinfo = PEB 를 VM_READ 로 읽은 뒤에만 채움)
+//   죽음 확인(OpenProcess LIMITED|SYNCHRONIZE)도 ACCESS_DENIED 라 남아 → 언제나 Undecided("scan:argv:<첫 읽기 불가 pid>") → 저장 대화가 있는
+//   모든 역할 93(윈 실기 11-21 · 4좌석 · 주인 pid = csrss·lsass·Registry). 판정은 아래 순수 함수 · 사실 수집만 `win_scan`(윈 전용).
+
+/// 프로세스 핸들 열기 결과(`OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WinOpen {
+    Opened,
+    /// ERROR_ACCESS_DENIED — 이 사용자가 띄운 프로세스는 LIMITED 가 열린다(가정 · 윈 실기 ② 로 확인) → 남의 것.
+    Denied,
+    /// ERROR_INVALID_PARAMETER — 그 pid 가 이미 없다.
+    Gone,
+    /// 그 밖 오류 — 남의 것으로 단정하지 않는다(판정 불가 쪽).
+    Failed,
+}
+
+/// 토큰 사용자 SID 대조(`OpenProcessToken(TOKEN_QUERY)` → TokenUser · EqualSid) — 윈의 「uid 축」 정본.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WinSid {
+    Same,
+    Other,
+    /// 토큰을 못 열었다(핸들은 열림) — 남의 것으로 치지 않는다(판정 불가 쪽 · W13).
+    Unknown,
+}
+
+/// 프로세스 하나에 대해 모은 윈 사실.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WinFacts {
+    pub open: WinOpen,
+    pub sid: WinSid,
+    /// `ProcessIdToSessionId` · None = 판독 실패.
+    pub session: Option<u32>,
+}
+
+/// 윈 프로세스 분류(순수) — Some(true) = 남의 것(건너뜀) · Some(false) = 훑기 대상 · None = 사라짐(목록에서 뺌).
+/// 순서: 커널 가짜 pid(0 Idle · 4 System) → 핸들 열기 → 세션 0(나 ≠ 세션 0 일 때만 · OpenSSH 같은 세션 0 의 cys 는 세션 0 을 건너뛰지 않는다)
+/// → SID(다름 = 남의 것 · 같음/모름 = 대상). 세션 규칙은 SID 와 병행(SID 같음이 세션 규칙을 이기지 않는다 · master#5ff009c9).
+pub(crate) fn win_foreign(pid: u32, f: &WinFacts, my_session: Option<u32>) -> Option<bool> {
+    if pid == 0 || pid == 4 {
+        return Some(true);
+    }
+    match f.open {
+        WinOpen::Gone => return None,
+        WinOpen::Denied => return Some(true),
+        WinOpen::Failed => return Some(false),
+        WinOpen::Opened => {}
+    }
+    if f.session == Some(0) && my_session.is_some_and(|m| m != 0) {
+        return Some(true);
+    }
+    Some(f.sid == WinSid::Other)
+}
+
+/// 윈 훑기 한 줄 조립(순수 · 시험 가능) — `sysinfo_cmd` 가 비고 남의 것이 아니면 `self_read`(LIMITED 핸들 명령줄 판독)로 다시 읽는다
+/// (sysinfo 는 VM_READ 가 없으면 빈 값 — 상승 실행한 같은 사용자 claude 가 여기 걸린다). 그래도 비면 지금처럼 판정 불가 후보.
+pub(crate) fn win_view(
+    pid: u32,
+    sysinfo_cmd: Vec<String>,
+    f: &WinFacts,
+    my_session: Option<u32>,
+    self_read: impl Fn(u32) -> Option<Vec<String>>,
+) -> Option<ProcView> {
+    let foreign = win_foreign(pid, f, my_session)?;
+    let cmd = if foreign || !sysinfo_cmd.is_empty() { sysinfo_cmd } else { self_read(pid).unwrap_or_default() };
+    Some(ProcView { pid, uid: None, skip: false, foreign, cmd })
+}
+
+/// 윈 사실 수집(얇은 FFI · 판정은 위 순수 함수) — 핸들 열기는 `PROCESS_QUERY_LIMITED_INFORMATION` 만(SYNCHRONIZE 없음).
+#[cfg(windows)]
+mod win_scan {
+    use super::{win_foreign, win_view, ProcView, WinFacts, WinOpen, WinSid};
+    use crate::process_observation::Failure;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER, HANDLE, STILL_ACTIVE};
+    use windows_sys::Win32::Security::{EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetExitCodeProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    struct Owned(HANDLE);
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            // SAFETY: 이 값이 OpenProcess/OpenProcessToken 으로 받은 핸들을 소유한다.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    fn open(pid: u32) -> Result<Owned, WinOpen> {
+        // SAFETY: 평범한 Win32 호출 · null 반환은 아래에서 처리.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            // SAFETY: 직전 호출의 스레드 오류 값 조회.
+            return Err(match unsafe { GetLastError() } {
+                ERROR_ACCESS_DENIED => WinOpen::Denied,
+                ERROR_INVALID_PARAMETER => WinOpen::Gone,
+                _ => WinOpen::Failed,
+            });
+        }
+        Ok(Owned(h))
+    }
+
+    /// TokenUser 버퍼(u64 정렬) — None = 토큰을 못 열었거나 못 읽음.
+    fn token_user(process: HANDLE) -> Option<Vec<u64>> {
+        let mut tok: HANDLE = std::ptr::null_mut();
+        // SAFETY: process = 유효한 프로세스 핸들(또는 의사 핸들) · tok 은 출력 칸.
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut tok) } == 0 {
+            return None;
+        }
+        let tok = Owned(tok);
+        let mut need = 0u32;
+        // SAFETY: 크기 조회(버퍼 없음) — 실패가 정상(ERROR_INSUFFICIENT_BUFFER) · need 만 쓴다.
+        unsafe { GetTokenInformation(tok.0, TokenUser, std::ptr::null_mut(), 0, &mut need) };
+        if need == 0 || need > 4096 {
+            return None;
+        }
+        let mut buf = vec![0u64; (need as usize).div_ceil(8)];
+        // SAFETY: buf 는 need 바이트 이상 · 정렬 8.
+        if unsafe { GetTokenInformation(tok.0, TokenUser, buf.as_mut_ptr().cast(), (buf.len() * 8) as u32, &mut need) } == 0 {
+            return None;
+        }
+        Some(buf)
+    }
+
+    fn sid_of(buf: &[u64]) -> *mut core::ffi::c_void {
+        // SAFETY: buf 는 GetTokenInformation(TokenUser) 가 채운 TOKEN_USER 로 시작한다(정렬 8).
+        unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid }
+    }
+
+    fn session_of(pid: u32) -> Option<u32> {
+        let mut s = 0u32;
+        // SAFETY: 출력 칸 하나.
+        (unsafe { ProcessIdToSessionId(pid, &mut s) } != 0).then_some(s)
+    }
+
+    fn facts(pid: u32, me: Option<&[u64]>) -> WinFacts {
+        let h = match open(pid) {
+            Ok(h) => h,
+            Err(o) => return WinFacts { open: o, sid: WinSid::Unknown, session: None },
+        };
+        let sid = match (me, token_user(h.0)) {
+            // SAFETY: 두 SID 포인터 모두 살아 있는 버퍼 안을 가리킨다.
+            (Some(me), Some(t)) => if unsafe { EqualSid(sid_of(me), sid_of(&t)) } != 0 { WinSid::Same } else { WinSid::Other },
+            _ => WinSid::Unknown,
+        };
+        WinFacts { open: WinOpen::Opened, sid, session: session_of(pid) }
+    }
+
+    /// LIMITED 핸들 하나의 명령줄(`process_observation::argv_limited` = ProcessCommandLineInformation · SYNCHRONIZE 없음) —
+    /// sysinfo 가 빈 값을 준 남의 것 아닌 프로세스만(상승 실행한 같은 사용자 claude · 작업 스케줄러 상승 작업 등).
+    fn self_read(pid: u32) -> Option<Vec<String>> {
+        crate::process_observation::argv_limited(pid)
+            .ok()
+            .map(|argv| argv.iter().map(|a| String::from_utf8_lossy(a).into_owned()).collect())
+    }
+
+    /// 훑기 한 번 — 남의 것은 명령줄을 읽지 않는다(전 프로세스 PEB 읽기 제거 · 3초 시한 여유).
+    pub(super) fn snapshot() -> Vec<ProcView> {
+        use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+        let mut sys = System::new();
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+        // SAFETY: GetCurrentProcess = 닫지 않는 의사 핸들.
+        let me = token_user(unsafe { GetCurrentProcess() });
+        let my_session = session_of(std::process::id());
+        let all: Vec<(u32, WinFacts)> = sys.processes().keys().map(|p| (p.as_u32(), facts(p.as_u32(), me.as_deref()))).collect();
+        let want: Vec<Pid> = all.iter().filter(|(pid, f)| win_foreign(*pid, f, my_session) == Some(false)).map(|(p, _)| Pid::from_u32(*p)).collect();
+        sys.refresh_processes_specifics(ProcessesToUpdate::Some(&want), false, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+        all.into_iter()
+            .filter_map(|(pid, f)| {
+                let cmd = sys.process(Pid::from_u32(pid)).map(|p| p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect()).unwrap_or_default();
+                win_view(pid, cmd, &f, my_session, self_read)
+            })
+            .collect()
+    }
+
+    /// 죽음 확인(이 판정 한정 · SYNCHRONIZE 없음) — 없음(ERROR_INVALID_PARAMETER)·종료 코드 ≠ STILL_ACTIVE = 죽음 · 그 밖 = 판독 실패.
+    /// (종료 코드 259 로 끝난 프로세스는 살아 있는 것으로 남는다 = 판정 불가 쪽 · 보호 방향.)
+    pub(super) fn probe_dead(pid: u32) -> Result<(), Failure> {
+        let h = match open(pid) {
+            Ok(h) => h,
+            Err(WinOpen::Gone) => return Err(Failure::Dead),
+            Err(_) => return Err(Failure::Unknown { stage: "OpenProcess(limited)", os_error: None }),
+        };
+        let mut code = 0u32;
+        // SAFETY: 열린 핸들 · 출력 칸 하나.
+        if unsafe { GetExitCodeProcess(h.0, &mut code) } == 0 {
+            return Err(Failure::Unknown { stage: "GetExitCodeProcess", os_error: None });
+        }
+        if code == STILL_ACTIVE as u32 { Ok(()) } else { Err(Failure::Dead) }
+    }
 }
 
 /// (작성자로 보이는 것, 명령줄을 못 읽은 pid) — `my_uid` = None 이면 UID 로 거르지 않는다(윈).
@@ -1322,7 +1529,7 @@ pub(crate) struct ProcView {
 pub(crate) fn classify_argv(view: &[ProcView], norm: &str, exclude: &[u32], my_uid: Option<u32>) -> (Option<String>, Vec<u32>) {
     let mut unreadable = Vec::new();
     for p in view {
-        if exclude.contains(&p.pid) || p.pid == std::process::id() || p.skip {
+        if exclude.contains(&p.pid) || p.pid == std::process::id() || p.skip || p.foreign {
             continue;
         }
         if let (Some(me), Some(u)) = (my_uid, p.uid) {
@@ -1960,11 +2167,109 @@ mod tests {
         assert_eq!(probe_holder(&Holder { pid: 0x7fff_fff0, birth_s: 1, birth_us: 0 }), Liveness::Dead);
     }
 
+    /// TICKET=cysr-1116-win-restore-1121 — 윈 모양 열거 표(W1~W15 · N1). 판정 함수 수준이라 맥·리눅스 CI 에서도 돈다.
+    /// 기준(고치기 전)에서 붉은 행 = W3·W4·W6·W8·W11·W15(윈 실기 11-21: 저장 대화 있는 4좌석 모두 Undecided("scan:argv:<시스템 pid>") → 93).
+    #[test]
+    fn win_shaped_argv_scan_table() {
+        use crate::process_observation::Failure;
+        const S: &str = "5e55aaaa-0000-4000-8000-000000000001";
+        let me = std::process::id();
+        let opened = |sid: WinSid, session: u32| WinFacts { open: WinOpen::Opened, sid, session: Some(session) };
+        let closed = |o: WinOpen| WinFacts { open: o, sid: WinSid::Unknown, session: None };
+        let argv = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        let no_read = |_p: u32| -> Option<Vec<String>> { None };
+        // 한 줄 = (pid, sysinfo 명령줄, 사실) · 내 세션 = my · 자체 판독 = sr.
+        let scan = |rows: Vec<(u32, Vec<String>, WinFacts)>, my: Option<u32>, sr: &dyn Fn(u32) -> Option<Vec<String>>, alive: &dyn Fn(u32) -> bool| {
+            let mut v = vec![ProcView { pid: me, uid: None, skip: false, foreign: false, cmd: argv(&["cys.exe", "restore"]) }];
+            v.extend(rows.into_iter().filter_map(|(pid, cmd, f)| win_view(pid, cmd, &f, my, |p| sr(p))));
+            let probe = |p: u32| -> Result<(), Failure> { if alive(p) { Ok(()) } else { Err(Failure::Dead) } };
+            scan_argv_with(S, &[], None, move || v.clone(), probe)
+        };
+        let alive = |_p: u32| true;
+        let seen = |e: &Evidence| matches!(e, Evidence::Seen(_));
+        // W1 같은 사용자 · 열림 · 명령줄에 S
+        assert!(seen(&scan(vec![(3001, argv(&["claude", "--resume", S]), opened(WinSid::Same, 1))], Some(1), &no_read, &alive)), "W1");
+        // W2 같은 사용자 · 열림 · S 없음
+        assert_eq!(scan(vec![(3002, argv(&["claude"]), opened(WinSid::Same, 1))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W2");
+        // W3 남의 사용자/보호(LIMITED 거부) · 명령줄 빈 값
+        assert_eq!(scan(vec![(668, vec![], closed(WinOpen::Denied))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W3");
+        // W4 세션 0 서비스(열림 · 명령줄 빈 값) · 나 = 세션 1
+        assert_eq!(scan(vec![(900, vec![], opened(WinSid::Unknown, 0))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W4");
+        // W5 나 = 세션 0(ssh) · 세션 0 claude 명령줄에 S → 건너뛰지 않음
+        assert!(seen(&scan(vec![(901, argv(&["claude", "--resume", S]), opened(WinSid::Same, 0))], Some(0), &no_read, &alive)), "W5");
+        // W6 커널 가짜 프로세스(System 4 · Registry/Memory Compression = 세션 0 · 명령줄 없음)
+        assert_eq!(scan(vec![(4, vec![], opened(WinSid::Unknown, 0)), (120, vec![], opened(WinSid::Unknown, 0))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W6");
+        // W7 pid 0(Idle)
+        assert_eq!(scan(vec![(0, vec![], closed(WinOpen::Gone))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W7");
+        // W8 같은 사용자 상승 claude — sysinfo 빈 값 · 자체 판독 = S
+        let sr_s = |p: u32| -> Option<Vec<String>> { (p == 3008).then(|| argv(&["claude", "--resume", S])) };
+        assert!(seen(&scan(vec![(3008, vec![], opened(WinSid::Same, 1))], Some(1), &sr_s, &alive)), "W8");
+        // W9 같은 사용자 · 명령줄 빈 값 · 자체 판독도 실패 → 판정 불가 유지(보호)
+        assert_eq!(scan(vec![(3009, vec![], opened(WinSid::Same, 1))], Some(1), &no_read, &alive), Evidence::Undecided("scan:argv:3009".into()), "W9");
+        // W10 열거 뒤 사라짐(핸들 열기 = 없음) · 명령줄 빈 값 같은 사용자도 판독 사이 죽음 확인이면 빠짐
+        assert_eq!(scan(vec![(3010, vec![], closed(WinOpen::Gone))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W10a");
+        let dead = |p: u32| p != 3011;
+        assert_eq!(scan(vec![(3011, vec![], opened(WinSid::Same, 1))], Some(1), &no_read, &dead), Evidence::NoneConfirmed, "W10b");
+        // W11 실제 데스크톱 모양 혼합(커널 · 보호 거부 · 세션 0 서비스 · 같은 사용자 S 없음 여럿) = 이번 결함의 정답
+        let mixed = vec![
+            (0, vec![], closed(WinOpen::Gone)),
+            (4, vec![], opened(WinSid::Unknown, 0)),
+            (120, vec![], opened(WinSid::Unknown, 0)),
+            (180, vec![], closed(WinOpen::Denied)),
+            (668, vec![], closed(WinOpen::Denied)),
+            (900, vec![], opened(WinSid::Other, 0)),
+            (3120, argv(&["C:\\Windows\\explorer.exe"]), opened(WinSid::Same, 1)),
+            (3200, argv(&["claude", "--resume", "7e7e0000-0000-4000-8000-000000000001"]), opened(WinSid::Same, 1)),
+        ];
+        assert_eq!(scan(mixed, Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W11");
+        // W16 세션 1 · SYSTEM SID · LIMITED 열림(cysd 상승 등) · 명령줄 빈 값 → 건너뜀(winlogon 1192 모양 · 고치기 전 = Undecided)
+        assert_eq!(scan(vec![(1192, vec![], opened(WinSid::Other, 1))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W16");
+        // W17 세션 1 · 같은 사용자 SID · 상승(sysinfo 빈 값) · 자체 판독 = S 없음 → NoneConfirmed(oCamTask 10748 같은 사용자 상승 가정)
+        let sr_other = |p: u32| -> Option<Vec<String>> { (p == 10748).then(|| argv(&["C:\\Program Files\\oCam\\oCamTask.exe", "/start"])) };
+        assert_eq!(scan(vec![(10748, vec![], opened(WinSid::Same, 1))], Some(1), &sr_other, &alive), Evidence::NoneConfirmed, "W17");
+        // W11-real 윈 실기 11-21 사유 토큰 12 pid 모양 그대로(cause-check · master#b81183c9): 세션 0 10개(SearchIndexer·svchost×7·eausvc·IntelCpHDCPSvc ·
+        //   LIMITED 열림이든 거부든) + 세션 1 SYSTEM winlogon(열림 · SID 다름) + 세션 1 oCamTask(같은 사용자 상승 · 자체 판독 S 없음) → NoneConfirmed.
+        let real = vec![
+            (15912, vec![], opened(WinSid::Other, 0)),
+            (6240, vec![], opened(WinSid::Other, 0)),
+            (2848, vec![], closed(WinOpen::Denied)),
+            (4600, vec![], opened(WinSid::Unknown, 0)),
+            (2128, vec![], closed(WinOpen::Denied)),
+            (3420, vec![], opened(WinSid::Other, 0)),
+            (1140, vec![], closed(WinOpen::Denied)),
+            (5092, vec![], opened(WinSid::Other, 0)),
+            (5532, vec![], opened(WinSid::Other, 0)),
+            (2404, vec![], closed(WinOpen::Denied)),
+            (1192, vec![], opened(WinSid::Other, 1)),
+            (10748, vec![], opened(WinSid::Same, 1)),
+        ];
+        assert_eq!(scan(real, Some(1), &sr_other, &alive), Evidence::NoneConfirmed, "W11-real");
+        // W12 나 자신 없음(열거 실패)
+        assert_eq!(scan_argv_with(S, &[], None, Vec::new, |_p| Ok(())), Evidence::Undecided("scan:enumerate".into()), "W12");
+        // W13 분류 자체 실패(핸들 열기 그 밖 오류 · 세션 못 읽음 · 토큰 모름) → 남의 것으로 치지 않음 = 판정 불가 쪽
+        assert_eq!(scan(vec![(3013, vec![], closed(WinOpen::Failed))], Some(1), &no_read, &alive), Evidence::Undecided("scan:argv:3013".into()), "W13a");
+        assert_eq!(scan(vec![(3014, vec![], WinFacts { open: WinOpen::Opened, sid: WinSid::Unknown, session: None })], Some(1), &no_read, &alive), Evidence::Undecided("scan:argv:3014".into()), "W13b");
+        // W14 같은 사용자 SID · 열림 · 명령줄에 S → Seen
+        assert!(seen(&scan(vec![(3015, argv(&["claude", "--session-id", S]), opened(WinSid::Same, 1))], Some(1), &no_read, &alive)), "W14");
+        // W15 SID 다름 · 열림 · 명령줄 판독 가능 · S 포함 → 건너뜀(윈 「uid 축」)
+        assert_eq!(scan(vec![(3016, argv(&["claude", "--resume", S]), opened(WinSid::Other, 1))], Some(1), &no_read, &alive), Evidence::NoneConfirmed, "W15");
+        // 세션 규칙은 SID 와 병행 — 같은 SID 라도 세션 0(나 ≠ 0) 은 건너뜀 · 나의 세션을 모르면 세션 0 을 건너뛰지 않음
+        assert_eq!(win_foreign(950, &opened(WinSid::Same, 0), Some(1)), Some(true), "세션 규칙 병행");
+        assert_eq!(win_foreign(951, &opened(WinSid::Unknown, 0), None), Some(false), "내 세션 모름 = 세션 0 건너뛰지 않음");
+        // N1 안내 문구 — 윈 = PowerShell · 그 밖 = ps
+        let n = next_action("scan:argv:4", "5e55aaaa", Path::new("/x/y.lease"));
+        if cfg!(windows) {
+            assert!(n.contains("Get-CimInstance Win32_Process") && !n.contains("ps -axo"), "{n}");
+        } else {
+            assert!(n.contains("ps -axo pid,command | grep -i 5e55aaaa"), "{n}");
+        }
+    }
+
     /// codex 1R B1 — 명령줄 판독 실패를 「사라짐」으로 빼지 않는다 · UID 판독 실패를 남의 것으로 치지 않는다.
     #[test]
     fn argv_scan_never_turns_unreadable_into_none() {
         use crate::process_observation::Failure;
-        let pv = |pid: u32, uid: Option<u32>, cmd: &[&str]| ProcView { pid, uid, skip: false, cmd: cmd.iter().map(|s| s.to_string()).collect() };
+        let pv = |pid: u32, uid: Option<u32>, cmd: &[&str]| ProcView { pid, uid, skip: false, foreign: false, cmd: cmd.iter().map(|s| s.to_string()).collect() };
         // UID 판독 실패 + 명령줄 읽힘 + 그 대화 = 작성자로 본다(예전: 남의 것으로 건너뜀).
         let (hit, _) = classify_argv(&[pv(41, None, &["claude", "--resume", "abc"])], "abc", &[], Some(501));
         assert!(hit.is_some(), "UID 판독 실패를 남의 프로세스로 쳤다");
@@ -2079,9 +2384,9 @@ mod tests {
         // M12 — 실제 판정 함수에 빈 열거 · 나 자신 없는 열거를 넣는다.
         let ok = |_p: u32| -> Result<(), crate::process_observation::Failure> { Ok(()) };
         assert_eq!(scan_argv_with("x", &[], Some(501), Vec::new, ok), Evidence::Undecided("scan:enumerate".into()), "빈 열거를 없음으로 쳤다");
-        let other = || vec![ProcView { pid: 1, uid: Some(0), skip: false, cmd: vec!["launchd".into()] }];
+        let other = || vec![ProcView { pid: 1, uid: Some(0), skip: false, foreign: false, cmd: vec!["launchd".into()] }];
         assert_eq!(scan_argv_with("x", &[], Some(501), other, ok), Evidence::Undecided("scan:enumerate".into()));
-        let me = || vec![ProcView { pid: std::process::id(), uid: Some(501), skip: false, cmd: vec!["t".into()] }];
+        let me = || vec![ProcView { pid: std::process::id(), uid: Some(501), skip: false, foreign: false, cmd: vec!["t".into()] }];
         assert_eq!(scan_argv_with("x", &[], Some(501), me, ok), Evidence::NoneConfirmed, "정상 열거");
         // F6
         let n = next_action("lease:write:tmp:errno:28", "abc", Path::new("/x/y/abc.lease"));

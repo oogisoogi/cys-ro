@@ -122,6 +122,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_RestartManager",
     "Win32_System_SystemInformation",  # r9 fix D1: GetSystemTimeAsFileTime — 표를 찍은 뒤 재사용된 pid 의 시작 시각을 거른다
+    "Win32_System_RemoteDesktop",  # ★TICKET=cysr-1116-win-restore-1121: ProcessIdToSessionId — 대화 임대 argv 훑기의 세션 0 건너뜀(src/session_lease.rs win_scan)
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을

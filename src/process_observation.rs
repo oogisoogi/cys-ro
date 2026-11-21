@@ -199,6 +199,15 @@ pub fn identity(pid: u32) -> Result<Identity, Failure> {
     }
 }
 
+/// Windows only: argv through a LIMITED handle (see `windows_backend::argv_limited`).
+#[cfg(windows)]
+pub fn argv_limited(pid: u32) -> Result<Vec<Vec<u8>>, Failure> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(Failure::InvalidPid);
+    }
+    windows_backend::argv_limited(pid)
+}
+
 /// Compare with a fresh targeted observation, including executable and argv.
 pub fn recheck(expected: &ProcessObservation) -> Result<(), Failure> {
     if observe(expected.identity.pid)? == *expected {
@@ -823,6 +832,26 @@ mod windows_backend {
     pub(super) fn observe(pid: u32) -> Result<ProcessObservation, Failure> {
         let p = OwnedProcess::open(pid)?;
         observe_handle(&p, pid)
+    }
+
+    /// argv only, through ONE `PROCESS_QUERY_LIMITED_INFORMATION` handle (no SYNCHRONIZE, no birth recheck) —
+    /// TICKET=cysr-1116-win-restore-1121: an elevated same-user process may refuse SYNCHRONIZE/VM_READ yet answer
+    /// ProcessCommandLineInformation, which only needs LIMITED.
+    pub(super) fn argv_limited(pid: u32) -> Result<Vec<Vec<u8>>, Failure> {
+        // SAFETY: plain Win32 call; a null return is handled below.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            // SAFETY: as in last_error.
+            let e = unsafe { GetLastError() };
+            return Err(if e == ERROR_INVALID_PARAMETER {
+                Failure::Dead
+            } else {
+                Failure::Unknown { stage: "OpenProcess(limited)", os_error: Some(e as i32) }
+            });
+        }
+        let p = OwnedProcess(h);
+        let wide = command_line(&p)?;
+        Ok(parse_windows_command_line(&wide).into_iter().map(|a| wide_to_bytes(&a)).collect())
     }
 }
 

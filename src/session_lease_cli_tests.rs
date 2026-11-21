@@ -1038,3 +1038,22 @@ fn only_the_top_agent_of_the_seat_speaks_for_its_conversation() {
     assert_eq!(top_agents(&[10, 20], 1000, parent), vec![10, 20], "형제 최상위를 뺐다");
     assert_eq!(top_agents(&[12], 1000, parent), vec![12], "위 에이전트가 목록에 없으면 그 자손이 최상위");
 }
+
+/// ★TICKET=cysr-1116-win-restore-1121 5회차 — 좌석 메타 agent_bin 이 윈 주인 후보 이름 집합으로 넘어간다(`surface.list` → [`seat_agent_bins`]).
+#[test]
+fn seat_agent_bins_reads_surface_list_agent_bin() {
+    let list = json!({"surfaces": [
+        {"surface_id": 1, "agent_bin": "C:\\tools\\seatbot.exe"},
+        {"surface_id": 2, "agent_bin": "claude"},
+        {"surface_id": 3, "agent_bin": null},
+        {"surface_id": 4, "agent_bin": "  "},
+        {"surface_id": 5},
+        {"surface_id": 6, "agent_bin": 7}
+    ]});
+    assert_eq!(seat_agent_bins(Some(&list)), vec!["C:\\tools\\seatbot.exe".to_string(), "claude".to_string()]);
+    assert!(seat_agent_bins(None).is_empty(), "데몬 판독 실패 = 빈 목록");
+    assert!(seat_agent_bins(Some(&json!({"surfaces": "x"}))).is_empty(), "형식 이상 = 빈 목록");
+    // 끝까지: 그 목록이 이름 집합에 들어가 그 이름의 읽을 수 없는 행을 판정 불가 후보로 남긴다.
+    let set = cys::session_lease::holder_name_set(&[], &seat_agent_bins(Some(&list)));
+    assert!(set.iter().any(|h| h == "seatbot"), "{set:?}");
+}

@@ -152,12 +152,22 @@ impl World for CliWorld {
         // ⚠codex 1R M4(낡은 argv)는 고치지 않는다(codex 2R blocking): 「다른 대화 임대의 작성자」라는 기록만으로는 그 작성자가 좌석 안
         //   /resume 으로 이 대화에 돌아왔는데 등록(SessionStart)이 아직 안 닿은 순간과 가를 수 없다 → 제외하면 작성자 둘의 창이 생긴다.
         //   남는 것 = 낡은 argv 의 거짓 막힘(92 · 사유 줄에 pid · 안전 쪽) — DESIGN §13 에 적음.
-        sl::scan_argv(norm, &self.exclude)
+        // ★5회차(master 설계 2): 윈 주인 후보 이름 집합에 데몬 좌석 메타 agent_bin 을 더한다(agents.json 이 그 뒤 바뀌었어도 떠 있는 좌석의 실제 실행 파일) ·
+        //   판독 실패 = 빈 목록(집합의 기본 이름·agents.json 은 남는다). 유닉스 = 이름 집합을 쓰지 않으므로 묻지 않는다.
+        let seat_bins = if cfg!(windows) { seat_agent_bins(request("surface.list", json!({})).ok().as_ref()) } else { Vec::new() };
+        sl::scan_argv(norm, &self.exclude, &seat_bins)
     }
 
     fn now(&self) -> u64 {
         sl::now_secs()
     }
+}
+
+/// `surface.list` 응답 → 좌석 메타 agent_bin 목록(순수) — 문자열이 아닌 값·빈 값은 뺀다.
+pub(crate) fn seat_agent_bins(list: Option<&Value>) -> Vec<String> {
+    list.and_then(|l| l["surfaces"].as_array())
+        .map(|a| a.iter().filter_map(|s| s["agent_bin"].as_str()).filter(|b| !b.trim().is_empty()).map(String::from).collect())
+        .unwrap_or_default()
 }
 
 fn seat_word_ok(v: &Value) -> bool {

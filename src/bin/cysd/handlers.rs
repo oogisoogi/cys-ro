@@ -24177,7 +24177,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn v116_send_text_agent_launch_passes_vacant_seat_guard_only_for_seat_bin() {
-        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()); // 앞 시험 패닉의 독을 넘겨받지 않는다(같은 잠금 다른 132곳과 같은 꼴 · TICKET=cysr-1116-maccysd2-1121 — C7 CI 에서 연쇄 PoisonError)
         let (daemon, dir) = daemon_with_acl("v116-launch", r#"{"default":"allow","rules":[]}"#);
         let s = daemon
             .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
@@ -24249,7 +24249,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn integ1116_human_refuse_send_not_typed_into_bare_shell() {
-        let _g = ACL_ENV_LOCK.lock().unwrap();
+        let _g = ACL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner()); // 앞 시험 패닉의 독을 넘겨받지 않는다(같은 잠금 다른 132곳과 같은 꼴 · TICKET=cysr-1116-maccysd2-1121 — C7 CI 에서 연쇄 PoisonError)
         let (daemon, dir) = daemon_with_acl("integ1116-bare", r#"{"default":"allow","rules":[]}"#);
         let s = daemon
             .create_surface(None, Some("exec /bin/sh -i".into()), None, None, 24, 80)
@@ -29199,16 +29199,21 @@ mod tests {
             daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
             s
         };
+        // (TICKET=cysr-1116-maccysd2-1121) 「자손 0」 한 번 관측은 exec 전 프로파일 단계의 빈 찰나일 수 있다(자식이 떴다 사라지는 사이) →
+        //   s5r_settle_empty 와 같은 처방: `sleep 30` 이 떠 있음(= exec 끝) 확인 뒤 자손 0. 상한 20초 · 못 맞추면 관측 상태를 싣고 전제 실패.
         let settle_empty = |s: &Arc<crate::state::Surface>| {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            crate::governance::test_wait_seat_runs(s, "sleep", &["30"]);
+            let limit = std::time::Duration::from_secs(20);
+            let t0 = std::time::Instant::now();
             loop {
                 let mut sys = sysinfo::System::new();
                 sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
                 let alive = sys.process(sysinfo::Pid::from_u32(s.pid)).is_some();
-                if alive && governance::collect_descendants(&sys, s.pid).is_empty() {
+                let kids = governance::collect_descendants(&sys, s.pid);
+                if alive && kids.is_empty() {
                     return;
                 }
-                assert!(std::time::Instant::now() < deadline, "전제 실패: surface:{} 가 10초 안에 자손 0 이 안 됐다", s.id);
+                assert!(t0.elapsed() < limit, "전제 실패: surface:{} (pid {}) 가 {limit:?} 안에 자손 0 이 안 됐다 · 살아 있음 = {alive} · 자손 = {kids:?}", s.id, s.pid);
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         };
@@ -30035,6 +30040,12 @@ mod tests {
         let (daemon, dir) = daemon_with_acl("s5-1116-seq", r#"{"default":"allow","rules":[]}"#);
         let s = daemon.create_surface(None, Some("sleep 30".into()), None, None, 24, 80).expect("create surface");
         daemon.surfaces.lock().unwrap().insert(s.id, s.clone());
+        // (TICKET=cysr-1116-maccysd2-1121) ⑤a 는 이 좌석이 빈 셸이 **아니어야** 초안 게이트까지 간다 — 로그인 셸(`-lc`)이 프로파일을
+        //   도는 동안은 뿌리 = 셸 · 자손 0 이라 빈 셸(no_agent)로 판정된다(C7 CI 런 44827971946 · 시험 전체 76ms). `sleep 30` 이
+        //   뿌리(zsh exec) 또는 자손(bash fork)으로 뜰 때까지 기다린다(⑤b 와 같은 도우미 · 윈도 = 종전 그대로 — PowerShell 의 sleep 은 프로세스가 아니다).
+        if cfg!(unix) {
+            crate::governance::test_wait_seat_runs(&s, "sleep", &["30"]);
+        }
         let caller = 990_330_u32;
         bind_caller(&daemon, caller, s.id);
         let send = |n: u64, p: Value| {
@@ -30252,21 +30263,32 @@ mod tests {
     /// 윈도 = 종전 그대로(PowerShell 에는 exec 가 없다).
     const S5R_SEAT_CMD: &str = if cfg!(windows) { "sleep 30" } else { "exec sleep 30" };
 
-    /// 승계 판정 전에 좌석이 자손 0(Empty)인지 **확인**한다 — 로그인 셸 프로파일이 잠깐 남기는 자식도 기다린다(상한 10초 · 못 맞추면 전제 실패).
-    /// c3_close_if_empty_daemon_rechecks_and_audits 의 settle_empty 와 같은 꼴. 윈도 = 확인 없음(종전 그대로).
+    /// 승계 판정 전에 좌석이 **자리 잡은** Empty 인지 확인한다 — ⑴ `exec sleep 30` 이 끝나 `sleep 30` 이 떠 있다(= 로그인 셸 프로파일
+    /// 단계가 끝났다 · S5R_SEAT_CMD 면 뿌리 자체) ⑵ 그 뒤 승계 판정과 같은 `seat_state` 가 Empty. 못 맞추면 관측 상태를 싣고 전제 실패.
+    /// (TICKET=cysr-1116-maccysd2-1121) 종전 판(자손 0 만 확인)은 프로파일 단계의 빈 찰나(뿌리 = 셸 · path_helper 같은 자식이 떴다
+    /// 사라지는 사이)에 빠져나가 곧이은 승계 판정이 Occupied 를 봤다(C7 CI 런 44827971946 · 실패까지 0.4s — 상한이 아니라 조건 문제).
+    /// 윈도 = 확인 없음(종전 그대로).
     fn s5r_settle_empty(s: &crate::state::Surface) {
         if cfg!(windows) {
             return;
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        crate::governance::test_wait_seat_runs(s, "sleep", &["30"]);
+        let limit = std::time::Duration::from_secs(20);
+        let t0 = std::time::Instant::now();
         loop {
             let mut sys = sysinfo::System::new();
             sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-            let alive = sys.process(sysinfo::Pid::from_u32(s.pid)).is_some();
-            if alive && governance::collect_descendants(&sys, s.pid).is_empty() {
+            let seat = governance::seat_state(&sys, s);
+            if seat == governance::SeatState::Empty {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline, "전제 실패: surface:{} 가 10초 안에 자손 0 이 안 됐다", s.id);
+            assert!(
+                t0.elapsed() < limit,
+                "전제 실패: surface:{} (pid {}) 가 {limit:?} 안에 Empty 가 안 됐다 · 좌석 = {seat:?} · 자손 = {:?}",
+                s.id,
+                s.pid,
+                governance::collect_descendants(&sys, s.pid)
+            );
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }

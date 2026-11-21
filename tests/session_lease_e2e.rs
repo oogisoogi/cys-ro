@@ -56,7 +56,7 @@ impl Box_ {
         let slug: String = proj.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let pd = cfg.join("projects").join(slug);
         std::fs::create_dir_all(&pd).unwrap();
-        std::fs::write(pd.join(format!("{sid}.jsonl")), format!("{{\"type\":\"user\",\"sessionId\":\"{sid}\"}}\n")).unwrap();
+        write_saved_jsonl(&pd.join(format!("{sid}.jsonl")), &sid);
         let entries = vec![json!({"role": ROLE, "agent": "claude", "cwd": proj, "session_id": sid,
                                   "claude_config_dir": cfg})];
         std::fs::write(base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
@@ -74,7 +74,7 @@ impl Box_ {
         let slug: String = proj.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
         let jsonl = cfg.join("projects").join(slug).join(format!("{sid}.jsonl"));
         if !jsonl.exists() {
-            std::fs::write(&jsonl, format!("{{\"type\":\"user\",\"sessionId\":\"{sid}\"}}\n")).unwrap();
+            write_saved_jsonl(&jsonl, &sid);
         }
         let entries = vec![json!({"role": role, "agent": "claude", "cwd": proj, "session_id": sid, "claude_config_dir": cfg})];
         std::fs::write(run.join("topology.json"), json!({"entries": entries}).to_string()).unwrap();
@@ -330,6 +330,17 @@ impl Drop for Box_ {
             }
         }
     }
+}
+
+/// 저장 대화의 jsonl — 지난 회차에 쓴 파일답게 mtime 을 1시간 전으로 둔다(TICKET=cysr-1116-leasee2e-1121).
+/// 데몬 usage 수집기의 휴리스틱 발견(`discover_claude_transcript`)은 좌석 생성 5초 전 이후 mtime 의 jsonl 중 최신을 그 좌석의 대화로
+/// 1회 핀한다. 방금 쓴 S 는 그 창 안이라, 새 좌석 W 의 가짜 claude 가 자기 대화 T 의 파일을 쓰기 **전**에 수집기가 돌면(느린 CI 러너의
+/// 로그인 셸 프로필) W 가 S 로 핀됐다 → topology live 에 「W = S」 → `--resume-saved` 가 「다른 좌석이 저장 대화를 잇고 있다」(93 · 임대 0)
+/// · rv 전제(등록 전 핀 없음)가 깨졌다(CI 44850374411). 실제 저장 대화는 작성자가 끝난 옛 파일이다 — 시험 상자도 그 모양으로 세운다.
+fn write_saved_jsonl(p: &std::path::Path, sid: &str) {
+    std::fs::write(p, format!("{{\"type\":\"user\",\"sessionId\":\"{sid}\"}}\n")).unwrap();
+    let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(old).unwrap();
 }
 
 /// 시험 시작 때 옛 회차가 남긴 상자 프로세스(환경 HOME = /tmp/cys-sle-<다른 pid>-…)가 있으면 경고만(끄지 않음 · 남의 회차일 수 있다 · master#4199fa4f).

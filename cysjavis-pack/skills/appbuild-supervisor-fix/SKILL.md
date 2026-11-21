@@ -1,9 +1,12 @@
 ---
 name: appbuild-supervisor-fix
 description: 검증에서 발견된 결함을 반자동으로 교정하는 하위 스킬 — 사용자 승인을 받고, 빠진 곳만, 최대 3회 원본 스킬로 되돌려 고친 뒤 재검증한다. appbuild-supervisor 수정 관문. "반자동 수정 / 빠진 곳 교정 / 승인 후 수정 / 최대 3회" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-supervisor-fix
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 감독관이 잡은 결함을 고친다 — 단 **마구 고치지 않는다.** 세 가지 제약:
 

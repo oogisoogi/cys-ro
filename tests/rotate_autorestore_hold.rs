@@ -3,6 +3,9 @@
 //! 격리 소켓은 launchd 갈래가 아니라 정지 + 자동 기동 갈래(윈도우 rotate 와 같은 길)를 탄다. 윈도우 실기는 r9 가 잰다.
 #![cfg(unix)]
 
+#[path = "support/fixed_fixture.rs"]
+mod fixed_fixture;
+
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -140,12 +143,12 @@ impl Box_ {
 
     /// 가짜 claude(세션 등록까지 한다 · 앞의 대본이 시작 폴더를 적고 `slow` 초 뒤에 뜬다) · 좌석 폴더는 master = proj · worker = 홈(phoenix 만 proj 로 보정한다).
     fn seats(&mut self, slow: u32) -> PathBuf {
-        let (bin, real) = (self.base.join("sbin"), self.base.join("real"));
+        let bin = self.base.join("sbin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::create_dir_all(&real).unwrap();
-        assert!(Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(real.join("claude")).arg(FAKE_CLAUDE).status().unwrap().success());
+        // 진짜 가짜 claude(Mach-O) = 고정 자리 1회 빌드·재사용(fixed_fixture 머리말) · 상자에는 기록용 셸 대본만.
+        let real = fixed_fixture::cc_fixed("rah-claude", "claude", &std::fs::read_to_string(FAKE_CLAUDE).unwrap());
         let p = bin.join("claude");
-        std::fs::write(&p, format!("#!/bin/sh\necho \"cwd=$PWD\" >> {0}/claude.log\nsleep {slow}\nexec {0}/real/claude \"$@\"\n", self.base.display())).unwrap();
+        std::fs::write(&p, format!("#!/bin/sh\necho \"cwd=$PWD\" >> {0}/claude.log\nsleep {slow}\nexec {1} \"$@\"\n", self.base.display(), real.display())).unwrap();
         std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         self.path = format!("{}:{}:{}", bin.display(), PathBuf::from(CYS).parent().unwrap().display(), self.path);
         self.base.join("proj")
@@ -184,14 +187,15 @@ impl Box_ {
     }
 
     /// 깃발이 서면 phoenix 가 `secs` 초 뒤 exit 1 로 끝난다. self-test 와 깃발 전 복원은 진짜 python 이 돈다.
-    /// 빌드 폴더의 동봉 python 이 PATH 보다 앞서므로 실행 파일을 상자로 옮겨 띄운다.
+    /// 빌드 폴더의 동봉 python 이 PATH 보다 앞서므로 실행 파일을 빌드 폴더 밖으로 옮겨 띄운다 — 옮길 자리 = 고정 자리(빌드가 바뀔
+    /// 때만 갈아 끼움 · 지우지 않음 · fixed_fixture 머리말) · cys 는 옆의 cysd 를 띄운다 · PATH 에도 상자 sbin 다음에 둔다.
     fn fail_phoenix(&mut self, secs: u32) {
         let bin = self.base.join("sbin");
         std::fs::create_dir_all(&bin).unwrap();
-        for name in ["cys", "cysd"] {
-            std::fs::copy(PathBuf::from(CYS).with_file_name(name), bin.join(name)).unwrap();
+        for name in ["cysd", "cys"] {
+            self.exe = fixed_fixture::copied_fixed("rah-bin", &PathBuf::from(CYS).with_file_name(name));
         }
-        self.exe = bin.join("cys");
+        let moved = self.exe.parent().unwrap().to_path_buf();
         let p = bin.join("python3");
         let body = format!(
             "#!/bin/sh\ncase \"$*\" in\n  *restore*) if [ -e {0}/phoenix-fails ]; then sleep {secs}; exit 1; fi;;\nesac\nPATH='{1}' exec python3 \"$@\"\n",
@@ -200,7 +204,7 @@ impl Box_ {
         );
         std::fs::write(&p, body).unwrap();
         std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-        self.path = format!("{}:{}", bin.display(), self.path);
+        self.path = format!("{}:{}:{}", bin.display(), moved.display(), self.path);
     }
 
     fn start_failing(&self) {
@@ -216,11 +220,9 @@ impl Box_ {
     }
 
     /// 산 소유자 — 이름만 맞는 작은 실행 파일.
+    /// 실행 파일 = 고정 자리 1회 빌드·재사용(fixed_fixture 머리말).
     fn owner(&self, name: &str) -> Child {
-        let src = self.base.join("owner.c");
-        std::fs::write(&src, "#include <unistd.h>\nint main(void) { sleep(300); return 0; }\n").unwrap();
-        let exe = self.base.join(name);
-        assert!(Command::new("/usr/bin/cc").args(["-w", "-o"]).arg(&exe).arg(&src).status().unwrap().success());
+        let exe = fixed_fixture::cc_fixed("rah-owner", name, "#include <unistd.h>\nint main(void) { sleep(300); return 0; }\n");
         Command::new(&exe).spawn().unwrap()
     }
 }

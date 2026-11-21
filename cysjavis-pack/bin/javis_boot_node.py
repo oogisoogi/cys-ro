@@ -198,6 +198,20 @@ ROLE_DIRECTIVE = {
 
 
 # ───────────────────────── cys 호출 ─────────────────────────
+# ★조각 1: `cys launch-agent --resume-saved` 의 「저장 대화를 지키려고 멈춤」(cys EXIT_RESUME_HELD) — 이 도구도 같은 값으로 끝난다.
+EXIT_RESUME_HELD = 93
+# ★seatkeep-t1: cys 대화 임대 거절 줄(`· <역할>: 대화 <id> … 띄우지 않음`) — rc 93 이 조각 1 의 「잇지 못함」 과 같은 값이라
+#   줄 모양으로 가른다(javis_phoenix `_LEASE_REFUSAL_RE` 와 같은 꼴 · cys session_lease_cli 의 거절 줄).
+_LEASE_LINE_RE = re.compile(r"^\s*(?:\[launch-agent\] --resume-saved: )?·?\s*\S+: 대화 \S+ .*띄우지 않음")
+
+
+def _lease_refusal_line(err):
+    for ln in (err or "").splitlines():
+        if _LEASE_LINE_RE.search(ln):
+            return ln.strip()[:200]
+    return None
+
+
 def run(args, timeout=15):
     try:
         r = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=timeout, **NOWIN)
@@ -643,8 +657,9 @@ def node_liveness(status, role):
     # ★(U-10) ③ 관문 보류 — 프로세스는 살아 있으나 첫기동 관문에 갇혀 **입력 불가**.
     #   반드시 agent_alive 분기 **앞**(위 docstring ③ 사유). 파괴·스폰 어느 것도 유도하지
     #   않는다 — `latch_death_confirmed` 3중 AND(파괴 경로)는 이 등급을 보지 않는다(동결).
+    #   ★조각 1: 표식은 에이전트가 죽어도 지워지지 않는다 — 죽음이 3중 확정된 좌석의 표식은 생존 근거가 못 된다(Rust 와 같다).
     gp = gate_pending_info(s)
-    if gp is not None:
+    if gp is not None and not latch_death_confirmed(s)[0]:
         return LIVENESS_GATED, ("첫기동 관문 보류(gate=%s · 프로세스 생존·입력 불가)"
                                 % (gp.get("gate") or "unknown"))
     if s.get("agent_alive"):
@@ -1188,6 +1203,20 @@ def _seat_kept_first(old_ref, kind, socket=None, clear=False):
     return True
 
 
+def _saved_list_block(role, agent, cwd=None):
+    """★조각 1: reap-launch 회수 전 확인 — None = 회수 가능 · 문자열 = 보류 사유. 뒤이은 `launch-agent --resume-saved` 와 같은 판정이다.
+    회수 뒤의 launch-agent 가 rc 93 으로 멈추면 좌석만 잃는다. `resume-check` 를 모르는 옛 cys 만 종전대로 지나가고
+    그 밖의 실패(시간 초과 포함)는 목록을 모르는 것으로 친다."""
+    cmd = ["cys", "daemon", "resume-check", "--role", role, "--agent", agent]
+    if cwd:
+        cmd += ["--cwd", cwd]
+    rc, _, err = run(cmd, timeout=12)
+    if rc == 0 or (rc == 2 and "unrecognized subcommand 'resume-check'" in (err or "")):
+        return None
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "저장 목록 확인 실패(rc=%d)" % rc
+
+
 def _reap_after_succession(role, old_ref, old_pid=None):
     """승계 뒤 role 없는 옛 빈 셸 좌석 정리(v115-dept · master#0e579100) — 반환 = 기록 1줄.
     큐가 **비었다고 잴 수 있을 때만** close-surface --reap(best-effort). 큐가 남았거나 못 쟀으면 보존 —
@@ -1702,6 +1731,10 @@ def main():
                     if _seat_kept_first(old_ref, "recheck_%s" % act2):
                         _seat_event(a.role, old_ref, "seat.kept:recheck_%s" % act2, a.cwd)
                     return done("seat_kept_recheck", "recheck_%s" % act2, old_ref, code=1)
+                why_saved = _saved_list_block(a.role, a.agent, a.cwd)
+                if why_saved:
+                    emit("seat", "%s 회수 보류 — 저장 대화를 지키려고 멈춤(회수·새 대화 0): %s" % (old_ref, why_saved))
+                    return done("resume_held", why_saved, old_ref, code=EXIT_RESUME_HELD)
                 rc_r, _, _ = run(["cys", "close-surface", old_ref, "--reap"], timeout=12)
                 _seat_kept_first(old_ref, None, clear=True)   # 보존 래치 해제(같은 번호 재사용 대비)
                 emit("seat", "%s 빈 좌석 회수(reap rc=%d · 큐 0) → 새 좌석 기동" % (old_ref, rc_r))
@@ -1712,7 +1745,8 @@ def main():
             takeover = True
     if row is None:
         launched_at = time.time()
-        # ★v115r5-t1 T3: 저장된 대화가 있으면 이어서 기동(--resume-saved · 없거나 못 이으면 cys 가 새 대화).
+        # ★v115r5-t1 T3: 저장된 대화가 있으면 이어서 기동(--resume-saved · 없거나 못 이으면 cys 가 새 대화 ·
+        #   저장 목록을 못 읽으면 rc 93 으로 멈춤 — 조각 1).
         #   종전엔 핀 없이 새 대화로 떠서 ↻ 뒤 승계 좌석(부서장)의 대화가 끊겼다(VM r3 · phoenix fork).
         cmd = ["cys", "launch-agent", "--role", a.role, "--agent", a.agent, "--resume-saved"]
         if a.cwd:
@@ -1720,10 +1754,26 @@ def main():
         launch_cap = deadline_capped(budget("BOOT_NODE_LAUNCH_SUBPROC_S", 80))
         heartbeat("launch", "launch-agent 기동(상한 %.0fs)" % launch_cap)
         rc, _, err = run(cmd, timeout=launch_cap)
-        if rc == 2 and "--resume-saved" in (err or ""):
+        # ★조각 1: 재시도는 clap 의 정확한 문구일 때만 — 새 cys 의 rc 2(프로필 불신 기동 중단)도 stderr 에 플래그 이름이
+        #   들어 있어, 종전 조건이면 플래그를 빼고 다시 띄워 다른 계정·새 대화로 떴다.
+        if rc == 2 and "unexpected argument '--resume-saved'" in (err or ""):
             # 플래그를 모르는 옛 cys(인자 해석 거부 · 좌석 생성 전) — 종전 기동 그대로 1회.
             emit("launch", "cys 가 --resume-saved 를 모름 — 종전 기동으로 재시도")
-            rc, _, _ = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
+            rc, _, err = run([c for c in cmd if c != "--resume-saved"], timeout=launch_cap)
+        lease_line = _lease_refusal_line(err) if rc in (92, EXIT_RESUME_HELD) else None
+        if rc == 92 or lease_line is not None:
+            # ★seatkeep-t1: 저장 대화를 다른 살아 있는 프로세스가 쓰는 중(92) · 생존 판정 불가(93 + 임대 거절 줄) — cys 가 좌석을
+            #   만들기 전에 거절했다(좌석 0 · 주입 0). 재조회·플래그 빼고 재시도(새 대화)를 하지 않는다 — 같은 역할 둘을 세우는 길이다.
+            #   끝 코드 = 조각 1 의 EXIT_RESUME_HELD(93 · 「저장 대화를 지키려고 멈춤」 · 호출자가 파괴적 회수로 올리지 않는 값).
+            why = "session_writer_live" if rc == 92 else "session_liveness_unknown"
+            emit("launch", "launch-agent rc=%d — 대화 임대 거절(%s) · 좌석 0 · 새 대화 폴백 0 · %s"
+                 % (rc, why, lease_line or ((err or "").strip().splitlines() or [""])[-1]))
+            return done("resume_refused", why, code=EXIT_RESUME_HELD)
+        if rc == EXIT_RESUME_HELD:
+            lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+            why = lines[-1][:200] if lines else "저장 대화 판정 보류"
+            emit("launch", "launch-agent rc=93 — 저장 대화를 지키려고 멈춤(새 대화 0): %s" % why)
+            return done("resume_held", why, code=EXIT_RESUME_HELD)
         emit("launch", "launch-agent rc=%d (실패 텍스트 무시·cys list 재조회)" % rc)
         for _ in range(3):
             time.sleep(2)

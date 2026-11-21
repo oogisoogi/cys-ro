@@ -1,6 +1,6 @@
 ---
 name: caption-align
-description: 전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(큐)을 생성하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 whisperx forced-alignment 바닥부터, deny-by-default). 현 video-stitch-captions의 audio-sync가 *검사*만 한다면 이 스킬은 타이밍을 *생성*한다. "자막 정렬 / 캡션 타이밍 / forced alignment / 단어 싱크 / 자막 큐 / subtitle timing / SRT 타임코드" 트리거, 또는 localization-dub·podcast-repurpose 아키타입의 assets 단계로 발동.
+description: 전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(SRT 큐)을 만든다. 「자막 타이밍 / 자막 싱크 맞춰 / forced alignment」 요청 때.
 cys:
   capability: caption-align
   stability: beta
@@ -25,13 +25,16 @@ cys:
 ## provider 선택 (하드코딩 금지 — javis_select 위임)
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability caption-align --intent "<용도: 자막/더빙싱크>" --free-first
 ```
 
 - **무료·로컬 바닥**: `align_whisperx`(WhisperX forced-alignment·무키·로컬·`transcription`의 whisperx
-  모델 재사용). 키가 없어도 항상 가용 — 자막 정렬은 키 없이 동작한다.
-- 문장 단위·다국어 정렬엔 `align_aeneas`(로컬·무키). `--free-first`로 무료 바닥 우선.
+  모델 재사용). 키는 필요 없지만 파이썬 `whisperx` 가 설치돼 있을 때만 가용(없으면 javis_select 가 미가용으로 건너뛴다).
+- 문장 단위·다국어 정렬엔 `align_aeneas`(로컬·무키 · 파이썬 `aeneas` 가 설치돼 있을 때만). `--free-first`로 무료 바닥 우선.
+- ⚠ whisperx·aeneas 둘 다 없으면 rank 가 「가용 후보 없음」으로 끝난다(2026-11 실측). 그때는 whisper.cpp(`whisper-cli`)
+  등으로 단어 시각이 든 전사를 먼저 만들어 `transcription` 산출 계약(`transcript.json`) 모양으로 옮긴 뒤 아래
+  `caption_shape.py` 로 큐를 만든다(단어 시각 출력 여부는 따로 확인).
 
 ## 입력·산출물 계약
 
@@ -62,14 +65,14 @@ forced-alignment가 단어별 start/end를 주면, 단어→큐 그룹핑은 **L
 `bin/caption_shape.py`로 규칙 셰이핑한다(OpenCut 결정론 자막 셰이핑 발상):
 
 ```bash
-python3 caption_shape.py shape --input transcript.json --out captions.json \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/caption_shape.py" shape --input transcript.json --out captions.json \
   --max-words 7 --max-chars 42 --gap-split 0.8 --min-duration 1.0
 ```
 
 - 규칙: **N-words/큐**(가독성) + **max-chars**(한 줄 과밀 방지) + **gap-split**(자연 휴지서 분할) +
   **min-duration**(짧은 큐 표시시간 보장) + **비중첩**(다음 큐 start 침범 금지). 출력 `cues[]`는
   위 산출 계약과 동일 형식.
-- 파라미터는 frontmatter `cys.params`(ParamDefinition)로 선언 — 호출 전 `javis_params coerce`로
+- 파라미터는 frontmatter `cys.params`(ParamDefinition)로 선언 — 호출 전 `python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_params.py" coerce`로
   범위-밖 값을 거부한다(가치 게이트). 손튜닝 수치를 산문에 박지 마라.
 
 ## 환각0·producer≠evaluator (불가침)
@@ -86,3 +89,7 @@ python3 caption_shape.py shape --input transcript.json --out captions.json \
   `{"kind":"json_valid"}` + `{"kind":"field_present","value":"cues"}` +
   `{"kind":"min_items","value":{"field":"cues","min":1}}`.
 - cost_class=wall-heavy: 긴 미디어는 정렬 후 임시파일 정리(자원 거버넌스).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+전사 텍스트를 음성에 단어 단위로 정렬해 자막 타이밍(큐)을 생성하는 대표 스킬 — provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 whisperx forced-alignment 바닥부터, deny-by-default). 현 video-stitch-captions의 audio-sync가 *검사*만 한다면 이 스킬은 타이밍을 *생성*한다. "자막 정렬 / 캡션 타이밍 / forced alignment / 단어 싱크 / 자막 큐 / subtitle timing / SRT 타임코드" 트리거, 또는 localization-dub·podcast-repurpose 아키타입의 assets 단계로 발동.

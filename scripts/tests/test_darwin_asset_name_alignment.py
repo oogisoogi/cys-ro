@@ -35,10 +35,35 @@ LEGS = (("darwin-aarch64", "aarch64-apple-darwin", "aarch64"),
         ("darwin-x86_64", "x86_64-apple-darwin", "x64"))
 
 
+
+# ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V10): 스크립트가 tar 를 서명 전에 칩 검사한다 → 가짜 앱에도 목표 칩의 Mach-O 머리(합성 ·
+#   test_check_macho_arch.thin 과 같은 꼴)와 필수 런타임 4개를 둔다. 칩 = 그 레인(aarch64 → arm64 · x64 → x86_64).
+_CPU = {"aarch64": 0x0100000C, "x64": 0x01000007}
+_RUNTIME = ("Contents/Resources/runtime/python/bin/python3", "Contents/Resources/runtime/node/bin/node",
+            "Contents/Resources/runtime/git/bin/git", "Contents/Resources/runtime/uv/uv")
+
+
+def _macho(cpu):
+    import struct
+    sub = 3 if cpu == 0x01000007 else 0   # 검사기 규칙: x86_64 = subtype ALL(3) · arm64 = ALL(0)
+    return struct.pack("<IIIIIIII", 0xFEEDFACF, cpu, sub, 2, 0, 0, 0, 0) + b"\0" * 64
+
+
+def put_macho_bundle(app, arch, skip=()):
+    """APP 에 진입점(Contents/MacOS/cys-app)과 필수 런타임 4개를 ARCH 칩 Mach-O 로 심는다(SKIP = 빼 둘 상대 경로)."""
+    for rel in ("Contents/MacOS/cys-app",) + _RUNTIME:
+        if rel in skip:
+            continue
+        p = os.path.join(app, *rel.split("/"))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as fh:
+            fh.write(_macho(_CPU[arch]))
+        os.chmod(p, 0o755)
+
 def fake_root(tmp):
     """두 생성기만 든 사본 루트 — 스크립트는 제 위치의 `..` 만 보므로 이것으로 충분하다."""
     os.makedirs(os.path.join(tmp, "scripts"))
-    for name in ("make-update-manifest.sh", "make-darwin-updater-tarball.sh"):
+    for name in ("make-update-manifest.sh", "make-darwin-updater-tarball.sh", "check_macho_arch.py"):   # ★1.1.16 V10: 칩 검사기 동반
         shutil.copy2(os.path.join(SCRIPTS, name), os.path.join(tmp, "scripts", name))
     for _key, triple, _arch in LEGS:
         bundle = os.path.join(tmp, "target", triple, "release", "bundle", "macos")
@@ -70,8 +95,9 @@ class AssetNameAlignment(unittest.TestCase):
 
     def tarball_name(self, arch):
         """생성기 ②를 돌려 실제로 만들어진 tar 파일명을 읽는다."""
-        app = os.path.join(self.root, "staging", "cysr.app")
+        app = os.path.join(self.root, "staging-%s" % arch, "cysr.app")
         os.makedirs(os.path.join(app, "Contents"), exist_ok=True)
+        put_macho_bundle(app, arch)
         with open(os.path.join(app, "Contents", "Info.plist"), "w", encoding="utf-8") as fh:
             fh.write("<plist/>")
         out = os.path.join(self.root, "out-%s" % arch)

@@ -1,6 +1,7 @@
 ---
 name: script-writer-factcheck
 description: 완성된 대본의 모든 단정 문장을 출처 대조로 검증하는 하위 스킬 — hallucination-guard 4문(출처 진실성·근거 적합성·논리오류·팩트체크)을 대본에 적용해 무근거 단정을 차단한다. script-writer 5단계·출고 게이트. "대본 팩트체크 / 사실 검증 / 환각 차단" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # script-writer-factcheck
@@ -8,7 +9,7 @@ description: 완성된 대본의 모든 단정 문장을 출처 대조로 검증
 대본 출고 전 마지막 사실 게이트. 800k 구독자 채널에 무근거·오류 단정이 나가면 평판이
 손상된다 — 그래서 이 관문은 통과 못 하면 **출고를 막는다.**
 
-전담 검증 엔진은 `[[hallucination-guard]]`다. 이 스킬은 그 4문을 대본 문장 단위로 돌린다.
+전담 검증 엔진은 `[[hallucination-guard]]`다(팩 스킬이라 Skill 목록에 없을 수 있다 — 없으면 `cys skill show hallucination-guard` 로 본문을 연다). 이 스킬은 그 4문을 대본 문장 단위로 돌린다.
 
 ## 절차
 

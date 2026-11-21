@@ -7,9 +7,9 @@
   --z-pane-overlay:      5;  /* 작업 영역 안의 겹침 — 분할선 히트존(.divider)·사이드바 폭 핸들(#wsbar-drag) */
   --z-hold-note:       800;  /* (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내(#update-hold-note · 아래 가장자리) — 복원 카드·메뉴·토스트 아래 · 작업 영역 위 */
   --z-restore-brief:   900;  /* (우리 v116 D4 #21) 복원 카드(#restore-brief · 오른쪽 위) — 토스트 아래 · 컨텍스트 메뉴 아래(값 900 그대로 · 1.1.8 토큰화) */
-  --z-ctx-menu:       1000;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) */
   --z-drop-indicator: 1200;  /* 사이드바 순서 바꾸기 삽입선(pointer-events:none) */
   --z-cc-panel:       1500;  /* Control Center 풀 패널(불투명 · 상단바 아래 전체 덮개) */
+  --z-ctx-menu:       1550;  /* 컨텍스트 메뉴·팝오버(#ctx-menu·#theme-pop) — Control Center 패널 **위**(1000 이던 때는 CC 를 연 채 「화면 설정」을 누르면 팝오버가 패널 뒤에 열려 안 보였다 · 2026-11-18 cysr-cc-popover-z-1118) · 팔레트·확인 창 아래 */
   --z-palette:        1600;  /* ⌘K 팔레트 */
   --z-toast-under-modal: 1650; /* 확인 창 밖의 창(입력·업데이트·피드백 — 위쪽에 조작부)이 떠 있는 동안의 토스트 — 그 창 밑·Control Center 위 */
   --z-modal:          1700;  /* 확인·입력·업데이트·피드백 창(.modal-overlay) — 모든 패널 위 */
@@ -389,6 +389,65 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-tab.active .ws-name { color: #fff; }
 .ws-tab.active .ws-sub { color: rgba(255, 255, 255, .75); }
 .ws-tab .ws-sub-pending { color: #58a6ff; animation: cc-blink 1.4s infinite; }
+/* (tabs-sidebar 조각1 · 설계 ④⑨) 부서 카드 아래 좌석 줄 — 번호 · 일감 · 상태(모양+색) · 꼬리표 · CTX %.
+   ★새 색 없음: 상태색 = 기존 토큰(--ok 작업 중 · --warn 대기 · --error 막힘) · 모름·끝남 = 사이드바 회색 · 글자 = 사이드바 배율(--wsbar-font).
+   ★가로 넘침 0: 이름 칸만 줄어들고(말줄임) 나머지 칸은 자기 폭 — 좁은 사이드바(176px)·배율 2.2 에서도 행이 넘치지 않는다. */
+.ws-seats { display: flex; flex-direction: column; gap: 1px; padding: 2px 2px 6px 6px; font-size: calc(15px * var(--wsbar-font, 1)); color: var(--text); font-variant-numeric: tabular-nums; min-width: 0; }
+.ws-seats[hidden] { display: none; }
+.ws-seat { display: flex; align-items: center; gap: .4em; padding: 1px 4px; border-radius: 4px; cursor: pointer; min-width: 0; white-space: nowrap; }
+.ws-seat:hover { background: #1c2128; }
+.ws-seat.named { cursor: default; }
+.ws-seat.st-exited { opacity: .55; }
+/* (1f · master#94f497c9 ②) 좌석 줄·상황판 표지 = 역할 점(.pane .pane-role-dot act-*)과 같은 모양·같은 색 규칙 — 같은 값 = 같은 모양.
+   좌석 줄 = 그 좌석 역할색(--role-color · JS) · 상황판 = 역할이 섞인 합이라 글자색. */
+.ws-seat-dot, .ws-board-dot { display: inline-block; flex: none; width: 10px; height: 10px; margin: 0 .2em; border-radius: 50%; background: var(--role-color, #64748b); }
+.ws-board-dot { --role-color: var(--text); }
+.ws-seat-dot.act-working, .ws-board-dot.act-working { animation: cc-blink 1.4s infinite; }
+.ws-seat-dot.act-input, .ws-board-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8); }
+.ws-seat-dot.act-unknown, .ws-board-dot.act-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--role-color, #64748b); }
+.ws-seat-dot.act-exited { background: transparent; }
+.ws-seat-no { flex: none; color: #8b949e; }
+.ws-seat-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ws-seat-tag { flex: none; font-size: .8em; padding: 0 .35em; border: 1px solid var(--warn); border-radius: 3px; color: var(--warn); }
+.ws-seat-tag.blocked { border-color: var(--error); color: var(--error); }
+.ws-seat-ctx { flex: none; min-width: 2.6em; text-align: right; color: #8b949e; }
+.ws-seat-ctx.warn { color: var(--warn); }
+.ws-seat-ctx.crit { color: var(--error); font-weight: 600; }
+/* (tabs-sidebar 1d · 시안) 상황판 — 막대 맨 위 한 칸 · 상태 수(모양+색 = 좌석 줄과 같은 토큰) · 0 은 흐리게. */
+[data-seat-host="board"] { padding: 6px 8px 8px; margin: 0 0 4px; border-radius: 7px; background: #1c2128; font-size: calc(15px * var(--wsbar-font, 1)); }
+.ws-board-head { font-size: .9em; font-weight: 700; color: #8b949e; margin-bottom: 2px; }
+.ws-board-counts { display: flex; flex-wrap: wrap; gap: .3em .6em; }
+.ws-board-n { display: inline-flex; align-items: center; gap: .15em; background: none; border: none; padding: 1px 2px; font: inherit; font-size: 1.1em; font-weight: 700; color: var(--text); cursor: pointer; font-variant-numeric: tabular-nums; }
+.ws-board-acct { margin-top: 3px; font-size: .9em; color: var(--warn); }
+.ws-board-n.zero { opacity: .35; cursor: default; font-weight: 400; }
+/* (tabs-sidebar 1h · master#edd9d8a8) 부서 0개 기기 = 「부서」 안내·말을 숨긴다(요소·코드는 남음 · 부서가 생기면 main.ts applyDeptPresence 가 클래스를 뗀다) */
+body.no-depts .dept-only { display: none !important; }
+body.no-depts #ws-dept-row:has(> #ws-expert[hidden]) { display: none; } /* 안내 줄이 빠지고 전문가 칸도 꺼져 있으면 빈 줄 여백도 없앤다 */
+.ws-board-label { font-size: .75em; font-weight: 400; color: #8b949e; margin-left: .15em; white-space: nowrap; } /* (master#fcbc46fb ②) 수 옆 글자 라벨 */
+.ws-board-approvals { margin-top: 3px; background: none; border: 1px solid var(--error); border-radius: 4px; color: var(--error); font: inherit; font-size: .9em; padding: 0 .4em; cursor: pointer; }
+.ws-board-limit { display: flex; align-items: center; gap: .4em; width: 100%; margin-top: 3px; padding: 0; background: none; border: none; font: inherit; font-size: .9em; color: #8b949e; cursor: pointer; min-width: 0; }
+.ws-board-limit .cc-tbar-track { flex: 1 1 auto; min-width: 1.5em; }
+.ws-board-limit-text { flex: none; white-space: nowrap; } /* (master#fcbc46fb ③) 글자는 줄이지 않는다(중간 잘림 0) — 막대가 줄어든다 */
+.ws-board-caret { flex: none; }
+.ws-board-more[hidden] { display: none; }
+.ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }
+[data-seat-host="board"].bottom { flex: none; margin: 0; border-radius: 0; border-top: 1px solid var(--hairline); }
+[data-seat-host^="n"] { padding: 0 6px 0 10px; font-size: calc(15px * var(--wsbar-font, 1)); } /* (1f ③) 0 이 아닌 수 = 좌석 줄 글자(15px) 이상 */
+/* (tabs-sidebar 2b) 묶음 탭 머리 줄 — 고정 기둥 오른쪽 영역 위에만 · 색 = 기존 토큰 · 표지 = 역할 점 클래스. */
+.group-tab-area { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.group-tab-area > :last-child { min-height: 0; }
+.group-tabbar { flex: none; display: flex; gap: 2px; padding: 2px 4px 0; background: var(--bar); border-bottom: 1px solid var(--hairline); overflow: hidden; }
+.group-tab { display: flex; align-items: center; gap: .45em; min-width: 0; flex: 0 1 auto; padding: 3px 10px; background: none; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; color: #8b949e; font: inherit; font-size: calc(14px * var(--ui-chrome-scale, 1.25) / 1.25); cursor: pointer; white-space: nowrap; }
+.group-tab.active { color: var(--text); background: var(--bg); border-color: var(--accent); }
+.group-tab-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.group-tab-dots { display: inline-flex; gap: 3px; flex: none; }
+.group-tab-dots .ws-seat-dot { width: 8px; height: 8px; margin: 0; }
+.group-tab-n { flex: none; color: #6e7681; }
+.ws-seat.tagged { flex-wrap: wrap; row-gap: 0; }
+.ws-seat-sub { flex: 1 0 100%; display: flex; justify-content: flex-end; align-items: center; gap: .4em; min-width: 0; }
+.ws-seat-group { display: flex; align-items: baseline; gap: .4em; margin-top: 4px; padding: 0 4px; font-size: .9em; font-weight: 700; color: #8b949e; min-width: 0; }
+.ws-seat-group-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-seat-group-n { flex: none; font-weight: 400; color: #6e7681; }
 /* ★0.14.45 노드별 계정 줄 — 같은 계정을 쓰는 노드 묶음(이름 굵게 + 역할). 좁은 폭에서는 묶음 단위로 줄바꿈된다. 이메일은 툴팁(title)에만. */
 .ws-tab .ws-accts {
   display: flex; flex-wrap: wrap; column-gap: 8px; row-gap: 1px; min-width: 0;
@@ -631,9 +690,13 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 /* input wait (permission/question): a steady attention shape in the SAME role colour (design R3-5) — a solid diamond, distinct from the
    blinking circle (working), solid circle (waiting), hollow circle (unknown/stale) and the reduced-motion double ring. Never the warn colour. */
 .pane .pane-role-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8); box-shadow: none; }
+/* ★(1.1.16 · 차용 ②) done = 끝났지만 아직 안 봄(프로그램 7501 보고) — 채운 원 안에 막대색 고리(과녁 · 깜박임 없음 · 같은 역할색).
+   대기(채운 원)·모름(빈 원)·움직임 줄임 작업 중(바깥 이중 고리)과 모양이 다르다. */
+.pane .pane-role-dot.act-done { box-shadow: inset 0 0 0 2px var(--role-color, #64748b), inset 0 0 0 3.5px var(--bar); }
 .pane .pane-role-dot.act-unknown, .pane .pane-role-dot.act-stale { background: transparent; box-shadow: inset 0 0 0 1.5px var(--role-color, #64748b); }
 @media (prefers-reduced-motion: reduce) {
   .pane .pane-role-dot.act-working { animation: none; box-shadow: 0 0 0 1.5px var(--bar), 0 0 0 3px var(--role-color, #64748b); }
+  .ws-seat-dot.act-working, .ws-board-dot.act-working { animation: none; box-shadow: 0 0 0 1.5px var(--bar), 0 0 0 3px var(--role-color, #64748b); } /* (1f) 좌석 줄·상황판 = 역할 점과 같은 정적 표지 */
 }
 /* T5 사용량 관측 배지: CTX(컨텍스트%)·rate limit 윈도우 — 데몬 관측치(usage.rs) 표시 */
 .pane .pane-usage { display: none; } /* 제목탭 usage(CTX·rate) 제거 — 프롬프트 입력창 아래에 있으니 제목엔 불필요(오너 요청 2026-07-14) */
@@ -857,6 +920,9 @@ body.pane-dragging { cursor: grabbing; -webkit-user-select: none; user-select: n
 body.pane-dragging .pane .pane-title { cursor: grabbing; }
 .pane.focused .pane-title { color: var(--accent); }
 .pane .term-host { flex: 1; min-height: 0; padding: 2px; }
+/* (cysr-1116-s2 · codex 3R) 미룬 좌석 첫 붙기에서 이전 출력을 다 이어 붙이지 못했을 때 — 제목 줄 아래 한 줄(조용한 손실 0) · 일시 실패면 「다시 불러오기」 */
+.pane .pane-history-gap { flex: none; padding: 2px 10px; font-size: 12px; color: var(--pane-title-color, #8b949e); background: var(--bar); border-bottom: 1px solid var(--hairline); }
+.pane .pane-history-gap button { font: inherit; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; text-decoration: underline; }
 /* 터미널 뷰포트 스크롤바 숨김 — 마우스 휠 스크롤은 그대로 동작(overflow 유지, 시각 스크롤바만 제거). */
 .xterm-viewport::-webkit-scrollbar { width: 0; height: 0; }
 .xterm-viewport { scrollbar-width: none; -ms-overflow-style: none; }

@@ -1,6 +1,6 @@
 ---
 name: caption-correct
-description: ASR 전사 텍스트를 검증된 원본 대본(ground-truth)에 맞춰 정정하는 대표 스킬 — 타임스탬프는 절대 불변, 오인식 단어만 대본 철자로 교정한다. provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 시퀀스 정렬 바닥부터, deny-by-default). transcription이 들은 대로 받아적었다면 이 스킬은 대본대로 고쳐쓴다 — caption-align(타이밍 부여) *이전* 단계. "자막 교정 / SRT 정정 / 전사 오인식 수정 / 대본 대조 / ASR correction / transcript correction / 동음이의 교정" 트리거, 또는 검증된 대본이 있는 아키타입(talking-head·screen-demo 등 대본→나레이션→전사 체인)의 transcription과 caption-align 사이로 발동.
+description: ASR 전사의 오인식 단어를 원본 대본 기준으로 고친다(타임스탬프는 그대로). 「자막 교정 / 전사 오인식 수정 / 대본 대조」 요청 때.
 cys:
   capability: caption-correct
   stability: beta
@@ -26,12 +26,14 @@ ground-truth로 이미 존재**하는데 활용되지 않는다 — 자막 정�
 ## provider 선택 (하드코딩 금지 — javis_select 위임)
 
 ```bash
-javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
+python3 "${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_select.py" rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provider_catalog.json" \
   --capability caption-correct --intent "<용도: 대본 대조 자막 정정>" --free-first
 ```
 
 - **무료·로컬 바닥**: `correct_align_local`(difflib류 시퀀스 정렬·무키·로컬·LLM 호출 0). 대본 토큰과
-  ASR 토큰을 정렬해 대본 철자를 ASR 타이밍 위로 전사(轉寫)한다. 키 없이 항상 가용. **토큰 소비 0
+  ASR 토큰을 정렬해 대본 철자를 ASR 타이밍 위로 전사(轉寫)한다. 키는 필요 없다.
+  ⚠ 단 팩에는 이 항목의 실행 파일이 없다(카탈로그 항목뿐 · 2026-11 확인) → python `difflib` 정렬 스크립트를
+  작업 폴더에 파일로 남겨 돌린다(같은 입력 → 같은 결과 · 정정 전후 타임스탬프 diff 0 확인도 그 스크립트로). **토큰 소비 0
   — 구독 한도를 쓰지 않는다**(자원 거버넌스·토큰 경제).
 - 결정론 정렬로 애매한 동음이의만 남으면 상위 티어(LLM 보조)를 `--prefer`로 선택 가능(선택적).
 - `--free-first`로 무료 바닥 우선.
@@ -67,7 +69,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
 - **대본 밖은 지어내지 마라**: 대본에 매칭되지 않는 구간(애드립·즉흥 발화·대본 이탈)은 **ASR 원문을
   그대로 유지**하고 정정하지 마라. 대본을 억지로 욱여넣으면 **오답 자막**이 된다(영상 근거: 즉흥
   발화 시 대본 강제는 틀린 자막). 애매하면 `grill-me`로 사람에게 물어 합의 후 정정.
-- **추측 교정 금지**: 동음이의가 대본에 없으면 ASR 원문 유지. `hallucination-guard`로 정정 근거를
+- **추측 교정 금지**: 동음이의가 대본에 없으면 ASR 원문 유지. `hallucination-guard`(`cys skill show hallucination-guard`)로 정정 근거를
   대본 위치로 추적 가능하게 둔다.
 - 검증은 산출 노드가 자가채점하지 않는다 — `video-verify`(별 노드)가 (a)타임스탬프 불변 (b)정정이
   대본 ground-truth에 근거하는지를 독립 확인한다(D1 verdict 계약·점수금지).
@@ -84,3 +86,7 @@ javis_select rank --catalog "${CYS_PACK_DIR:-$HOME/.cys/pack}/round/video_provid
   `{"kind":"min_items","value":{"field":"segments","min":1}}`. 타임스탬프 불변은 video-verify가 확인.
 - cost_class=light: 로컬 결정론 정렬·LLM 무호출이 기본 — 토큰 한도 보존(기본 제약 "구독제만·
   종량제 금지" 정합).
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+ASR 전사 텍스트를 검증된 원본 대본(ground-truth)에 맞춰 정정하는 대표 스킬 — 타임스탬프는 절대 불변, 오인식 단어만 대본 철자로 교정한다. provider는 하드코딩하지 않고 javis_select로 결정론 선택(무키 로컬 시퀀스 정렬 바닥부터, deny-by-default). transcription이 들은 대로 받아적었다면 이 스킬은 대본대로 고쳐쓴다 — caption-align(타이밍 부여) *이전* 단계. "자막 교정 / SRT 정정 / 전사 오인식 수정 / 대본 대조 / ASR correction / transcript correction / 동음이의 교정" 트리거, 또는 검증된 대본이 있는 아키타입(talking-head·screen-demo 등 대본→나레이션→전사 체인)의 transcription과 caption-align 사이로 발동.

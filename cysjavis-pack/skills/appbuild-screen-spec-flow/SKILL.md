@@ -1,9 +1,12 @@
 ---
 name: appbuild-screen-spec-flow
 description: 화면 목록과 내비게이션/사용자 흐름(정보 구조)을 설계하는 하위 스킬 — PRD 기능을 화면에 매핑하고 화면 간 이동·진입점을 정의한다. appbuild-screen-spec 흐름 관문. "화면 흐름 / 내비게이션 / 정보구조 / 사용자 플로우" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-screen-spec-flow
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 기능을 화면에 배치하고 화면 간 길을 놓는다(IA·내비게이션). 빌드의 골격이다.
 

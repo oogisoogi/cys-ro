@@ -1,6 +1,7 @@
 ---
 name: video-verify-audio-sync
 description: 영상의 오디오 정합을 검증하는 하위 스킬 — 아바타 립싱크가 나레이션과 맞는지, 오디오 끊김·중복·무음 구간이 없는지, 청크 경계가 매끄러운지 판정한다. video-verify 3관문. "오디오 싱크 / 립싱크 검증 / 음성 정합 점검" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-verify-audio-sync
@@ -13,6 +14,9 @@ description: 영상의 오디오 정합을 검증하는 하위 스킬 — 아바
 - **오디오 연속**: 청크/클립 경계에서 끊김·중복·튐·무음 구멍이 없는가(`audio/seg` 합성
   경계와 `avatar/clip` concat 경계).
 - **레벨 일관**: 구간 간 음량이 급변하지 않는가(라우드니스 비교).
+- **목표 크기**: 최종 파일을 `ffmpeg -i final/video.mp4 -af ebur128=peak=true -f null -` 로 재서 요약의
+  `I:`(통합 LUFS)·`Peak:`(실제 최고점)가 `[[audio-post-mix]]` 목표 안인가. 숫자를 evidence 에 남긴다
+  (믹스 스킬이 「레벨은 이 관문이 본다」고 넘기므로, 급변만 보고 목표 수치를 빠뜨리지 않는다).
 - **A/V 드리프트**: 영상 후반으로 갈수록 오디오가 점점 밀리지 않는가(누적 싱크 오차).
 
 ## 절차

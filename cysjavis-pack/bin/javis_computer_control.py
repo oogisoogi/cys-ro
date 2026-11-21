@@ -75,7 +75,7 @@ SETTINGS_URLS = {
 MAC_APPS = [
     ("kakaotalk", "카카오톡", ("KakaoTalk",),
      "보이는 만큼 읽고 직접 보내는 것까지만 합니다(카카오는 대화 읽기 API 가 없고 대량 자동 발송을 막습니다)."),
-    ("hwp", "한글", ("Hancom Office HWP", "한컴오피스 한글"), "맥 한글은 화면 조작으로만 다룹니다(스크립트 길 없음)."),
+    ("hwp", "한글", ("Hancom Office HWP", "한컴오피스 한글"), "한글 문서는 먼저 파일로 다룹니다(한글 앱을 열지 않음) — 서식 그대로 PDF 저장·인쇄처럼 앱이 꼭 필요한 일만 화면 조작으로 합니다."),
     ("word", "Word", ("Microsoft Word",), ""),
     ("excel", "Excel", ("Microsoft Excel",), ""),
     ("powerpoint", "PowerPoint", ("Microsoft PowerPoint",), ""),
@@ -1178,10 +1178,15 @@ def cmd_request_prompt(a):
 # ───────────────────────── 크롬 켜기·끄기 = 한 키만 (TICKET=cysr-1111-chrome-preset · 설계 cu-1111 §13-7) ─────────────────────────
 # 박사님 원문(11-01 08:2x) 「크롬은 권고대로 한다.」 — 크롬 연결은 설치·업데이트 때 미리 켜 둔다(src/pack.rs seed_chrome_default_at).
 #   그 뒤 시작하는 좌석의 Claude Code 가 연결 파일을 스스로 만든다 → 이 도구는 보조 claude·좌석 재시작·크롬 닫고 켜기를 하지 않는다.
-# 여기서 하는 일 = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled **한 키만**(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
-#   Claude Code 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키). 다른 키는 읽은 그대로 되쓴다.
+# 여기서 하는 일 = 좌석 설정 폴더 .claude.json 의 claudeInChromeDefaultEnabled(공식 /chrome·/config 토글이 쓰는 바로 그 키 —
+#   Claude Code 시작 판정 --chrome → CLAUDE_CODE_ENABLE_CFC → 이 키)와, 켤 때 함께 넣는 첫 안내 창 완료 표지. 다른 키는 읽은 그대로 되쓴다.
+#   완료 표지 없이 켜면 다음 master 좌석이 그 창에서 멈춘다(TICKET=cysr-chrome-onboarding-seed-1119 · 벤더의 켜기 코드도 두 키를 함께 쓴다).
+#   끄기는 키만 바꾼다(표지를 지우면 다시 켤 때 창이 또 뜬다) · 되돌리기는 켜기 전 표지 상태까지 복원한다.
+#   되돌리기 기록은 켜기가 끝났을 때만 효력이 있다: 끝나면 applied 를 남기고, 지금 설정이 그 상태일 때만 복원한다(codex 1R).
 CHROME_STATE = "chrome-enable.json"
 CHROME_KEY = "claudeInChromeDefaultEnabled"
+CHROME_ONBOARDING_KEY = "hasCompletedClaudeInChromeOnboarding"
+CHROME_APPLIED = {"key": True, "onboarding": True}      # 켜기가 끝난 뒤의 두 키
 CHROME_NEXT_SAY = "다음에 cysr 를 다시 시작하거나 업데이트할 때 연결됩니다."
 CHROME_OFF_SAY = " 다음에 cysr 를 다시 시작하거나 업데이트할 때부터 적용됩니다."
 # 옛 판이 남긴 빚·기록 — 읽어도 행동 0 · 만나면 지운다(prior_key·key_restored 만 되돌리기에 쓴다)
@@ -1200,6 +1205,42 @@ def read_chrome_key():
     if not isinstance(d, dict):
         return None, None
     return (CHROME_KEY in d), d.get(CHROME_KEY)
+
+
+def read_chrome_onboarding():
+    """첫 안내 창 완료 표지 (있음 여부, 값). 파일을 못 읽으면 (None, None)."""
+    d = _read_json(_claude_json())
+    if not isinstance(d, dict):
+        return None, None
+    return (CHROME_ONBOARDING_KEY in d), d.get(CHROME_ONBOARDING_KEY)
+
+
+def _chrome_snapshot(d):
+    """두 키의 상태 — 없음과 값, JSON 타입까지 가른다(파이썬에서는 0 == False 다). 다른 칸은 보지 않는다."""
+    return json.dumps([CHROME_KEY in d, d.get(CHROME_KEY), CHROME_ONBOARDING_KEY in d, d.get(CHROME_ONBOARDING_KEY)], sort_keys=True)
+
+
+def _chrome_record_live(st):
+    """되돌리기 기록이 끝난 켜기의 것인가. 표지 칸이 없는 기록 = 옛 판(키만 되돌린다) · 표지 칸이 있는데 applied 가 없으면 끝나지 않은 켜기."""
+    if not isinstance(st.get("prior_key"), dict):
+        return False
+    return "prior_onboarding" not in st or st.get("applied") == CHROME_APPLIED
+
+
+def _chrome_record_applies(st, cfg):
+    """끝난 켜기의 기록이고 지금 설정이 그 켜기 직후 그대로인가 — 아니면 그 뒤의 변경을 덮지 않는다."""
+    if not _chrome_record_live(st) or cfg.get(CHROME_KEY) is not True:
+        return False
+    return "prior_onboarding" not in st or cfg.get(CHROME_ONBOARDING_KEY) is True
+
+
+def _finish_chrome_record(st):
+    """켜기가 끝났다는 표시. 설정은 이미 바뀌었으므로 여기서 실패해도 켜기는 성공이다 — 그때 끄기는 키만 끈다."""
+    st["applied"] = dict(CHROME_APPLIED)
+    try:
+        _write_json(_p(CHROME_STATE), st)
+    except OSError:
+        pass
 
 
 def _read_raw(path):
@@ -1234,8 +1275,10 @@ def _config_lock(path):
             return None
 
 
-def write_chrome_key(value):
-    """좌석 .claude.json 의 크롬 키 **하나만** 바꾼다(value=None 이면 키를 지운다 = 원래 없던 상태). 나머지 칸은 읽은 그대로.
+def write_chrome_key(value, restore_onboarding=None, expect=None):
+    """좌석 .claude.json 의 크롬 키를 바꾼다(value=None 이면 키를 지운다 = 원래 없던 상태). value=True 면 완료 표지도 같은 교체로 true 로 쓰고,
+    restore_onboarding({"present","value"})이 있으면 완료 표지를 그 상태로 되돌린다. 나머지 칸은 읽은 그대로.
+    expect(_chrome_snapshot 값)가 있으면 잠금 안에서 두 키가 판정 때 그대로인지 보고, 달라졌으면 아무것도 바꾸지 않고 실패한다(codex 1R).
     ★codex R1·R2(동시 쓰기): Claude Code 와 같은 잠금(`.claude.json.lock`)을 쥔 채 **잠금 안에서** 다시 읽고 → 키 하나 바꾸고 →
     원자 교체 → 잠금 해제. 덧붙여 교체 직전 원본 바이트 재확인(잠금을 안 지키는 작성자 대비 · 최대 3회 · 끝내 다르면 무변경 실패).
     파일 권한 유지 · 쓴 뒤 다시 읽어 확인. 성공 = True."""
@@ -1258,10 +1301,20 @@ def write_chrome_key(value):
                 return False
             if not isinstance(d, dict):
                 return False
+            if expect is not None and _chrome_snapshot(d) != expect:
+                _ledger({"event": "chrome_key_changed"})
+                return False
             if value is None:
                 d.pop(CHROME_KEY, None)
             else:
                 d[CHROME_KEY] = value
+            if value is True:
+                d[CHROME_ONBOARDING_KEY] = True
+            elif restore_onboarding is not None:
+                if restore_onboarding.get("present"):
+                    d[CHROME_ONBOARDING_KEY] = restore_onboarding.get("value")
+                else:
+                    d.pop(CHROME_ONBOARDING_KEY, None)
             try:
                 mode = os.stat(path).st_mode & 0o777
             except OSError:
@@ -1276,7 +1329,14 @@ def write_chrome_key(value):
                 continue
             os.replace(tmp, path)
             has, v = read_chrome_key()
-            return (not has) if value is None else (has and v is value)
+            if not ((not has) if value is None else (has and v is value)):
+                return False
+            ob_has, ob = read_chrome_onboarding()
+            if value is True:
+                return ob is True
+            if restore_onboarding is not None:
+                return (ob_has, ob) == (bool(restore_onboarding.get("present")), restore_onboarding.get("value"))
+            return True
         _ledger({"event": "chrome_key_conflict", "tries": CAS_TRIES})
         return False
     finally:
@@ -1316,22 +1376,37 @@ def cmd_chrome_enable(a):
         return fail("이 컴퓨터에서 크롬을 찾지 못했습니다. 크롬을 설치하시면 다시 살펴볼게요.", "no_chrome", 5)
     st = _load_chrome_state()
     stale = [k for k in OLD_CHROME_STATE_KEYS if st.pop(k, None) is not None]
-    has, v = read_chrome_key()
-    if has is None:
+    cfg = _read_json(_claude_json())
+    if not isinstance(cfg, dict):
         return fail("클로드 설정 파일을 읽지 못해 크롬 연결을 켜지 못했습니다.", "claude_json", 1)
+    has, v = (CHROME_KEY in cfg), cfg.get(CHROME_KEY)
+    ob = cfg.get(CHROME_ONBOARDING_KEY)
+    ob_prior = {"present": CHROME_ONBOARDING_KEY in cfg, "value": ob}
+    seen = _chrome_snapshot(cfg)                        # 이 판정의 근거 — 잠금 안에서 다시 대조한다
     done = []
     if v is not True:
-        # 처음 손대기 전의 원래 값만 기억한다(되돌리기 = 이 값) · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
-        # ★codex R4: 앞 주기의 키를 이미 되돌렸으면 새 주기다 — 원래 값 = 지금 값(그 사이 사용자가 바꾼 값을 옛 값으로 덮지 않는다)
-        if "prior_key" not in st or st.get("key_restored"):
-            st["prior_key"] = {"present": has, "value": v}
-            st.pop("key_restored", None)
+        # 키가 켜져 있지 않다 = 앞 기록은 효력이 없다(못 끝났거나 그 뒤 바뀌었다) → 원래 값 = 지금 값 · ★codex R1: 되돌리기 정보가 바꾸기보다 먼저 디스크에
+        st["prior_key"] = {"present": has, "value": v}
+        st["prior_onboarding"] = ob_prior
+        st.pop("key_restored", None)
+        st.pop("applied", None)
         _write_json(_p(CHROME_STATE), st)
         _ledger({"event": "chrome_enable_key", "prior": {"present": has, "value": v}})   # 기록 먼저
-        if not write_chrome_key(True):
+        if not write_chrome_key(True, expect=seen):
             return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
                         "write_failed", 1)
+        _finish_chrome_record(st)
         done.append("default_on")
+    elif ob is not True:                                # 키는 켜졌는데 표지가 true 가 아니다 = 다음 시작에 창에서 멈춘다 · 말은 「이미 켜져 있습니다」 그대로
+        if stale:
+            _write_json(_p(CHROME_STATE), st)
+        _ledger({"event": "chrome_onboarding_fill", "prior": ob_prior})
+        if not write_chrome_key(True, expect=seen):
+            return fail("크롬 기본 켜기를 저장하지 못했습니다(설정 파일을 지금 쓸 수 없어 손대지 않았습니다 — 잠시 뒤 다시 하겠습니다).",
+                        "write_failed", 1)
+        if _chrome_record_live(st):                     # 끝나지 않은 켜기의 기록은 여기서 살리지 않는다
+            st.setdefault("prior_onboarding", ob_prior)
+            _finish_chrome_record(st)
     elif stale:
         _write_json(_p(CHROME_STATE), st)
     nmh = _nmh_ok(plat, _chrome_userdata(plat))
@@ -1345,19 +1420,26 @@ def cmd_chrome_enable(a):
 
 
 def _chrome_key_off():
-    """크롬 키를 켤 때 기억한 원래 값으로(기억이 없으면 끔) · 기록을 지운다. 반환 = 기억이 있었나 · 못 쓰면 None."""
-    prior = _load_chrome_state().get("prior_key")
-    target = (prior["value"] if prior.get("present") else None) if isinstance(prior, dict) else False
+    """끝난 켜기의 기록이고 설정이 그 직후 그대로면 원래 값으로 되돌리고, 아니면 키만 끈다 · 기록을 지운다. 반환 = 되돌렸나 · 못 쓰면 None."""
+    st = _load_chrome_state()
+    cfg = _read_json(_claude_json())
+    restoring = isinstance(cfg, dict) and _chrome_record_applies(st, cfg)
+    prior = st.get("prior_key") if restoring else None
+    target = (prior["value"] if prior.get("present") else None) if restoring else False
     if target is not None and not isinstance(target, bool):
         target = False
+    # 되돌리기만 표지를 복원한다(그 밖의 끄기 = 키만). 되돌린 값이 「켜짐」이면 write_chrome_key 가 표지를 채운다 — 켜짐 + 표지 없음 = 멈춤 상태다
+    ob = st.get("prior_onboarding") if restoring else None
+    if not (isinstance(ob, dict) and (ob.get("value") is None or isinstance(ob.get("value"), (bool, int, float, str)))):
+        ob = None
     _ledger({"event": "chrome_disable_key", "to": "absent" if target is None else target})
-    if not write_chrome_key(target):
+    if not write_chrome_key(target, ob, expect=_chrome_snapshot(cfg) if restoring else None):
         return None
     try:
         os.remove(_p(CHROME_STATE))
     except OSError:
         pass
-    return bool(prior)
+    return restoring
 
 
 def cmd_chrome_disable(a):
@@ -1379,7 +1461,7 @@ def cmd_chrome_disable(a):
 #   (같은 항목 재질문 금지) · each = 그 건마다 사람(결제·서명 제출·새 가입·비밀번호 입력 — 상시 기록 불가) · never = 안 함(사유).
 DO, ASK, EACH, NEVER = "do", "ask", "each", "never"
 CHECK = "check"     # 조건부 상시 허락 — 이번 건이 그 조건에 맞는지 마스터가 확인하고 --condition-met 으로 다시 부른다
-PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-oogisoogi-axdev/memory/)
+PRECEDENT_SRC = {   # 선례 = 박사님 맥 운영 판례(원문은 각 파일 · 경로 = ~/.claude/projects/-Users-<사용자>-axdev/memory/)
     "login": "test-login-approval-master-does(10-01·10-02 「필요에 의한 로그인, 권한 인증 … 마스터가 알아서 진행하라」)",
     "exception1": "~/axdev/CLAUDE.md 예외 1(결제·서명 제출·새 서비스 가입 = 건마다 허락)",
     "expand": "domain-management-master-delegated(10-20 「필요성이 확인되는대로 계속 권한을 확대」) · release-work-fully-autonomous(10-11)",
@@ -1442,6 +1524,44 @@ def _norm(s):
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _LONGNUM = re.compile(r"\d[\d\- ]{6,}\d")
+
+
+_JOSA_PAIRS = {"은는": ("은", "는"), "이가": ("이", "가"), "을를": ("을", "를"), "과와": ("과", "와")}
+
+
+def _has_final(word):
+    """낱말 끝 받침 — True/False · 모르면 None(TICKET=cysr-1115-smalls ⑦).
+
+    끝의 괄호 덧말(「…(예: …)」)과 닫는 따옴표·문장부호는 떼고 본다 — 조사는 괄호 앞 낱말에 붙는다.
+    한글 = 음절 받침 · 숫자 = 우리말 읽기(영·일·삼·육·칠·팔 = 받침) · 영문 = l·m·n·ng 끝만 받침, a·i·o·u·y·s·x·z·f·v 끝은 없음,
+    그 밖 영문(Finder·Slack·Chrome 처럼 읽기가 갈리는 끝)은 None — 틀린 조사보다 양형 표기가 낫다."""
+    w = (word or "").rstrip(" 」』\"'.,!?")
+    while w.endswith(")") and "(" in w:
+        w = w[:w.rfind("(")].rstrip(" 」』\"'.,!?")
+    if not w:
+        return None
+    c = w[-1]
+    o = ord(c)
+    if 0xAC00 <= o <= 0xD7A3:
+        return (o - 0xAC00) % 28 != 0
+    if c.isdigit():
+        return c in "013678"
+    if c.isascii() and c.isalpha():
+        lw = w.lower()
+        if lw.endswith("ng") or c.lower() in "lmn":
+            return True
+        if c.lower() in "aiouysxzfv":            # 모음·스·즈·프·브 로 읽히는 끝(CYSjavis = …스) · e 끝은 묵음이 흔해 모름(Chrome = 크롬)
+            return False
+    return None
+
+
+def _josa(word, pair):
+    """낱말 + 받침에 맞는 조사(pair = 은는·이가·을를·과와) — 모르면 「은(는)」 양형."""
+    with_final, without = _JOSA_PAIRS[pair]
+    f = _has_final(word)
+    if f is None:
+        return "%s%s(%s)" % (word, with_final, without)
+    return word + (with_final if f else without)
 
 
 def mask(s, limit=80):
@@ -1702,8 +1822,8 @@ def cmd_remember(a):
     d["items"][key] = rec
     _write_json(_p(DECISIONS), d)
     word = {"allow": "허락", "deny": "안 함", "conditional": "조건부 허락(%s)" % mask(cond)}[a.meaning]
-    return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 「%s」은(는) %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
-                                              % ((CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), word)})
+    return out({"ok": True, "key": key, "say": "알겠습니다 — 앞으로 %s %s 으로 계속 따르겠습니다. 다시 여쭙지 않습니다."
+                                              % (_josa("「%s」" % (CATEGORIES.get(a.cat, (mask(a.cat),))[0] + (" — " + mask(a.subject) if a.subject else "")), "은는"), word)})
 
 
 def cmd_adopt(a):
@@ -1741,7 +1861,7 @@ def cmd_adopt(a):
     short = lambda it: it["title"].split("(")[0].strip()
     lines = []
     if took:
-        lines.append("이렇게 했습니다: 지금 바로 맡을 수 있는 %s 을(를) 제가 맡았습니다." % ", ".join(short(it) for it in took))
+        lines.append("이렇게 했습니다: 지금 바로 맡을 수 있는 %s 제가 맡았습니다." % _josa(", ".join(short(it) for it in took), "을를"))
         if auto:
             lines.append("크롬 연결 설정은 제가 바로 켜겠습니다.")
     else:
@@ -1754,7 +1874,7 @@ def cmd_adopt(a):
     if skipped:
         lines.append("전에 빼라고 하신 것은 가져오지 않았습니다: " + ", ".join(short(it) for it in skipped) + ".")
     if took:
-        lines.append("다르게 원하시면 말씀해 주세요(예: 「%s은 빼」)." % short(took[0]))
+        lines.append("다르게 원하시면 말씀해 주세요(예: 「%s 빼」)." % _josa(short(took[0]), "은는"))
     return out({"ok": True, "scan_id": scan_id, "active": [it["id"] for it in took],
                 "hand": [it["id"] for it in hand], "not_now": [it["id"] for it in nope],
                 "skipped": [it["id"] for it in skipped], "next_action": "chrome-enable" if auto else None,

@@ -367,7 +367,7 @@ describe("showsRowAge — 나이 칸을 낼 자리가 있는가", () => {
 describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)으로, 머리줄 아래엔 안내 한 줄", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/)![1];
-  const hint = html.match(/<div id="ws-dept-hint">([\s\S]*?)<\/div>/);
+  const hint = html.match(/<div id="ws-dept-hint"[^>]*>([\s\S]*?)<\/div>/); // (1h) class="dept-only" 가 붙어도 같은 안내 줄
 
   it("★조직 단추 3종이 머리줄에 없고, 요소는 전문가 모드 칸 안에 그대로 있다 (v110-sidebar ⓑ′)", () => {
     for (const id of ["btn-ws-dept", "btn-master-start", "btn-dept-master"]) {
@@ -403,7 +403,7 @@ describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)�
   it("안내 한 줄이 머리줄 바로 다음(원래 자리)에 있다", () => {
     expect(hint).not.toBeNull();
     const iHead = html.indexOf('<div id="wsbar-head">');
-    const iHint = html.indexOf('<div id="ws-dept-hint">');
+    const iHint = html.indexOf('<div id="ws-dept-hint"');
     const iTabs = html.indexOf('<div id="ws-tabs">');
     expect(iHead).toBeGreaterThan(-1);
     expect(iHint).toBeGreaterThan(iHead);

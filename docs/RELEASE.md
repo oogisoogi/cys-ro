@@ -34,7 +34,10 @@
 3. **태그 push** → `release.yml` 이 **draft** 릴리스를 만든다(윈 NSIS · 팩 자산 · `latest.json`). 공개가 아니다.
 4. **맥 zip 2종 = 로컬 자체서명 빌드 → draft 에 손 업로드** — 경로 = `prep-mac-runtime.sh <triple>` → `precompile-bundled-python.sh` →
    `tauri build --target <triple> --bundles app` → `dedup-git-core.sh` → `restore-runtime-symlinks.sh` →
-   `codesign --force --deep --sign cys-local` → `ditto -c -k --keepParent`(`scripts/build-macos-signed.sh` 의 비-Apple 단계와 같은 꼴).
+   `codesign --force --deep --sign cys-local` → **번들 아키텍처 게이트** `python3 scripts/check_macho_arch.py --target <triple>`
+   (+ 진입점 넷 `--require Contents/Resources/runtime/{python/bin/python3,node/bin/node,git/bin/git,uv/uv}` · rc 0 만 통과 ·
+   1 = 다른 칩 Mach-O · 2 = 판정 불가, 둘 다 멈춤) → `ditto -c -k --keepParent`(`scripts/build-macos-signed.sh` 의 비-Apple 단계와 같은 꼴).
+   이 순서 전체가 `scripts/build-macos-local.sh <aarch64|x86_64|both>` 에 고정돼 있다 — 손으로 고르지 말고 그 스크립트로 만든다.
 5. **후처리 → 검증 → 발행** — `release-postprocess.py`(`x64-setup.zip`·`SHA256SUMS.txt` · 맥 zip 2종 없으면 적색) →
    `release-publish.yml` `dry_run=true`(기본 · 산출물 표) → 박사님 승인 뒤 master 가 `dry_run=false`(**비가역**).
    발행 한 동작의 표와 **롤백** = `docs/RELEASE-ROLLBACK.md` §1~§3.

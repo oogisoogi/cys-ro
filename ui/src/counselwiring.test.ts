@@ -117,10 +117,13 @@ describe("상담소 끄기/켜기 · 첫 안내", () => {
   const panel = fnBody(main, "function openCounselPanel(");
   const toggle = fnBody(main, "async function loadCounselAuto(");
   const notice = fnBody(main, "async function maybeShowReportNotice(");
-  it("안내문 = 팩 HELP_NOTICE 와 글자 그대로(박사님 승인 문구 · 변경 금지) · 단추 이름이 안내문 속 이름과 같다", () => {
-    const m = pack.match(/HELP_NOTICE = \("([^"]*)"\s*\n\s*"([^"]*)"\)/);
+  it("안내문 = 팩 HELP_NOTICE 와 글자 그대로(박사님 승인 문구 · 11-12 칸에 맞춰 고침) · 단추 이름이 안내문 속 이름과 같다", () => {
+    // HELP_NOTICE = ("…" "…" …) — 이어 붙은 문자열 조각 전부(cysr-counsel-notice 에서 2조각 → 4조각)
+    const m = pack.match(/HELP_NOTICE = \(((?:\s*"[^"]*")+)\s*\)/);
     expect(m).not.toBeNull();
-    expect(REPORT_NOTICE).toBe(m![1] + m![2]);
+    const parts = [...m![1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(REPORT_NOTICE).toBe(parts.join(""));
     expect(REPORT_NOTICE).toContain(`‘${AUTO_COPY.turnOff}’`);
     expect(AUTO_COPY.turnOff).toBe("상담소 끄기");
   });

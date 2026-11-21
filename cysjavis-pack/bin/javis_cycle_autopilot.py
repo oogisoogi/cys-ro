@@ -226,9 +226,15 @@ def no_send():
 
 def kill_switch(runner=run):
     """(killed:bool, reason:str). 판정 불능(데몬 무응답)도 killed=True — fail-closed."""
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · V7 · U08 꼴): exists 는 판독 불가를 「없음」으로 접는다 → lstat · 「없음」만 없음 · 그 밖 = 정지.
     for p in paused_paths():
-        if os.path.exists(p):
-            return True, "PAUSED 파일 존재: %s" % p
+        try:
+            os.lstat(p)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except Exception as e:  # 확인 불능 = 정지(fail-closed)
+            return True, "PAUSED 확인 불능: %s (%s)" % (p, e)
+        return True, "PAUSED 파일 존재: %s" % p
     rc, _out, err = runner([CYS, "gate-check"])
     if rc == 4:
         return True, "cys gate-check exit 4 (daemon paused)"

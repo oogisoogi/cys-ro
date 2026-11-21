@@ -1,9 +1,12 @@
 ---
 name: media-gen-image
 description: 텍스트 설명에서 이미지를 생성하는 하위 스킬 — 사용자의 거친 의도를 모델 최적 프롬프트로 재작성한 뒤 fal.ai 이미지 모델(nano-banana-pro 등)로 생성한다. media-gen 이미지 관문. "이미지 생성 / text to image / 프롬프트 재작성 / nano banana" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-image
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 설명에서 이미지를 만든다. 핵심은 **프롬프트 재작성** — 사용자의 거친 한 줄을 모델이 가장 잘
 이해하는 프롬프트로 Claude가 다시 쓴 뒤 생성한다(원본 영상의 핵심 기법).
@@ -38,7 +41,7 @@ description: 텍스트 설명에서 이미지를 생성하는 하위 스킬 — 
    일관성 > 공간 일관성 > 서술 정확도 우선순위, 전 동률이면 후보1 채택 — 결정론)으로 1장
    선택. 둘 다 캐릭터 축 불합격이면 재생성 1회, 그래도 불합격이면 NO_GO 상위 보고(무한
    루프 금지). 탈락본은 `media/images/rejected/`에 보존(삭제 금지), 심사 사유를 manifest에
-   append. N=2 고정(3장 이상 금지 — 선택 노이즈). 상세 설계=`_work/vimax-w0/b4_bestof2/BESTOF2_GATE_DESIGN.md`.
+   append. N=2 고정(3장 이상 금지 — 선택 노이즈). (상세 설계 문서는 팩에 없다 — 위 규칙이 전부다.)
 5. **자기교정** → 검증: 거부·실패(세이프티·파라미터 오류)면 사유를 읽고 프롬프트/파라미터를
    교정해 1~2회 재시도.
 

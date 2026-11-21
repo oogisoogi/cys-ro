@@ -82,10 +82,21 @@ pub fn heartbeat_stale(path: &Path, threshold: Duration) -> bool {
 /// (구 락파일(빈 파일) 호환 → 데드맨 fail-closed: pid를 모르면 아무도 죽이지 않는다).
 pub fn read_holder_pid(lock_path: &Path) -> Option<u32> {
     let s = std::fs::read_to_string(lock_path).ok()?;
-    match s.trim().parse::<u32>().ok()? {
-        0 => None,
-        pid => Some(pid),
+    // ★T3: 첫 칸만 읽는다 — 노브 켬(`CYS_SEATKEEP=1`)이면 둘째 칸(출생 시각)이 붙는다([`lock_record`]).
+    cys::startup_lock_holder_pid(&s)
+}
+
+/// 잠금 파일에 적는 내용. `two_fields` 거짓(노브 끔 · 기본) = `"{pid}"` — **지금과 바이트까지 같다**. 참(노브 켬) = `"{pid} {출생 시각 µs}"`
+/// (seatkeep 이 조종자의 (pid, 출생 시각) 짝을 대조 · T2 D3). 출생 시각을 못 읽으면 한 칸.
+/// 순서 = 독자 먼저·작성자 나중(master#c125bc97 ①): 이 판에서 독자 4곳을 「첫 칸 읽기」로 고치고, 형식은 노브를 켤 때만 바꾼다 —
+/// 옛 판 실행 파일(옛 cys·GUI·cysd)이 두 칸을 만나면 factory_reset 격리 관문이 산 cysd 를 못 본다.
+pub fn lock_record(pid: u32, two_fields: bool) -> String {
+    if two_fields {
+        if let Ok(o) = cys::process_observation::observe(pid) {
+            return format!("{pid} {}", o.identity.birth_seconds * 1_000_000 + o.identity.birth_microseconds);
+        }
     }
+    format!("{pid}")
 }
 
 /// 락 획득 직후: 락파일에 자기 pid를 기록(데드맨이 홀더를 식별)하고 heartbeat를 즉시 touch
@@ -95,7 +106,7 @@ pub fn claim_lock(file: &mut std::fs::File, state_dir: &Path) {
     let pid = std::process::id();
     let _ = file.set_len(0);
     let _ = file.seek(SeekFrom::Start(0));
-    let _ = write!(file, "{pid}");
+    let _ = write!(file, "{}", lock_record(pid, crate::seat_proc::seatkeep_enabled()));
     let _ = file.flush();
     touch_heartbeat(&heartbeat_path(state_dir));
 }

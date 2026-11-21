@@ -1,9 +1,12 @@
 ---
 name: video-stitch-broll
 description: media-gen이 생성한 B-roll(이미지·영상 클립)을 편집 타임라인의 적소에 배치하는 하위 스킬 — 시각 큐에 맞춰 삽입하고 아바타 노출 규칙·길이·전환과 충돌 없게 조율한다. video-stitch B-roll 관문. "B-roll 배치 / 생성 클립 삽입 / 보조영상 편집" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-stitch-broll
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 `[[media-gen]]`이 만든 생성형 비주얼(시네마틱 클립·생성 이미지)을 본 영상에 끼워 넣는다.
 B-roll은 설명을 *보여주는* 장치 — 말과 어긋나거나 아바타를 가리면 역효과다.

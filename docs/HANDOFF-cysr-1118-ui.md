@@ -50,13 +50,16 @@
 ## ①-2 마스터 먼저 한 줄(팩 디렉티브)
 
 - 원인: 진행 줄은 도구 단계를 보여 주지만 「무엇을 하려는지」는 마스터가 말해야 안다 · 지침에 그 규칙이 없었다.
-- 고침: `MASTER_DIRECTIVE.md` 「★ 대화 화면 표식」 절 끝에 1줄 — 「도구를 여럿 쓸 일이면 도구를 쓰기 전에 무엇을 할지 한 줄을 먼저 쓴다(예 …)」.
-  ★같은 뜻 1줄을 부팅 요지 `MASTER_CORE.md`·`CEO_CORE.md` 의 대화 화면 표식 줄 바로 아래에도 넣었다 — 그 절은 요지만 부팅 때 실리고 원문은 표식을 쓸 때만 읽으므로,
-  원문에만 넣으면 매 답에 쓰일 규칙이 대부분 안 읽힌다(판단 · 범위 = 같은 1줄의 거울).
-- 해시: ★절은 요지 절 해시 대상(§0-A~§14) 밖 → `test_core_inject` 절 해시 15절 대조 통과(요지 그대로 실림).
-- 의무 3줄(메모리 pack-directive-edit-requires-regen-and-doc-contract): ⓐ `python3 scripts/gen_ceo_template.py` 재합성 + `--check` GREEN(103911 B) ⓑ `test_bootv2_doc_contract.py` rc 0 ⓒ `test_event_inject.py` rc 0(줄 범위 상수 무변 — 파일 끝에 붙여 줄 이동 0).
-- 추가: `scripts/gen_released_directive_hashes.py` 재생성 + `--check` 0(안 하면 `released_tables_cover_current_embed` 적색) · `cargo test --lib pack::` 224 passed · `test_core_inject.py`·`test_ceo_pending_gate.py` rc 0.
-- ⚠통합 주의: 생성물 2종(CEO_TEMPLATE.md · released 해시 표)은 다른 갈래가 디렉티브를 고치면 병합 뒤 다시 생성해야 한다(손 병합 금지).
+- 고침(★1365534b1 ci-branch 적색 뒤 판): 부팅 요지 `MASTER_CORE.md`·`CEO_CORE.md` 의 대화 화면 표식 줄 바로 아래 1줄 —
+  「먼저 한 줄(대화 화면 · 1.1.17): 도구를 여럿 쓸 일이면 쓰기 전에 무엇을 할지 한 줄을 먼저 쓴다(예 …)」. 마스터·CEO 좌석이 **부팅 때 실제로 읽는** 자리다.
+- ⚠원문 `MASTER_DIRECTIVE.md` 에는 넣지 않는다: c5d16c6fd 판은 원문 「★ 대화 화면 표식」 절 끝에도 1줄(+291 B)을 넣었는데, 원문은 **바이트 상한 핀**
+  (`test_cso_directive_rev.py::test_directive_byte_budget_ratchet` · 88,134 B · 「늘리지 말고 줄여라」)에 이미 꽉 차 있어 ci-branch(macOS·ubuntu 두 잡)가 붉었다
+  (88,425 > 88,134 · run 45043208432 · macOS C8 두 단계 exit 2 = 앞 단계 중단으로 cysd-mac.log 미생성 뒤따름).
+  원문 다른 글을 깎아 자리를 내는 것은 남의 규칙 뜻을 바꿀 위험 → 원문·CEO_TEMPLATE·발행 해시 표 3종을 기점(f1fe7aa91)과 바이트 일치로 되돌림.
+  📌 원문에도 꼭 있어야 한다면 = 원문 어느 글을 줄일지 master 판정 필요.
+- ★절은 요지 절 해시 대상 밖 → `test_core_inject` 절 해시 15절 대조 통과.
+- 시험: `test_cso_directive_rev`·`test_bootv2_doc_contract`·`test_event_inject`·`test_core_inject`·`test_ceo_pending_gate` rc 0 · `gen_ceo_template.py --check` GREEN · `gen_released_directive_hashes.py --check` 0.
+  로컬 팩 전체 루프 209종 중 10종 실패 = 기점 요지 파일로도 같은 10종 실패(크롬·phoenix·preflight 등 이 기기 HOME·데몬 상태를 타는 시험 · CI 우분투 레인에선 통과) = 환경성 · 내 변경 무관.
 
 ## ①-4 윈에서도 진행 줄 — 윈 open_bound 구현(판정 = 구현 포함)
 

@@ -657,13 +657,31 @@ os.setpgid(pid,pid); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
         std::thread::sleep(Duration::from_millis(200));
         s.parser.lock().unwrap().screen().contents().contains(needle)
     };
+    // ★(codex 1R major 반영) reader 는 화면 파서를 먼저 먹이고(state.rs `process_chunk_isolated`) 그 뒤 전경 조회 + 7501 반영을 한다 —
+    //   화면에 표식이 보여도 상태 반영 전일 수 있다. 그래서 「보고 n건이 받음이든 안 받음이든 처리됐다」(reports + unsolicited ≥ n)를 기다린 뒤
+    //   단언한다(어느 쪽으로 처리됐는지는 단언이 가린다 — 기다림이 정답 쪽만 기다리지 않는다).
+    let wait_reports = |n: u64| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            let done = {
+                let st = s.program_status.lock().unwrap();
+                st.reports + st.unsolicited >= n
+            };
+            if done || Instant::now() >= deadline {
+                return done;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
     assert!(wait_for("FIRST"), "첫 보고 출력이 나오지 않았다(전제 · python3 필요):\n{}", s.parser.lock().unwrap().screen().contents());
+    assert!(wait_reports(1), "첫 보고가 상태에 반영되지 않았다(전제)");
     {
         let st = s.program_status.lock().unwrap();
         assert_eq!((st.answered, st.len(), st.life_pgid.is_some()), (1, 1, true), "같은 전경 그룹의 보고를 받지 않았다");
     }
     std::fs::write(&go, b"1").unwrap(); // 첫 단언 뒤에만 전경을 넘긴다(순서 고정 · 위 문서)
     assert!(wait_for("HANDED"), "자식 보고 출력이 나오지 않았다(전제)");
+    assert!(wait_reports(2), "자식 보고가 상태에 반영되지 않았다(전제)");
     let st = s.program_status.lock().unwrap();
     assert_eq!((st.len(), st.unsolicited, st.life_answered), (0, 1, false), "전경을 넘겨받은 다른 그룹의 보고를 받았다");
     assert_eq!(st.last_life_end.map(|(w, _)| w), Some("foreground process group changed"));

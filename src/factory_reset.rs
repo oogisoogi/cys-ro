@@ -52,7 +52,7 @@ const CYS_BASE_EXACT: [&str; 31] = [
 
 /// ~/.cys 직하에서 격리하는 정확 이름(2차) — 배열 상수 길이 고정을 피하려 분리하지 않고
 /// 접두로 못 잡는 단건들을 이어 담는다.
-const CYS_BASE_EXACT2: [&str; 14] = [
+const CYS_BASE_EXACT2: [&str; 15] = [
     // ★(0.14.31 · 독립 재유도) TTL 승인 전용 저장소와 두 저장소의 **원자적 쓰기 잔재**.
     //   0.14.31 이 `expires_at` 레코드를 `approvals-ttl.json` 으로 분리했는데 인벤토리는
     //   `approvals.json` 하나였다 → 초기화 뒤에도 미만료 승인이 남는다(시크릿을 env 로 고정한
@@ -87,6 +87,8 @@ const CYS_BASE_EXACT2: [&str; 14] = [
     //   쓰기 임시본(`agy-seat-door.json.<pid>.<순번>.tmp`)은 `is_agy_door_tmp` 가 잡는다.
     crate::agy_door::DOOR_FILE,
     "agy-seat-door.json.lock",
+    // (codex 1R minor 반영) 종전 판 writer 의 고정 이름 임시본(agy_door.rs 시험 「종전 고정 이름」) — 숫자 꼴 잔재와 같은 등급.
+    "agy-seat-door.json.tmp",
 ];
 
 /// ~/.cys 직하에서 격리하는 접두. `pack-dept-<name>`(유령 `pack-dept---help` 포함),
@@ -4522,7 +4524,7 @@ mod r2f_dm_factory_reset {
     /// 이름을 더하고도 형을 안 고치면 컴파일이 깨지지만, 형을 고쳐 맞추면서 **내용 단언**을 잊는 일을 이 검체가 막는다(길이 11·24·9).
     #[test]
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
-        assert_eq!(CYS_BASE_EXACT2.len(), 14, "~/.cys 직하 정확 이름 목록(2차)의 길이");
+        assert_eq!(CYS_BASE_EXACT2.len(), 15, "~/.cys 직하 정확 이름 목록(2차)의 길이");
         assert!(CYS_BASE_EXACT2.contains(&crate::agy_door::DOOR_FILE), "agy 좌석 문이 기본 격리 목록에 없다 — 초기화 뒤에도 문이 열린 채 남는다");
         assert!(CYS_BASE_EXACT2.contains(&format!("{}.lock", crate::agy_door::DOOR_FILE).as_str()), "agy 좌석 문 잠금 파일 이름이 agy_door 규약(`{{DOOR_FILE}}.lock`)과 어긋난다");
         assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
@@ -4586,13 +4588,15 @@ mod r2f_dm_factory_reset {
         let door = crate::agy_door::DOOR_FILE.to_string();
         let lock = format!("{door}.lock");
         let tmp = format!("{door}.4242.0.tmp"); // 이름 바꾸기 전에 죽은 쓰기의 잔재
+        let old_tmp = format!("{door}.tmp"); // 종전 판 고정 이름 임시본(codex 1R minor)
         touch(&cys.join(&tmp), "{}");
+        touch(&cys.join(&old_tmp), "{}");
         for keep in ["agy-seat-door-notes.md", "agy-seat-door.json.bak", "agy-seat-door.json.x.0.tmp"] {
             touch(&cys.join(keep), "owner");
         }
         let plan = build_plan(&roots_in(&td, None), &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
         let (q, k) = names(&plan);
-        for n in [&door, &lock, &tmp] {
+        for n in [&door, &lock, &tmp, &old_tmp] {
             assert!(q.contains(n), "{n} 가 격리 계획에 없다 — 초기화 뒤에도 agy 좌석 문이 열린 채 남는다 · 격리: {q:?} · 보존: {k:?}");
         }
         for keep in ["agy-seat-door-notes.md", "agy-seat-door.json.bak", "agy-seat-door.json.x.0.tmp"] {

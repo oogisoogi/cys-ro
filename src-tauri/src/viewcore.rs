@@ -476,16 +476,32 @@ pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> R
     Ok(f)
 }
 
-/// 윈도 — 폴더 핸들 기준 상대 열기·reparse point 차단을 아직 만들지 않았다 → **읽지 않는다**(codex 4R major · 경로 재탐색 대조는 바꿔치기를 못 막음).
-/// 화면은 「모름」(전달 확인 중 → 오래 걸려요)으로 남는다. 윈 구현·실측 = 조각 10.
-#[cfg(not(unix))]
+/// 윈도 — ★TICKET=cysr-1118-ui ①-4: **연 핸들 자체를 대조**하는 판(`cys::bound_open::open_file_under` · 경로 재탐색 0 — codex 4R major 「경로 재탐색
+/// 대조는 바꿔치기를 못 막음」에 대한 답): 마지막 요소는 링크를 따르지 않고 열고(reparse point = 거부) · 연 객체의 최종 경로가
+/// 「설정 폴더 최종 경로 + 상대 요소」와 같아야 한다(중간 접합·링크 = 거부). 사유 코드는 유닉스 판과 같은 낱말. 윈 실기 시험 = windows-health `bound_open::`.
+#[cfg(windows)]
+pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    cys::bound_open::open_file_under(cfg, expected)
+}
+
+/// 유닉스·윈도 밖 — 읽지 않는다(화면 = 「모름」).
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn open_bound(_cfg: &std::path::Path, _expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
     Err("unsupported_platform")
 }
 
-/// 이 플랫폼에서 결속 세션 파일을 열 수 있는가(= `open_bound` 가 unix 구현을 가졌는가). 윈 구현(조각 10)이 들어오면 함께 바꾼다.
+/// 이 플랫폼에서 결속 세션 파일을 열 수 있는가(= `open_bound` 가 실제 구현을 가졌는가 · ★cysr-1118-ui ①-4 = 윈도 포함).
+/// false 면 chat_transcript 가 RPC 0 으로 unsupported_platform 을 돌려주고 화면은 transcriptNone 으로 30초마다만 다시 묻는다(cysr-chat-held-win).
 pub(crate) const fn transcript_supported() -> bool {
-    cfg!(unix)
+    cfg!(any(unix, windows))
+}
+
+/// 윈도 확장 길이 접두 걷기(순수) — `\\?\C:\x` → `C:\x` · `\\?\UNC\s\h` → `\\s\h` · 그 밖 그대로.
+pub(crate) fn strip_verbatim(p: &str) -> String {
+    if let Some(r) = p.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{r}");
+    }
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_owned()
 }
 
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
@@ -507,6 +523,8 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
     let sid = row_of(&org, surface_id).and_then(|r| r["registered_session_id"].as_str()).map(str::to_owned);
     // ★1.1.16(S3-2): cwd 를 실제 경로로 푼 값도 후보로(transcript_candidates 머리 주석) — 같은 세션 id 의 다른 프로젝트 폴더는 여전히 뒤지지 않는다.
     let canonical = lrow["cwd"].as_str().and_then(|c| std::fs::canonicalize(c).ok()).and_then(|p| p.to_str().map(str::to_owned));
+    // (TICKET=cysr-1118-ui ①-4) 윈도 canonicalize 는 `\\?\` 접두(확장 길이 경로)를 붙인다 — Claude Code 는 보통 경로로 슬러그를 만드므로 접두를 걷은 값으로 후보를 만든다.
+    let canonical = canonical.map(|c| strip_verbatim(&c));
     let paths = match transcript_candidates(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref(), canonical.as_deref()) {
         Ok(p) => p,
         Err(why) => return Ok(json!({"status": "unknown", "why": why})),
@@ -1531,8 +1549,18 @@ mod tests {
         assert_eq!(e, "approval_screen_gone: m");
     }
 
+    /// (TICKET=cysr-1118-ui ①-4) 윈 canonicalize 의 확장 길이 접두를 걷어 Claude Code 슬러그와 같은 꼴로.
+    #[test]
+    fn strip_verbatim_drops_extended_length_prefix_only() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\x\p"), r"C:\Users\x\p");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\p"), r"\\srv\share\p");
+        assert_eq!(strip_verbatim("/private/tmp/x"), "/private/tmp/x");
+        assert_eq!(transcript_slug(&strip_verbatim(r"\\?\C:\Users\x\p")), "C--Users-x-p", "윈 슬러그(Claude Code 프로젝트 폴더 꼴)");
+    }
+
     /// (TICKET=cysr-chat-held-win) 빠른 길(`transcript_supported` = false → RPC 0 · unsupported_platform)은 `open_bound` 의 실제 동작과 같아야 한다 —
     /// 열 수 있는 플랫폼에서 빠른 길을 타거나(기록 못 읽음), 못 여는 플랫폼에서 RPC 를 부르면(예전 윈 = 직렬 풀에 조회 2개) 안 된다.
+    /// ★cysr-1118-ui ①-4: 윈도도 이제 true(연 핸들 대조 판) — 없는 설정 폴더 = no_config_dir(unsupported 아님).
     #[test]
     fn transcript_supported_matches_open_bound() {
         let cfg = std::path::Path::new("/nonexistent-cysr-chat-held-win");

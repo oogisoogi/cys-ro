@@ -39,7 +39,7 @@ export const SLOW_HOLDS_MAX = 3;
 /** (ⓑ) 상태 확인이 계속 늦어 자동으로 보내지 않는 말의 까닭 코드 — 「이 말 보내기」 클릭으로만 나간다. */
 export const STATUS_SLOW = "status_slow";
 export const STATUS_SLOW_NOTE = "마스터 상태 확인이 계속 늦어 자동으로 보내지 않아요 — 급하면 「작업 화면」에서 마스터 창에 직접 입력하거나, 「이 말 보내기」를 눌러 다시 시도하세요.";
-/** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다(none · 윈 = unsupported_platform)고 확인된 좌석의 시작점 재조회 간격 — 3초 조회 고리마다 다시 묻지 않는다. */
+/** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다(none · 1.1.16 윈 = unsupported_platform · ★1.1.17(cysr-1118-ui ①-4) 윈도 읽음 → 이제 none = 세션 미등록·파일 없음·링크 거부 등)고 확인된 좌석의 시작점 재조회 간격 — 3초 조회 고리마다 다시 묻지 않는다. */
 export const TRANSCRIPT_NONE_RETRY_MS = 30_000;
 /** (조각 3 고침 · 검증 지적 F) 시간 상한을 넘긴 재조회 표지. */
 const TIMED_OUT: unique symbol = Symbol("timed_out");
@@ -218,7 +218,7 @@ export class ChatCore {
   private initGen = 0;
   /** (TICKET=cysr-chat-held-win · ⓐ) 최근 끝난 조회 왕복(ms) — 관측 기반 상한의 재료. */
   private rtts: number[] = [];
-  /** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다고 확인된 좌석·시각 — 그 좌석은 보내기 길에서 시작점을 다시 묻지 않는다(윈 = 늘 none). */
+  /** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다고 확인된 좌석·시각 — 그 좌석은 보내기 길에서 시작점을 다시 묻지 않는다(1.1.16 윈 = 늘 none · 1.1.17 윈 = 맥과 같이 ok 가 보통 · none 은 기록 못 연 좌석만). */
   private transcriptNone: { seat: number; at: number } | null = null;
   /** (조각 4) 확인 대기 장부 — 띠·표식·직접 허락. */
   readonly confirm: ConfirmBook;
@@ -766,7 +766,7 @@ export class ChatCore {
     try {
       let fresh = await this.freshBounded(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음 · 시간 상한 = 검증 지적 F)
       this.applyFresh(fresh);
-      // (TICKET=cysr-chat-held-win) 결속 기록이 없다고 이미 확인된 좌석(윈 = 늘 none)은 보내기 길에서 시작점을 다시 묻지 않는다 —
+      // (TICKET=cysr-chat-held-win) 결속 기록이 없다고 이미 확인된 좌석(1.1.16 윈 = 늘 none · 1.1.17 = 기록 못 연 좌석)은 보내기 길에서 시작점을 다시 묻지 않는다 —
       //   예전엔 윈에서 매 보내기가 시간 상한 창 3개(재조회 → 시작점 → 재조회)를 연달아 통과해야 했고, 하나만 늦어도 붙잡혔다(맥 = 창 1개).
       //   none 이면 묻든 안 묻든 결과가 같다(전달됨 0 · 「오래 걸려요」) — 건너뛸 기록 자체가 없다. 배경 재조회는 poll 이 30초마다.
       const noneSeat = fresh.master && this.transcriptNone?.seat === fresh.master.surface_id;

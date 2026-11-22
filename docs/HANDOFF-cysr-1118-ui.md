@@ -57,3 +57,34 @@
 - 의무 3줄(메모리 pack-directive-edit-requires-regen-and-doc-contract): ⓐ `python3 scripts/gen_ceo_template.py` 재합성 + `--check` GREEN(103911 B) ⓑ `test_bootv2_doc_contract.py` rc 0 ⓒ `test_event_inject.py` rc 0(줄 범위 상수 무변 — 파일 끝에 붙여 줄 이동 0).
 - 추가: `scripts/gen_released_directive_hashes.py` 재생성 + `--check` 0(안 하면 `released_tables_cover_current_embed` 적색) · `cargo test --lib pack::` 224 passed · `test_core_inject.py`·`test_ceo_pending_gate.py` rc 0.
 - ⚠통합 주의: 생성물 2종(CEO_TEMPLATE.md · released 해시 표)은 다른 갈래가 디렉티브를 고치면 병합 뒤 다시 생성해야 한다(손 병합 금지).
+
+## ①-4 윈에서도 진행 줄 — 윈 open_bound 구현(판정 = 구현 포함)
+
+### 원인(코드 판독 · 확신 높음)
+- 진행 줄·「전달됨」·마스터 답 말풍선의 재료는 전부 결속 세션 기록인데, 윈은 `viewcore.rs open_bound` 가 `#[cfg(not(unix))] → Err("unsupported_platform")` 라 **한 번도 읽지 않았다**
+  (codex 4R major 「경로 재탐색 대조는 바꿔치기를 못 막음」 때문에 미뤄 둔 조각 10). 그래서 윈 대화 화면은 「전달 확인 중 → 오래 걸려요」에 머물고 답도 안 보였다.
+- 진행 줄만 윈에서 따로 만드는 길(데몬 화면 글 훑기 등)은 재료가 부정확해 버림 → 기록을 안전하게 여는 것이 유일한 길.
+
+### 판정 = 구현 포함 · 설계(src/bound_open.rs · 본체 leaf)
+- 방법 = **연 핸들 자체를 대조**(경로 재탐색 0 → 확인·열기 사이 틈 0): ① 뿌리(설정 폴더 · 데몬 값 · 따라감 = 유닉스 판과 같음) 최종 경로
+  ② 대상 파일을 `FILE_FLAG_OPEN_REPARSE_POINT` 로 열기(마지막 요소 링크·접합 안 따름) ③ 연 핸들 속성: reparse point = `symlinked_path` · 폴더 = `not_a_file`
+  ④ 연 핸들 `GetFinalPathNameByHandleW` = 「뿌리 최종 경로 + 상대 요소」(ASCII 대소문자 무시) 아니면 `symlinked_path`(중간 접합·링크). 공유 모드 = 읽기·쓰기·삭제(Claude Code 쓰기 안 막음).
+  상대 요소 검사 = 보통 이름만 · `:`(대체 스트림)·구분자·끝 점·공백 거부. 사유 코드 = 유닉스 판과 같은 낱말.
+- 같은 방식 선례 = `src/update/win_install.rs`(최종 경로 대조). 본체에 둔 이유 = 윈 실기 레인(windows-health)은 본체 크레이트 시험만 돈다(cys-app 시험 0) → 윈도우 전용 검체를 실기로 돌리려면 본체여야 함.
+- 배선: `viewcore.rs` `#[cfg(windows)] open_bound → cys::bound_open::open_file_under` · `transcript_supported() = cfg!(any(unix, windows))`(빠른 길 unsupported 는 그 밖 플랫폼만) ·
+  윈 canonicalize 의 `\\?\` 접두를 걷어 두 번째 슬러그 후보를 만든다(`strip_verbatim`).
+- transcriptNone 정합: 뜻 = 「이 좌석 기록을 못 연다는 사실」 그대로(30초 재조회) — 1.1.17 윈은 보통 ok(맥 꼴)라 거의 안 쓰이고, 세션 미등록·파일 없음·링크 거부 좌석과 1.1.16 윈에만 쓰인다(주석 갱신).
+  heldwin.test 「win」 모형 = 기록 못 여는 좌석 회귀 시험으로 유지(초록).
+- 윈 실기 시험 단계: `windows-health.yml` 에 `cargo_filter_count --lib bound_open::` + 실행(0건 = 적색 규율 그대로).
+  윈도우 전용 검체 = 정상 파일 읽기 · 쓰는 중 열기(상대 쓰기 허용) · 중간 접합(mklink /J) 거부(경로로는 읽힘 = 대조군) · 파일 심볼릭 링크 거부(권한 있을 때 · 없으면 판정 불가 표시).
+
+### 시험(맥)
+- `cargo test --lib bound_open::` 2 passed(순수부 — 상대 요소·최종 경로 대조) · `cargo test -p cys-app --bin cys-app viewcore` 28 passed(strip_verbatim·transcript_supported 정합 포함)
+- `scripts/win-typecheck.sh` = 오류 0(내 파일 경고 0) · ui `bun test` 3976 pass 0 fail · heldwin+progress 24/24 · tsc 0.
+- **윈 실기 판정은 이 가지 push 의 windows-health 런에서** — 결과 sha·run 은 【확인요청】에 적는다.
+
+### 정직한 한계 · 바깥 증거 요청
+- 가정(확신 중상): 윈 Claude Code 프로젝트 폴더 이름 = 우리 슬러그(`C:\Users\x\p` → `C--Users-x-p`). 읽기 전용 측정(윈 마스터에게):
+  `Get-ChildItem "$env:USERPROFILE\.claude\projects" -Directory | Select-Object -First 5 Name` → 이름이 `C--Users-…` 꼴이면 확정.
+- 윈에서 기록 읽기가 살아나면 맥처럼 읽기마다 데몬 RPC 2개(surface.list·org.status)가 직렬 풀에 선다 — 상한은 chat-held-win ⓐ(관측 기반 500~2000ms)가 흡수 · 윈 실기 대화 화면 왕복 10회 전달률은 통합 빌드 시험 몫.
+- 하드 링크는 유닉스 판과 같이 막지 않는다(최종 경로가 다른 이름으로 나오면 거부 = 안전 쪽).

@@ -56,7 +56,7 @@
   (`test_cso_directive_rev.py::test_directive_byte_budget_ratchet` · 88,134 B · 「늘리지 말고 줄여라」)에 이미 꽉 차 있어 ci-branch(macOS·ubuntu 두 잡)가 붉었다
   (88,425 > 88,134 · run 45043208432 · macOS C8 두 단계 exit 2 = 앞 단계 중단으로 cysd-mac.log 미생성 뒤따름).
   원문 다른 글을 깎아 자리를 내는 것은 남의 규칙 뜻을 바꿀 위험 → 원문·CEO_TEMPLATE·발행 해시 표 3종을 기점(f1fe7aa91)과 바이트 일치로 되돌림.
-  📌 원문에도 꼭 있어야 한다면 = 원문 어느 글을 줄일지 master 판정 필요.
+  ✅ master 판정(master#a023a1fd · 11-23): 요지(MASTER_CORE·CEO_CORE)에만 두는 지금 방식 확정 · 원문엔 넣지 않음 · 다른 글 깎기 0 · 바이트 상한 핀 그대로.
 - ★절은 요지 절 해시 대상 밖 → `test_core_inject` 절 해시 15절 대조 통과.
 - 시험: `test_cso_directive_rev`·`test_bootv2_doc_contract`·`test_event_inject`·`test_core_inject`·`test_ceo_pending_gate` rc 0 · `gen_ceo_template.py --check` GREEN · `gen_released_directive_hashes.py --check` 0.
   로컬 팩 전체 루프 209종 중 10종 실패 = 기점 요지 파일로도 같은 10종 실패(크롬·phoenix·preflight 등 이 기기 HOME·데몬 상태를 타는 시험 · CI 우분투 레인에선 통과) = 환경성 · 내 변경 무관.

@@ -84,6 +84,8 @@ export interface Msg {
   requestId?: string;
   /** (조각 3) 원자 제출을 보낸 마스터 좌석 번호 — 좌석에 걸린 데몬 사건(쓰기 직전 거부)을 이 말에 잇는 데 씀 */
   seat?: number;
+  /** (TICKET=cysr-chat-held-win · ⓑ) 상태 확인 늦음으로 연달아 붙잡힌 횟수 — 상태가 한 번 제때 확인되면 지움 */
+  slowHolds?: number;
 }
 
 export interface Rec {

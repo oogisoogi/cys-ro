@@ -351,7 +351,7 @@ import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, 
 import { buildTabBar } from "./tabbar";
 import { cleanGroupName, effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
-import { accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountLimitRows, accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -6489,7 +6489,7 @@ function paintStatusBoard(): void {
   const board = seatHost("board");
   const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
   const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
-  paintBoard(board, counts, { variant: statusBoard, limit, limitTitle: limitTitle(rateRows, nowSecs), limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: offSeatApprovals, onApprovals });
+  paintBoard(board, counts, { variant: statusBoard, limit, limitTitle: limitTitle(rateRows, nowSecs), limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: offSeatApprovals, onApprovals, accounts: accountLimitRows(accountsCache, nowSecs) }); // (TICKET=cysr-1118-ui ②) 계정 둘 이상 = 계정마다 한 줄
   boardMore.hidden = !open;
   if (usageEl) boardMore.appendChild(usageEl);
   board.appendChild(boardMore);

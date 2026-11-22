@@ -5,6 +5,8 @@
 // 노브 = localStorage `cys-status-board`(0 끔 · 1 (가) 상태 수만 · 2 (나) + 한도 한 줄) — 기본 (가). 떼어 낼 때는 노브 0 또는 이 커밋 되돌리기.
 // ★세지 않는 줄: 이름 보고자(화면 밖 master·cso — 앱 좌석이 아니다) · 끝난 좌석(끝남은 상태 4종 밖).
 import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel, type SeatState } from "./seatrows";
+import { accountShortLabel, acctKey, type AcctRow } from "./usagebar";
+import { accountRates, type AccountLike } from "./wsusage";
 
 export const BOARD_KEY = "cys-status-board";
 /** (1g · master#17b20312) 위치 = 「화면 설정」 「상황판 위치」(위 기본 · 아래) · 펼침 = 기억. */
@@ -78,6 +80,42 @@ export function limitTitle(rows: readonly RateRow[], nowSecs: number): string | 
   return `${pct} · ${resetDayTime(top.resetsAt)} 초기화(${d > 0 ? `${d}일 ${h}시간` : `${h}시간 ${m}분`} 남음)`;
 }
 
+/** (TICKET=cysr-1118-ui ②) 계정별 한도 줄 하나 — 이름(폴더 라벨·별명 · 이메일 0) · 7d % · 짧은 줄 · 전문(툴팁). */
+export interface AcctLimitRow {
+  key: string;
+  name: string;
+  pct: number;
+  line: string;
+  title: string;
+}
+/** (TICKET=cysr-1118-ui ② · 박사님 11-22 19:4x 「계정도 하나밖에 안 보인다」) 계정마다 7d 최고 한 줄(관측 전·7d 없는 계정은 빠짐 = accountRates 와 같은 거르기).
+ *  차례 = 이름순(값이 바뀌어도 줄이 자리를 바꾸지 않게) · 같은 이름이면 뒤에 번호. 짧은 줄 = 「43% · 금 06:00」(216px 에 이름과 함께 들도록 「초기화」 낱말은 툴팁으로). */
+export function accountLimitRows(accounts: readonly AccountLike[] | null | undefined, nowSecs: number): AcctLimitRow[] {
+  const byKey = new Map<string, AcctRow>();
+  for (const a of accounts ?? []) if (a) byKey.set(acctKey(a as unknown as AcctRow), a as unknown as AcctRow); // 같은 행 · 라벨 함수(usagebar)가 받는 꼴로
+  const best = new Map<string, RateRow>();
+  for (const r of accountRates([...(accounts ?? [])], nowSecs)) {
+    if (r.label !== "7d" || !Number.isFinite(r.usedPct)) continue;
+    const k = `${r.agent === "?" ? "" : r.agent}:${r.accountId}`;
+    const cur = best.get(k);
+    if (!cur || r.usedPct > cur.usedPct) best.set(k, { label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt });
+  }
+  const rows = [...best.entries()].map(([key, r]) => {
+    const a = byKey.get(key);
+    return { key, base: a ? accountShortLabel(a) : "계정", r };
+  });
+  rows.sort((x, y) => (x.base === y.base ? (x.key < y.key ? -1 : x.key > y.key ? 1 : 0) : x.base < y.base ? -1 : 1));
+  const seen = new Map<string, number>();
+  return rows.map(({ key, base, r }) => {
+    const n = (seen.get(base) ?? 0) + 1;
+    seen.set(base, n);
+    const name = n === 1 ? base : `${base} ${n}`;
+    const pct = Math.round(r.usedPct);
+    const line = r.resetsAt == null || !Number.isFinite(r.resetsAt) ? `${pct}%` : `${pct}% · ${resetDayTime(r.resetsAt)}`;
+    return { key, name, pct, line, title: `${name} — ${limitTitle([r], nowSecs) ?? `${pct}%`}` };
+  });
+}
+
 export interface BoardPaintOpts {
   variant: Exclude<BoardVariant, "off">;
   limit: string | null;
@@ -95,6 +133,8 @@ export interface BoardPaintOpts {
   /** (1e) 좌석 밖 승인 요청 수(전 부서 feed.pending 합 − 좌석에 걸린 요청 · ◆ 막힘에 이미 든 것은 빼고) — 0 이면 그리지 않는다. */
   approvals?: number;
   onApprovals?: () => void;
+  /** (TICKET=cysr-1118-ui ②) 계정별 한도 줄(accountLimitRows) — **둘 이상일 때만** 계정마다 한 줄로 그린다(하나면 종전 한 줄 그대로). */
+  accounts?: readonly AcctLimitRow[];
 }
 
 /** 상태 수 칸 그리기 — 0 인 상태는 흐리게(누를 수 없음). */
@@ -159,7 +199,32 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
     caret.className = "ws-board-caret";
     caret.textContent = o.open ? "▾" : "▸";
     lim.appendChild(caret);
-    if (o.limitPct != null) {
+    const multi = (o.accounts?.length ?? 0) >= 2 ? (o.accounts as readonly AcctLimitRow[]) : null;
+    if (multi) {
+      // (TICKET=cysr-1118-ui ②) 계정마다 한 줄 = 이름(넘치면 이름만 말줄임 · 전문 = 툴팁) · 「% · 요일 시각」(줄이지 않음 = 중간 잘림 0)
+      lim.classList.add("multi");
+      lim.title = `${multi.map((r) => r.title).join("\n")}\n${o.open ? "사용량 접기" : "사용량 펼치기(모델별 7d · 5h · 가장 낡음)"}`;
+      const list = document.createElement("span");
+      list.className = "ws-board-accts";
+      for (const r of multi) {
+        const row = document.createElement("span");
+        row.className = "ws-board-acct-row";
+        row.title = r.title;
+        // 막대는 빼고(216px 에서 막대가 이름을 말줄임으로 밀어냄 · 실측 「claude-acct2」 → 「claude…」) 높은 값은 글자 색으로(막대와 같은 60·80 문턱).
+        if (r.pct >= 80) row.classList.add("crit");
+        else if (r.pct >= 60) row.classList.add("warn");
+        const nm = document.createElement("span");
+        nm.className = "ws-board-acct-name";
+        nm.textContent = r.name;
+        const txt = document.createElement("span");
+        txt.className = "ws-board-limit-text";
+        txt.textContent = r.line;
+        row.append(nm, txt);
+        list.appendChild(row);
+      }
+      lim.appendChild(list);
+    }
+    if (!multi && o.limitPct != null) {
       const track = document.createElement("span");
       track.className = "cc-tbar-track";
       const fill = document.createElement("span");
@@ -169,10 +234,12 @@ export function paintBoard(host: HTMLElement, c: BoardCounts, o: BoardPaintOpts)
       track.appendChild(fill);
       lim.appendChild(track);
     }
-    const txt = document.createElement("span");
-    txt.className = "ws-board-limit-text";
-    txt.textContent = o.limit;
-    lim.appendChild(txt);
+    if (!multi) {
+      const txt = document.createElement("span");
+      txt.className = "ws-board-limit-text";
+      txt.textContent = o.limit;
+      lim.appendChild(txt);
+    }
     lim.addEventListener("click", (e) => {
       e.stopPropagation();
       o.onToggle?.();

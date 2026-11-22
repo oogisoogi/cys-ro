@@ -7,6 +7,7 @@ import type { ViewContext, ViewInstance, ViewModule } from "../contract";
 import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, needsClick, POLL_MS, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
+import { liveMsg, progressLine, stepTime } from "../judge/progress";
 import { createBand } from "./band";
 import { createResults } from "./results"; // (s79 조각 7) 결과 받기 칸·카드
 import { createReviveBand } from "./reviveband";
@@ -100,13 +101,61 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     input.addEventListener("keydown", onKey);
     form.addEventListener("submit", onSubmit);
 
-    const bubble = (m: Msg, s: ChatState): HTMLLIElement => {
+    // (TICKET=cysr-1118-ui ①) 진행 줄 — 접힌 한 줄(지금 단계 · 단서 · 경과 초) · 누르면 「과정 보기」(실제 단계 목록 · 시각). 펼침 = 이 화면 메모리만.
+    const openProg = new Set<string>();
+    const prog = (m: Msg, live: boolean): HTMLElement | null => {
+      const p = progressLine(m, Date.now(), live);
+      if (!p) return null;
+      const steps = m.steps ?? [];
+      const box = el("div", `cv-prog${p.live ? " live" : ""}`);
+      box.dataset.msgId = m.id;
+      const open = openProg.has(m.id) && steps.length > 0;
+      const btn = el("button", "cv-prog-head");
+      btn.type = "button";
+      btn.disabled = steps.length === 0;
+      btn.setAttribute("aria-expanded", String(open));
+      btn.title = steps.length ? (open ? "과정 접기" : "과정 보기 — 읽은 파일 · 실행한 명령 · 찾은 말 · 중간 글") : "아직 과정 기록이 없어요";
+      btn.append(el("span", "cv-prog-caret", steps.length ? (open ? "▾" : "▸") : "•"), el("span", "cv-prog-text", p.text));
+      btn.addEventListener("click", () => {
+        if (openProg.has(m.id)) openProg.delete(m.id);
+        else openProg.add(m.id);
+        const cur = act.state.msgs.find((x) => x.id === m.id);
+        const next = cur ? prog(cur, liveMsg(act.state.msgs) === cur) : null;
+        if (next) box.replaceWith(next);
+      });
+      box.append(btn);
+      if (open) {
+        const ol = el("ol", "cv-steps");
+        ol.setAttribute("aria-label", "과정");
+        for (const st of steps) {
+          const li = el("li", `cv-stepi k-${st.kind}`);
+          li.append(el("span", "cv-stepi-at", stepTime(st.at)), el("span", "cv-stepi-label", st.label));
+          if (st.hint) li.append(el("span", "cv-stepi-hint", st.hint));
+          ol.append(li);
+        }
+        box.append(ol);
+      }
+      return box;
+    };
+    // 경과 초 = 1초마다 글만 바꾼다(말 목록 전체를 다시 그리지 않음 · 입력칸·스크롤 그대로)
+    ctx.timers.every(1_000, () => {
+      for (const t of log.querySelectorAll<HTMLElement>(".cv-prog.live")) {
+        const m = act.state.msgs.find((x) => x.id === t.dataset.msgId);
+        const p = m ? progressLine(m, Date.now(), true) : null;
+        const txt = t.querySelector(".cv-prog-text");
+        if (p && txt && txt.textContent !== p.text) txt.textContent = p.text;
+      }
+    });
+
+    const bubble = (m: Msg, s: ChatState, live: boolean): HTMLLIElement => {
       const li = el("li", `cv-msg cv-me step-${m.step}`);
       li.dataset.msgId = m.id;
       li.append(el("div", "cv-text", m.text));
       const meta = el("div", "cv-step", STEP_LABEL[m.step]);
       meta.dataset.step = m.step;
       li.append(meta);
+      const pg = prog(m, live);
+      if (pg) li.append(pg);
       if (m.note) li.append(el("div", "cv-note", m.note));
       // (조각 3 · PRD FR-A2a) 오래 걸려요 = 마스터 상태를 함께 보인다(근거 없이 「못 보냄」으로 바꾸지 않음 · 다시 보내기 0).
       if (m.step === "slow") li.append(el("div", "cv-note cv-slow-health", `마스터 상태: ${HEALTH_LABEL[s.health]} — 다시 보내지 않고 계속 확인해요.`));
@@ -178,12 +227,14 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       // (조각 3 고침 · 검증 지적 B) 어느 말에도 안 묶인 마스터 글은 시각순으로 사람 말 사이에 끼운다(사람 말들 뒤에 몰리지 않게).
       const order = logOrder(s.msgs, s.stray);
       const lastItem = order[order.length - 1];
+      const liveM = liveMsg(s.msgs); // (TICKET=cysr-1118-ui ①) 진행 줄을 살아 있게 다는 말(가장 최근 · 답 기다림)
+      for (const id of [...openProg]) if (!s.msgs.some((m) => m.id === id)) openProg.delete(id); // (codex 1R minor) 밀려난 말의 펼침 상태는 버린다(보관량 = 지금 말 수 이하)
       for (const it of order) {
         if (it.kind === "stray") {
           log.append(masterBubble(it.r.text, it.r.uuid, it === lastItem));
           continue;
         }
-        log.append(bubble(it.m, s));
+        log.append(bubble(it.m, s, it.m === liveM));
         it.m.replies.forEach((r, k) => log.append(masterBubble(r.text, r.uuid, it === lastItem && k === it.m.replies.length - 1)));
       }
       for (const a of s.autos) log.append(autoLine(a));

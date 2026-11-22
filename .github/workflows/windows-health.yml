@@ -584,6 +584,14 @@ jobs:
           #   이 두 줄에도 `if:` 를 달지 마라.
           cargo_filter_count --lib claude_tui::
           CYS_PACK_DIR="$(mktemp -d)" cargo test --lib claude_tui:: -- --test-threads=1
+          # ★(1.1.17 · TICKET=cysr-1118-ui ①-4) 필터 `bound_open::` — 대화 화면 세션 기록 열기의 윈도우 판(연 핸들 최종 경로 대조 · src/bound_open.rs).
+          #   윈도우 전용 검체(`bound_open::tests::win_tests::`) = 정상 파일 읽기·쓰는 중 열기(공유 모드) · 중간 접합(mklink /J) 거부 · 파일 링크 거부(권한 있을 때).
+          #   순수부(rel_parts · final_path_is)는 맥에서도 돌지만 핸들 대조는 맥에서 컴파일조차 안 된다 — mac 초록은 그 축의 증거가 아니다(정본 §8). `if:` 금지.
+          #   ★codex 1R major: 순수 시험이 개수를 채워 윈도우 전용 검체 0건을 가리지 않게 `win_tests::` 를 따로 센다(4건 = 정상·접합·파일 링크·뿌리 바꿔치기 ·
+          #   준비 실패 = 판정 불가 = 적색 — 조용한 초록 금지).
+          cargo_filter_count --lib bound_open::tests::win_tests::
+          cargo_filter_count --lib bound_open::
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --lib bound_open:: -- --test-threads=1
           # ★(1.1.16 · TICKET=cysr-1116-win-restore-1121 · master#d6185ede 규칙 6) 아홉째 필터 `session_lease::win_tests::` — 윈 대화 임대
           #   「같은 사용자」 훑기의 FFI 사실 수집(SystemProcessInformation 세션·CreateTime · WTS SID · LIMITED 토큰 · 종료 코드)을 **실제로** 지나는
           #   윈도우 전용 검체 5종(ⓐ 나 = 열림·SID 같음·내 세션·생성 시각 일치 ⓑ pid 4 = 남의 것 ⓒ 없는 pid = 없음·죽음 ⓓ 자식 명령줄 S = Seen → 끝낸 뒤 죽음

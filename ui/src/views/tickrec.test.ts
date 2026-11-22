@@ -150,7 +150,15 @@ describe("링 200칸 회전 · 크기 상한", () => {
     expect((d.entries[199] as { seq: number }).seq).toBe(205);
   });
 
-  it("좌석 상한을 넘는 목록은 잘리고 trunc 표시 · 최악 장면(200틱 × 소켓 32 × 좌석 128) 덤프도 상한 안", () => {
+  // ★TICKET=cysr-1118-debug ④(F1 곁 발견 판독): 이 검체 이름이 종전 「최악 장면 … 덤프도 상한 안」이었으나 실제 덤프는 ≈122MB(상한 2MB 의 61배)이고
+  //   단언은 bytes > 0 뿐이었다 = **시험 이름 거짓**(제품 결함 아님). 제품 판독: TICKREC_MAX_DUMP_BYTES 는 「설계 목표값」(tickrec.ts 머리)으로
+  //   제품이 바이트로 자르지 않는다 — 크기를 묶는 것은 칸 상한(작업공간 64 · 소켓 32 · 좌석 128 · 목록 256 · 오류 16) × 링 200칸이고, 바이트 상한은
+  //   실제 크기 장면(아래 검체 + ui/e2e/tickrec_gate.py)에서 잰다. 기록기는 기본 꺼짐(localStorage cys-tickrec = "1" 일 때만)인 진단 도구다.
+  //   → 이름을 사실대로 고치고, 「칸 상한이 크기를 묶는다」는 실제 단언은 바로 아래 새 검체가 맡는다.
+  // (TICKET=cysr-1118-debug ② · ci-branch ui-check tsc TS2554 「Expected 2 arguments, but got 3」) 타입 선언(src/bun-env.d.ts TestFn)은 2인자뿐 —
+  //   상한 인자는 screensettings.test.ts 선례와 같은 형 변환으로 넘긴다(선언 확장 없이 · 실행 동작 같음).
+  const itSlow = it as unknown as (label: string, body: () => void, timeoutMs: number) => void;
+  itSlow("좌석 상한을 넘는 목록은 잘리고 trunc 표시 · 최악 장면(200틱 × 소켓 32 × 좌석 128) 덤프 크기 기록(바이트 상한은 실제 크기 장면에서)", () => {
     const r = createTickRecorder({ salt: "k" });
     const surfaces = Array.from({ length: 300 }, (_, i) => ({ surface_id: i, role: "worker-" + i, exited: false, title: "x".repeat(40), live_cwd: "/p/".repeat(20), display_no: i, line_count: i, size: { rows: 40, cols: 140 } }));
     for (let t = 0; t < 200; t++) {
@@ -169,6 +177,30 @@ describe("링 200칸 회전 · 크기 상한", () => {
     // 최악 장면은 상한을 넘을 수 있다 — 그래서 이 수는 「최악 장면 크기」의 기록이고, 상한은 실제 장면(좌석 12 · tickrec_gate.py)에서 잰다.
     expect(bytes).toBeGreaterThan(0);
     expect(TICKREC_MAX_DUMP_BYTES).toBe(2 * 1024 * 1024);
+    // ★TICKET=cys-ci-flaky-f1f2-1122: 이 검체는 시간을 재지 않는다 — 최악 장면 덤프(≈122MB · 기록 25% · 깊은 복사 32% · 직렬화 43%)를
+    //   만드는 고정 일감이라 걸리는 시간이 러너 CPU 속도에 비례하고, bun 기본 상한 5초가 그 분포 안에 있었다
+    //   (CI run 44883338513 a1 = 5288ms 「timed out after 5000ms」). 실측 분포: CI(bun 1.4.5 · macos-26-arm64) 8회 1.1~5.3초 ·
+    //   로컬 30회 1.6~5.9초(중앙 2.3) · 느린 CPU(taskpolicy -c background) 30회 5.8~15.4초(전부 TimeoutError · 판정 실패 0) —
+    //   판정은 그대로 두고 이 검체의 상한만 30초로 둔다(screensettings.test.ts 1.1.11 선례와 같은 처리).
+  }, 30_000);
+
+  it("칸 상한이 덤프 크기를 묶는다 — 상한을 넘는 입력이 세 배로 커져도 덤프 바이트는 같다", () => {
+    // TICKET=cysr-1118-debug ④: 최악 장면 크기(≈122MB)가 「입력 크기」가 아니라 「칸 상한 × 링」으로 정해진다는 단언(가벼운 3틱 판 · 200틱 판은 위 검체).
+    //   두 장면은 상한 안쪽(앞쪽 64·32·128개)이 같고 상한 밖 개수만 다르다(자릿수가 같은 개수를 골라 `n` 칸 길이도 같게).
+    const dumpBytes = (nWs: number, nSock: number, nSurf: number) => {
+      const r = createTickRecorder({ salt: "k" });
+      const surfaces = Array.from({ length: nSurf }, (_, i) => ({ surface_id: i, role: "worker-" + i, exited: false, title: "x".repeat(40), live_cwd: "/p/".repeat(20), display_no: i, line_count: i, size: { rows: 40, cols: 140 } }));
+      for (let t = 0; t < 3; t++) {
+        r.begin(t, Array.from({ length: nWs }, (_, i) => W(i, [i])), new Map(), false, new Set(), new Set());
+        for (let s = 0; s < nSock; s++) r.sock("/s" + s, { surfaces }, () => true);
+        r.end(new Map(), false);
+      }
+      return new TextEncoder().encode(r.dumpJson()).length;
+    };
+    const small = dumpBytes(100, 40, 300);
+    const big = dumpBytes(300, 120, 900);
+    expect(small).toBeGreaterThan(0);
+    expect(big).toBe(small);
   });
 
   it("실제 크기 장면(좌석 12 · 소켓 3 · 200틱) 덤프 ≤ 상한", () => {

@@ -239,6 +239,10 @@ fn the_return_binds_inside_the_window_and_after_60001_ms_the_body_expires_untype
     let gone = events(&fx, "surface.submit_undelivered");
     assert!(gone.iter().any(|e| e["payload"]["request_id"] == json!(b) && e["payload"]["reason"] == "expired"), "{gone:?}");
     assert_eq!(written_ids(&fx), [a], "the expired body was never typed");
+    // ★TICKET=cysr-1118-seat ③-3: 만료 폐기도 증거 파일에 남는다(doctor held-dropped 가 센다) · 본문 글자는 남기지 않는다.
+    let evidence = std::fs::read_to_string(fx.dir.join(crate::state::HELD_UNDELIVERED_LOG)).unwrap_or_default();
+    assert!(evidence.contains(&b) && evidence.contains("\"expired\""), "no durable evidence of the expired body: {evidence}");
+    assert!(!evidence.contains("\"late\""), "the body text must not be written: {evidence}");
 }
 
 /// A queued Return turns the held body into ONE queue entry (the queue writes it with its own Return).

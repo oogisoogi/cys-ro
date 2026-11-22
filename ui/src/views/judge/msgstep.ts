@@ -4,6 +4,8 @@
 // 「답함」 = 그 user 레코드의 uuid 를 부모로 잇는 사슬 위 assistant 글 + 마스터 활동 쉼. 근거가 없으면 칠하지 않는다(「모름」 = 확인 중).
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지(시각은 인자).
 
+import { appendSteps, stepsOf, type ProgStep } from "./progress";
+
 /** 「전달 확인 중」·「확인 중」이 이 시간 넘게 근거 없으면 「확인이 오래 걸려요」(설계 목표값 120초 · §5-1). */
 export const SLOW_MS = 120_000;
 /** 세션 기록 시각과 보낸 시각의 허용 차(같은 기계 시계 · 기록이 보낸 시각보다 조금 앞서 찍힐 수 있음). */
@@ -84,6 +86,10 @@ export interface Msg {
   requestId?: string;
   /** (조각 3) 원자 제출을 보낸 마스터 좌석 번호 — 좌석에 걸린 데몬 사건(쓰기 직전 거부)을 이 말에 잇는 데 씀 */
   seat?: number;
+  /** (TICKET=cysr-chat-held-win · ⓑ) 상태 확인 늦음으로 연달아 붙잡힌 횟수 — 상태가 한 번 제때 확인되면 지움 */
+  slowHolds?: number;
+  /** (TICKET=cysr-1118-ui ①) 이 말에 이어진 마스터 과정(도구·중간 글·생각 표지) — 진행 줄·「과정 보기」 재료 · 메모리만(화면 저장소 0 = NFR-S3) */
+  steps?: ProgStep[];
 }
 
 export interface Rec {
@@ -97,6 +103,10 @@ export interface Rec {
   sidechain?: boolean;
   /** (조각 4 · codex 1R minor) 그 줄이 시작하는 파일 바이트 위치(viewcore.rs read_transcript_from) — 앞 훑기·뒤 읽기 겹침을 위치로 가른다 */
   at?: number;
+  /** (TICKET=cysr-1118-ui ①) 마스터 레코드의 도구 호출(이름 + 짧은 단서 · viewcore.rs tool_steps) · 없으면 null */
+  tools?: { name: string; hint: string | null }[] | null;
+  /** (TICKET=cysr-1118-ui ①) 생각 조각(내용은 빈 칸)이 있었는가 */
+  thinking?: boolean;
 }
 
 /** 데몬 결과(viewcore.rs classify_send) → 단계. */
@@ -200,6 +210,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
     const owner = r.parent ? out.find((m) => m.thread.includes(r.parent as string)) : undefined;
     if (owner) {
       if (r.uuid) owner.thread.push(r.uuid);
+      if (r.role === "assistant") owner.steps = appendSteps(owner.steps, stepsOf(r)); // (TICKET=cysr-1118-ui ①) 진행 줄 재료
       if (r.role === "assistant" && r.text !== null) {
         owner.replies.push({ uuid: r.uuid, text: r.text });
         if (owner.step === "delivered") owner.step = "replying";
@@ -268,7 +279,7 @@ export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
   const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
   if (EVIDENCED.has(cur.step) && !definite) return {};
   if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
-  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [] };
+  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined };
   return { step: outcomeStep };
 }
 

@@ -40,6 +40,11 @@ export interface SimOpts {
   wrapPaste?: (n: number) => boolean;
   /** (조각 3 고침 · 검증 지적 B · 실측 꼴) user 레코드와 답 사이에 끼는 다른 종류 레코드 수(attachment 등 = 글 없는 고리 role:"link") */
   linksBetween?: number;
+  /** (TICKET=cysr-1118-ui ①) 답 전에 마스터가 남기는 도구 호출 레코드(하나씩 toolGapMs 간격 · 글 없음 · tools 칸) — 진행 줄 시험용.
+   *  toolsField=false = 도구 칸이 없는 옛 파서 꼴(대조군). */
+  toolSteps?: Array<{ name: string; hint: string | null }>;
+  toolGapMs?: number;
+  toolsField?: boolean;
 }
 
 export class Sim {
@@ -210,6 +215,15 @@ export class Sim {
       const rp = this.o.replyDelay ? this.o.replyDelay(n) : 1_500;
       if (rp === null) return; // 답이 없으면 일하지도 않는 것으로 둔다
       this.workStart();
+      for (const [k, t] of (this.o.toolSteps ?? []).entries()) {
+        this.later((k + 1) * (this.o.toolGapMs ?? 2_000), () => {
+          const tu = this.o.noUuid ? null : `t${wi}-${k}`;
+          this.file.push({ uuid: tu, parent: tail, role: "assistant", text: null, ts: new Date(this.now).toISOString(), ...(this.o.toolsField === false ? {} : { tools: [t], thinking: false }) });
+          tail = tu;
+          if (tu) this.lastUuid = tu;
+          this.lastOutputAt = this.now;
+        });
+      }
       this.later(rp, () => {
         const au = this.o.noUuid ? null : `a${wi}`;
         this.file.push({ uuid: au, parent: tail, role: "assistant", text: `답 ${wi}`, ts: new Date(this.now).toISOString() });

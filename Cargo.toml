@@ -6,7 +6,7 @@ exclude = ["vendor/portable-pty", "vendor/vt100"]
 
 [package]
 name = "cys-terminal"
-version = "1.1.16"
+version = "1.1.17"
 edition = "2021"
 description = "cys — the CYSJavis terminal: bidirectional socket IPC, multi-agent OS (CYSJavis Pack), governance, heartbeat"
 license = "MIT"
@@ -125,6 +125,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_RemoteDesktop",  # ★TICKET=cysr-1116-win-restore-1121: WTSEnumerateProcessesExW — 대화 임대 argv 훑기의 프로세스 사용자 SID(핸들 없음 · src/session_lease.rs win_scan)
     "Wdk_System_SystemInformation",    # ★같은 티켓: NtQuerySystemInformation(SystemProcessInformation) — 세션(핸들 없음)
     "Win32_System_WindowsProgramming",  # ★같은 티켓: SYSTEM_PROCESS_INFORMATION
+    # ★1.1.17(TICKET=cysr-1118-ui ①-4 · codex 1R blocking): NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory) — 대화 화면 세션 기록을
+    #   설정 폴더 **핸들 기준**으로 한 요소씩 reparse 를 따르지 않고 연다(src/bound_open.rs · 유닉스 openat+O_NOFOLLOW 와 같은 결속).
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을

@@ -91,6 +91,7 @@
   `Get-ChildItem "$env:USERPROFILE\.claude\projects" -Directory | Select-Object -First 5 Name` → 이름이 `C--Users-…` 꼴이면 확정.
 - 윈에서 기록 읽기가 살아나면 맥처럼 읽기마다 데몬 RPC 2개(surface.list·org.status)가 직렬 풀에 선다 — 상한은 chat-held-win ⓐ(관측 기반 500~2000ms)가 흡수 · 윈 실기 대화 화면 왕복 10회 전달률은 통합 빌드 시험 몫.
 - 하드 링크는 유닉스 판과 같이 막지 않는다(유닉스 O_NOFOLLOW 도 못 막는 같은 축 · 같은 볼륨·그 파일 쓰기 권한 필요) — 📌 수용 여부 = master 판정(codex missing ④).
+  ✅ master 판정(master#fe364353 · 11-23): **수용** — 읽기 전용 기록 읽기 · 하드 링크를 만들려면 이미 그 사용자 폴더에 쓰기 권한이 있어야 함 = 새 위험 경계 아님 · 두 OS 같은 축 유지.
 
 ## codex 1R(갈래 끝 1회 · d93c0b3cc 대상) — verdict BLOCK · 대조표
 원문 = `~/axdev/workers/cysr-1118-ui/evidence/codex-1r-verdict.json`.
@@ -108,4 +109,4 @@
 | m1 | missing | 윈 실기 증거 | 이 커밋 push 의 windows-health 런 | 【확인요청】에 run·결과 |
 | m2 | missing | accountShortLabel·acctKey 범위 밖 | 렌더 하네스 캡처·이메일 0 단언으로 대신(범위 밖 함수 무변) | evidence/statusboard |
 | m3 | missing | 216px 렌더·타이머 해제 실측 | 216px = 헤드리스 6/6 · 타이머 = ctx.timers(화면 해제 때 함께 해제 = 기존 계약) | — |
-| m4 | missing | 하드 링크 허용 근거 | 유닉스 판과 같은 축 · 📌 master 판정 | 위 한계 절 |
+| m4 | missing | 하드 링크 허용 근거 | 유닉스 판과 같은 축 · ✅ master 수용(master#fe364353) | 위 한계 절 |

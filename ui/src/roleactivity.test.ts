@@ -3,6 +3,7 @@
 //   ② CSS: 무조건 깜박임 제거 — 작업 중만 깜박인다 · 움직임 줄임에서도 작업 중은 구별된다
 //   ③ U-F06: main.ts 의 **실제** refreshPaneTitles·활동 패스 본문을 떼어 돌린다(가짜 DOM · 가짜 IPC · 가짜 단조 시계)
 import { describe, it, expect } from "bun:test";
+import { seatDot, seatState, seatTag } from "./seatrows"; // (tabs-sidebar 1c) paintRoleDot 의 판정 함수
 import { readFileSync } from "node:fs";
 import {
   parseDisplayActivity,
@@ -12,11 +13,13 @@ import {
   HIDDEN_DOT,
   STALE_WORKING_MS,
   activityExpiryMs,
+  DOT_CLASS,
 } from "./roleactivity";
 import { SurfaceListTransport } from "./surfacelist";
 import { roleDotColor } from "./appearance";
 import { seatPriority, annotateRoles, tidyHoles } from "./seatlayout";
 import { advanceGhostStrikes } from "./wsreconcile";
+import { decideSockPre, decidePlaceholders, homeWsOf } from "./views/judge/tick"; // (cysr-1116-s2) 3초 고리 판정(실제 순수 함수)
 import { deptLiveRoles } from "./deptprogress";
 
 declare const Bun: { Transpiler: new (o: { loader: "ts" }) => { transformSync(code: string): string } };
@@ -32,6 +35,7 @@ describe("★F-01 parseDisplayActivity — 데몬 꼴만 믿는다(빠짐·형�
     expect(parseDisplayActivity(WIRE())).toEqual({
       kind: "observation", state: "working", raw: "active", reason: "active footer", family: "claude", grammarRevision: "claude-1",
       observedAgeSecs: 0.4, lastPositiveAgeSecs: 0.4, stableAgeSecs: 5, seq: 7, epoch: "ep-1", retained: false, consecutiveRejections: 0,
+      meaning: null, source: null, programStatus: null, // 1.1.15 데몬 꼴(뜻·출처·근거 없음)도 그대로 받는다
     });
   });
   it("missing key (old daemon), the degenerate unknown form and malformed values all project Unknown", () => {
@@ -263,7 +267,7 @@ interface FakeRt {
   termHost: { scrollTop: number };
   el: Record<string, never>;
 }
-const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "refreshPaneTitles"];
+const FNS = ["collectSids", "setRoleDot", "paintRoleDot", "paintUnknownSafely", "sweepRoleDots", "projectListArrival", "pumpRoleActivity", "onVisibilityReturn", "tickWsModel", "seatAttached", "refreshPaneTitles"];
 
 function harness() {
   const mono = { t: 50_000 };
@@ -323,13 +327,19 @@ function harness() {
     //    (활동 패스·바쁨 가드·단일 렌더러)과 무관한 우리 배선(B17 옛 자리 스윕 · 새 부서 감지 M7① · 자동 정렬 · 빈 자리표 회수 · 표시 번호 · 본부 판정 ·
     //    사이드바 사용량 패널)은 무동작. 제목 문안은 원작자 대역(paneTitle)과 같은 항등(행 title 그대로)으로 둔다.
     //    ★surfaceWorking = false: 우리 판 paintRoleDot 의 자기보고 폴백(관측 '모름' → 자기보고 작업 중)은 끈다 — 이 검체는 데몬 관측 투영만 본다.
+    // (cysr-1116-s2) 고리 분리 — 판정 = 실제 views/judge/tick.ts 순수 함수 · 미룬 런타임 = 없음(늘 작업 화면 = 종전 흐름 그대로) · tickWsModel·seatAttached = 실제 main.ts 함수(같은 범위에서 연다)
+    decideSockPre, decidePlaceholders, homeWsOf, workRuntimeWanted: () => true, deferSeatRuntime: nothing, deferredRuntimes: new Map<string, unknown>(), ensureSeatRuntimes: async () => {}, DEFERRED_PER_TICK: 4,
+    tickRec: null, // (cysr-ui-slice0) 3초 고리 특성 기록기 = 꺼짐(기본) — 배선은 전부 `tickRec?.` 라 무평가
     exitedSweepArm: null, sweepScopeFor: () => null, exitedSweepTargets: () => [], settleSweep: (a: unknown) => a,
     openNewlyRegisteredDepts: async () => false, rememberRoles: nothing, arrangeWs: nothing,
     displayNoByKey: new Map<string, unknown>(), exitedPaneKeys: new Set<string>(),
+    noteSeatSize: nothing, forgetEndedSeatGroup: nothing, lastSeatRow: new Map<string, unknown>(), // (948 D5·D3) 크기 기억 대조 · 끝난 좌석 묶음 기록 — 이 검체의 축 밖
     surfaceWorking: () => false, titleColorRole: false, paneTitleText: (_sid: number, t: string): string => String(t), ruleTitleOf: () => null,
     placeholderSids: new Set<number>(), touchedPlaceholders: new Set<number>(), shouldClosePlaceholder: () => false, placeholderScreenLines: () => null,
     hqMasterSids: null, renderWsTabs: nothing,
     lastSurfacesBySocket: new Map<string, unknown>(), refreshUsageAccounts: () => Promise.resolve(), refreshNamedReporters: () => Promise.resolve(), renderSidebarUsage: nothing,
+      seatListBySock: new Map<string, unknown>(), seatGroups: {}, syncSeatGroupsFromList: () => ({ changed: false }), saveSeatGroups: nothing, refreshSeatRows: nothing, seatDot, approvalSeats: new Set<string>(), // (tabs-sidebar 2d) 옮긴 묶음 동기 = 무관(무동작)
+      // 실제 판정 함수(seatrows.seatDot) — 대역 아님 // (tabs-sidebar 조각1) 좌석 줄 재료·그리기 — 이 검체의 축과 무관(무동작)
   };
   const loaded = loadWith(FNS, deps);
   fns = loaded.fns;
@@ -515,7 +525,7 @@ describe("F-01 wire cross-pin — daemon display_activity keys and enums == UI p
 
   it("every key the daemon sends is read by the parser, and the parser reads no key the daemon does not send", () => {
     const daemon = jsonKeys(slice(RS, "pub(crate) fn wire_at("));
-    expect(daemon.length).toBe(12);
+    expect(daemon.length).toBe(15); // ★(1.1.16 · 차용 ②) + meaning · source · program_status
     expect(parserKeys()).toEqual(daemon);
   });
   it("the degenerate Unknown carries exactly the four keys the parser accepts without an identity", () => {
@@ -531,11 +541,102 @@ describe("F-01 wire cross-pin — daemon display_activity keys and enums == UI p
       state: "working", raw: "active", reason: "", family: "claude", grammar_revision: "claude-r1",
       observed_age_secs: 0.5, last_positive_age_secs: 0.5, stable_age_secs: 2, observation_seq: 7,
       display_epoch: "e1", retained: false, consecutive_rejections: 0,
+      meaning: "working = 지금 일하는 중", source: "screen", program_status: null,
     };
     const daemon = jsonKeys(slice(RS, "pub(crate) fn wire_at("));
     const obj = Object.fromEntries(daemon.map((k) => [k, vals[k]]));
     expect(Object.values(obj).includes(undefined)).toBe(false);
     const p = parseDisplayActivity(obj);
     expect(p.kind).toBe("observation");
+  });
+});
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ②) OSC 7501 프로그램 보고 — 데몬 wire_with 꼴 · done(끝났지만 안 봄) · 근거 문구.
+describe("program status (OSC 7501) overlay — parse · project · seat row", () => {
+  const PS = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    state: "done", kind: null, app: "claude-code", msg: null, title: null, progress: null, id: "", age_secs: 1.2, seen: false, records: 1, ...over,
+  });
+  const PW = (state: string, raw: string, ps: Record<string, unknown>, over: Record<string, unknown> = {}) =>
+    WIRE({ state, raw, reason: `program status: ${ps.state}`, meaning: "m", source: "program_status", program_status: ps, ...over });
+
+  it("parses the daemon overlay and keeps the evidence", () => {
+    const p = parseDisplayActivity(PW("done", "done", PS()));
+    expect(p.kind).toBe("observation");
+    if (p.kind !== "observation") return;
+    expect(p.state).toBe("done");
+    expect(p.source).toBe("program_status");
+    expect(p.programStatus).toEqual({ state: "done", kind: null, app: "claude-code", msg: null, ageSecs: 1.2, seen: false });
+  });
+  it("done projects to its own dot (not waiting, not unknown) and says 「아직 안 봄」", () => {
+    const store = new RoleActivityStore(31_000);
+    expect(store.accept("k", 1, 0, 10, PW("done", "done", PS()))).toBe("accepted");
+    const pr = projectActivity(store.get("k"), 20, 31_000);
+    expect(pr.view).toBe("done");
+    expect(pr.text).toContain("끝남 · 아직 안 봄");
+    expect(pr.text).toContain("프로그램 보고(claude-code)");
+    expect(DOT_CLASS.done).toBe("act-done");
+  });
+  it("input wait carries the program's own line (e.g. which tool waits for approval)", () => {
+    const store = new RoleActivityStore(31_000);
+    store.accept("k", 1, 0, 10, PW("waiting_for_input", "permission", PS({ state: "blocked", kind: "permission", msg: "approve Write: probe.txt" })));
+    const pr = projectActivity(store.get("k"), 20, 31_000);
+    expect(pr.view).toBe("input");
+    expect(pr.text).toContain("approve Write: probe.txt");
+  });
+  it("long program messages are clipped in the label", () => {
+    const p = parseDisplayActivity(PW("working", "active", PS({ state: "working", msg: "x".repeat(500) })));
+    expect(p.kind === "observation" && p.programStatus?.msg?.length).toBe(121);
+  });
+  it("malformed overlays are refused (Unknown), never painted", () => {
+    expect(parseDisplayActivity(PW("done", "done", PS(), { source: "elsewhere" })).kind).toBe("unknown");
+    expect(parseDisplayActivity(PW("done", "done", PS({ seen: "no" }))).kind).toBe("unknown");
+    expect(parseDisplayActivity(PW("done", "done", PS(), { program_status: null })).kind).toBe("unknown"); // 출처는 프로그램인데 근거 없음
+    expect(parseDisplayActivity(WIRE({ state: "done", raw: "done" })).kind).toBe("unknown"); // done 은 프로그램 보고에서만
+    expect(parseDisplayActivity(PW("done", "done", PS(), { meaning: 7 })).kind).toBe("unknown");
+  });
+  it("seat row: done = 대기 + 「확인」 꼬리표 · waiting = 대기(꼬리표 없음)", () => {
+    const base = { sid: 1, displayNo: 1, role: "worker", title: "t", cwd: "/a", exited: false, approvalPending: false, statusState: null, task: null, ctxPct: null, ctxSrc: "none" as const };
+    const d = { ...base, dot: "done" as const };
+    expect(seatState(d)).toBe("idle");
+    expect(seatTag(d, seatState(d))).toBe("확인");
+    const w = { ...base, dot: "waiting" as const };
+    expect(seatTag(w, seatState(w))).toBe(null);
+  });
+});
+
+// ── (cysr-1116-s2 · 독립 검증 F2 · codex 1R B1) 자리표 닫기 직전 재판정 — 실제 refreshPaneTitles 본문 행동 시험 ──────────────────
+describe("(cysr-1116-s2) 자리표 회수 — 앞 자리 closePane 을 기다리는 사이 뒤 자리에 출력이 생기면 닫지 않는다", () => {
+  const scene = (outputDuringClose: boolean) => {
+    const h = harness();
+    const ws = h.workspaces[0] as { tree: unknown };
+    ws.tree = { type: "split", dir: "row", ratio: 0.5, a: { type: "split", dir: "col", ratio: 0.5, a: { type: "pane", sid: 1 }, b: { type: "pane", sid: 2 } }, b: { type: "pane", sid: 9 } };
+    const lines = new Map<number, number>([[1, 1], [2, 1]]);
+    for (const sid of [1, 2]) (h.rt(sid, "/a.sock") as unknown as { term: { sid: number } }).term = { sid };
+    h.panes.set("/a.sock#9", { ...h.rt(1, "/a.sock"), sid: 9 } as never);
+    const closed: number[] = [];
+    Object.assign(h.scope, {
+      IS_WINDOWS: false,
+      placeholderSids: new Set([1, 2]),
+      touchedPlaceholders: new Set<number>(),
+      placeholderScreenLines: (term?: { sid: number }) => (term ? lines.get(term.sid) ?? null : null),
+      closePane: async (sid: number) => {
+        closed.push(sid);
+        if (outputDuringClose && sid === 1) lines.set(2, 12); // 앞 자리를 닫는 사이 뒤 자리 화면에 프롬프트 밖 출력
+      },
+    });
+    h.reply("/a.sock", [{ ...h.row(1, "x"), role: null }, { ...h.row(2, "x"), role: null }, h.row(9, "master")]);
+    h.reply("/b.sock", [h.row(3, "cso")]);
+    return { h, closed };
+  };
+  it("대조군: 출력이 안 생기면 두 자리 모두 닫는다", async () => {
+    const { h, closed } = scene(false);
+    await h.tick();
+    expect(closed).toEqual([1, 2]);
+  });
+  it("앞 자리 닫기를 기다리는 사이 뒤 자리에 출력 → 뒤 자리는 닫지 않고 장부에 남긴다(다음 틱 재판정)", async () => {
+    const { h, closed } = scene(true);
+    await h.tick();
+    expect(closed).toEqual([1]);
+    expect([...(h.scope.placeholderSids as Set<number>)]).toEqual([2]);
   });
 });

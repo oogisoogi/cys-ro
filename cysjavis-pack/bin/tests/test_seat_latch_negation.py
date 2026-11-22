@@ -296,6 +296,16 @@ class GatePendingFourthGrade(unittest.TestCase):
         self.assertEqual(grade, BN.LIVENESS_GATED,
                          "관문 보류 좌석이 제4 등급을 받지 못함(허위 already_alive 경로): %s" % why)
 
+    def test_case_gate_mark_yields_only_to_a_confirmed_death(self):
+        # Rust `p1_gate_mark_yields_only_to_a_confirmed_death` 와 같은 표(파리티).
+        old, young = time.time() - 3600, time.time()
+        dead = {"agent_alive": False, "seat": "empty", "created_at": old}
+        self.assertEqual(BN.node_liveness(self.gated(**dead), "cso")[0], BN.LIVENESS_ABSENT,
+                         "죽음이 확정된 좌석을 낡은 관문 표식으로 살아 있다고 봤다")
+        for name, over in (("에이전트 생존", {"agent_alive": True}), ("좌석 점유", {"seat": "occupied"}),
+                           ("갓 만든 좌석", {"created_at": young})):
+            self.assertEqual(BN.node_liveness(self.gated(**dict(dead, **over)), "cso")[0], BN.LIVENESS_GATED, name)
+
     def test_case_gate_a_null_or_missing_is_no_signal(self):
         # 구 데몬(키 부재) + 신 팩 혼재: 종전 등급 그대로여야 한다(부재 ≠ 부정).
         self.assertEqual(BN.node_liveness(self.gated(gate_pending=None), "cso")[0],

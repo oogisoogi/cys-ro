@@ -1,9 +1,12 @@
 ---
 name: voice-clone-elevenlabs-synth-qc
 description: 청크 계획을 ElevenLabs로 실제 합성하는 하위 스킬 — request stitching(previous_request_ids·prev/next_text), 잠금된 voice_settings·seed로 일관성을 강제하고, with-timestamps로 문자 정렬을 수집하며 청크 경계 음질을 QC한다. voice-clone-elevenlabs 2단계. "음성 합성 실행 / stitching 합성 / 경계 QC" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # voice-clone-elevenlabs-synth-qc
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 청크 계획을 받아 실제 오디오를 만든다. **일관성이 전부**다 — 청크마다 목소리가 튀면
 사람 손이 안 간 티가 난다. 세 가지로 잠근다: stitching, 고정 설정, 고정 seed.

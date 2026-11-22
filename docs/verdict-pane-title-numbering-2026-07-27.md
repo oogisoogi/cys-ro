@@ -222,7 +222,7 @@ bin/javis_formation.py: system — vendor 소유 — 수정본은 다음 설치 
 따라서 추가로 필요한 것은 **딱 하나, 결정 사항**이다:
 
 > **「폴더명이 특성으로 쓸 만한가」의 판정 규칙을 누가 정하는가.**
-> 예: 홈 디렉터리(`oogisoogi`)·루트·`Documents` 같은 범용 폴더명은 특성이 아니다 → role 폴백.
+> 예: 홈 디렉터리(`<사용자>`)·루트·`Documents` 같은 범용 폴더명은 특성이 아니다 → role 폴백.
 > 반대로 `channels`·`eduscan`·`research`는 그대로 특성.
 > 이건 코드가 아니라 **기준**이라 master/박사님 승인 사항으로 남긴다.
 

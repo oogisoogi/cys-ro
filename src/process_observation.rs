@@ -175,6 +175,39 @@ pub fn observe(pid: u32) -> Result<ProcessObservation, Failure> {
     }
 }
 
+/// Birth identity only (pid · parent · group · birth time · executable) — no argv read, so a
+/// process whose arguments cannot be read (zombie, exiting) is still answered. Dead = gone (ESRCH).
+pub fn identity(pid: u32) -> Result<Identity, Failure> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(Failure::InvalidPid);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        darwin::identity(pid)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux_backend::identity(pid)
+    }
+    #[cfg(windows)]
+    {
+        windows_backend::observe(pid).map(|o| o.identity)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        Err(Failure::UnsupportedPlatform)
+    }
+}
+
+/// Windows only: (creation FILETIME ticks, argv) through ONE LIMITED handle (see `windows_backend::argv_limited`).
+#[cfg(windows)]
+pub fn argv_limited(pid: u32) -> Result<(u64, Vec<Vec<u8>>), Failure> {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return Err(Failure::InvalidPid);
+    }
+    windows_backend::argv_limited(pid)
+}
+
 /// Compare with a fresh targeted observation, including executable and argv.
 pub fn recheck(expected: &ProcessObservation) -> Result<(), Failure> {
     if observe(expected.identity.pid)? == *expected {
@@ -799,6 +832,34 @@ mod windows_backend {
     pub(super) fn observe(pid: u32) -> Result<ProcessObservation, Failure> {
         let p = OwnedProcess::open(pid)?;
         observe_handle(&p, pid)
+    }
+
+    /// (creation ticks, argv) through ONE `PROCESS_QUERY_LIMITED_INFORMATION` handle (no SYNCHRONIZE) —
+    /// TICKET=cysr-1116-win-restore-1121: an elevated same-user process may refuse SYNCHRONIZE/VM_READ yet answer
+    /// ProcessCommandLineInformation, which only needs LIMITED. The creation time is read from the SAME handle
+    /// (GetProcessTimes needs only LIMITED) so the caller can match it against the enumeration (pid reuse · rule 8).
+    pub(super) fn argv_limited(pid: u32) -> Result<(u64, Vec<Vec<u8>>), Failure> {
+        // SAFETY: plain Win32 call; a null return is handled below.
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            // SAFETY: as in last_error.
+            let e = unsafe { GetLastError() };
+            return Err(if e == ERROR_INVALID_PARAMETER {
+                Failure::Dead
+            } else {
+                Failure::Unknown { stage: "OpenProcess(limited)", os_error: Some(e as i32) }
+            });
+        }
+        let p = OwnedProcess(h);
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut c, mut e, mut k, mut u) = (zero, zero, zero, zero);
+        // SAFETY: four writable FILETIME outputs on an owned handle.
+        if unsafe { GetProcessTimes(p.0, &mut c, &mut e, &mut k, &mut u) } == 0 {
+            return Err(last_error("GetProcessTimes(limited)"));
+        }
+        let birth = ((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64;
+        let wide = command_line(&p)?;
+        Ok((birth, parse_windows_command_line(&wide).into_iter().map(|a| wide_to_bytes(&a)).collect()))
     }
 }
 

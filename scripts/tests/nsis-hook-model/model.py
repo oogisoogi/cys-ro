@@ -94,6 +94,23 @@ WHAT IS MODELED / NOT MODELED
                is ignored — so I1/I3/I4 are unaffected. (Its own contract is measured for real
                under pwsh by the compile harness N11.)
 
+  not modeled — added after the 1.1.11 pin (1.1.16 · judged invariant-neutral · re-pinned in
+             the SAME commit as this note · TICKET=cysr-1116-debt-d-1119 ⑤):
+             * POSTINSTALL success branch, at the cysr alias step: run `"$INSTDIR\cys.exe"
+               daemon prime` once via nsExec::ExecToLog (cys/cysd `--version` once each to absorb
+               the first-exec OS scan; no daemon connection; always exit 0). cys/cysd are the
+               oracle-verified canonicals. ★codex 3R correction: the cysr ALIAS is NOT verified by
+               the placement transaction — its refresh (Delete + CopyFiles) may fail and leave a
+               stale or planted cysr.exe. So the alias-copy FAILURE arm calls `daemon prime
+               --skip-alias` (cysr never executed) and jumps past the plain call
+               (cys_post_prime_done); only the copy-SUCCESS arm (cys_post_alias_ok) calls the
+               plain form, and even then cys executes cysr only after proving it byte-equal to
+               cys.exe while holding a read-only-share handle (no write/delete/rename until the
+               run ends). It never renames, deletes or writes cys/cysd/cys-app, the failure
+               file, the marker or SetErrorLevel, and its result is popped and ignored, so
+               I1/I3/I4 are unaffected. (Pinned by src/update/prime.rs
+               d3_prime_is_wired_right_after_the_swap_and_as_a_daemon_subverb.)
+
 INVARIANTS (mechanical form of hook R1/R3/R4 with the honest scopes of
 NSIS-CONTRACT §9 — the model refuses to over-claim):
   I1  No terminal state loses a canonical silently:
@@ -159,7 +176,7 @@ EXPECTED_MACROS = {
 # sha256 over the sorted census the mirrors depend on: anchors/tokens + the
 # normalized BODY hashes of the modeled macros/callbacks + POSTINSTALL order
 # (see hook_guard)
-GUARD_PIN = "c63284801cb8fec77990d8b8efaddf3cef38a478dc05b4584b31ff74e2e0baf5"
+GUARD_PIN = "43be0ed0c4cc564b0c3c3fa092900524326a6e47ffcddbcc3d659e7c31217b49"
 
 
 def hook_path():

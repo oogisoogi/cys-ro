@@ -1,6 +1,6 @@
 ---
 name: harness-creator
-description: "도메인 한 문장을 검증된·비용통제된·재개가능한 풀스택 Claude 프리미티브 하네스(orchestrator skill + .claude/agents + Sub-agents + Agent Teams + Hooks + .claude/skills + 장기기억)로 변환하는 메타스킬(CYS Harness Creator). '하네스 만들어줘/구성/설계', '에이전트 팀 설계', '이 도메인 자동화', '하네스 점검·감사·확장·진화·동기화' 요청 시 사용. 후속: 재실행·수정·보완·부분재생성·이전결과개선·드리프트수정·유지보수 요청 시에도 반드시 이 스킬을 사용."
+description: 도메인 한 문장을 에이전트 팀·훅·스킬로 된 Claude 하네스로 만들고 점검·확장·진화시킨다. 「하네스 만들어 / 에이전트 팀 설계 / 이 업무 자동화」 요청 때.
 ---
 
 # Harness Creator (CYS) — 메타스킬
@@ -102,3 +102,7 @@ python3 "$TR"/validate_harness.py     <TARGET>                            # IMPL
 6. `evolution-and-memory.md` — Stage 4: Phase-7 진화 루프(피드백 라우팅·change-history·proactive·유지보수) + 2-tier 메모리(Context Preservation + RLM 교차실행 store).
 7. `testing-and-measurement.md` — I6/E2: validate 코드 카탈로그·lift 게이트(score --out→LIFT_REFUSED)·h2h(n=5 +12.5pp INCONCLUSIVE, drop-not-zero)·8 use case eval·트리거 near-miss·dry-run.
 8. `qa-guide.md` — QA 경계교차(존재확인 아님)·증분 QA·7 버그패턴·verify-before-assert·L1/L2 게이트 hook 매핑.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+"도메인 한 문장을 검증된·비용통제된·재개가능한 풀스택 Claude 프리미티브 하네스(orchestrator skill + .claude/agents + Sub-agents + Agent Teams + Hooks + .claude/skills + 장기기억)로 변환하는 메타스킬(CYS Harness Creator). '하네스 만들어줘/구성/설계', '에이전트 팀 설계', '이 도메인 자동화', '하네스 점검·감사·확장·진화·동기화' 요청 시 사용. 후속: 재실행·수정·보완·부분재생성·이전결과개선·드리프트수정·유지보수 요청 시에도 반드시 이 스킬을 사용."

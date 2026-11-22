@@ -1,6 +1,7 @@
 ---
 name: vibecoding-runbook
 description: NLC 시행령(ruler/*.md) 10종을 상황에 맞춰 라우팅하는 런북 스킬. 코드 변경 유형(coding·refactor·hotfix·migration·test-only·doc-sync·state·security·integration·release)별로 Applicability→Mandatory Context→Output Contract→규칙→Verification→Checklist→Stop Conditions 골격의 실행 런북을 assets/runbooks/에서 고른다. "이 변경 어떻게 진행 / 리팩터 런북 / 핫픽스 절차 / 마이그레이션 규칙 / 이건 rules인가 ruler인가", 또는 [[vibecoding]] 구현 단계에서 작업 유형별 시행령이 필요할 때 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-runbook

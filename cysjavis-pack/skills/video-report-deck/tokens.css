@@ -1,0 +1,55 @@
+/* 글꼴 = Pretendard v1.3.9(SIL OFL 1.1) — 팩에는 글꼴 파일을 싣지 않는다. 사용자가 fonts/ 에 받아 두면 그것을, 기기에 설치돼 있으면 그것을 쓰고,
+   둘 다 없으면 --sans 의 다음 글꼴(시스템 고딕)로 찍힌다. 받는 곳 https://github.com/orioncactus/pretendard/releases/tag/v1.3.9 */
+@font-face { font-family: "Pretendard"; font-weight: 400; src: local("Pretendard Regular"), local("Pretendard-Regular"), url("fonts/Pretendard-Regular.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 500; src: local("Pretendard Medium"), local("Pretendard-Medium"), url("fonts/Pretendard-Medium.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 600; src: local("Pretendard SemiBold"), local("Pretendard-SemiBold"), url("fonts/Pretendard-SemiBold.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 700; src: local("Pretendard Bold"), local("Pretendard-Bold"), url("fonts/Pretendard-Bold.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 800; src: local("Pretendard ExtraBold"), local("Pretendard-ExtraBold"), url("fonts/Pretendard-ExtraBold.woff2") format("woff2"); }
+@font-face { font-family: "Pretendard"; font-weight: 900; src: local("Pretendard Black"), local("Pretendard-Black"), url("fonts/Pretendard-Black.woff2") format("woff2"); }
+
+/* video-report-deck 디자인 토큰 — 1920×1080 기준(px).
+   색은 참고 영상(720p 압축본) 프레임에서 잰 관찰값을 반올림한 것. 압축으로 ±2~4 정도 어긋날 수 있다. */
+:root {
+  /* 색 */
+  --bg: #0a0c0c;          /* 바깥 바탕 */
+  --card: #070a09;        /* 무대 카드 안 */
+  --line: #262928;        /* 카드·칩 테두리 */
+  --line-2: #3a3d3c;      /* 강조 안 된 상자 테두리 */
+  --grid: rgba(255, 255, 255, .028);  /* 카드 안 모눈 */
+  --ink: #f2f3ec;         /* 본문 글자(따뜻한 흰색) */
+  --ink-2: #a9aba6;       /* 보조 글자 */
+  --mute: #5d5d5b;        /* 흐린 글자 · 비강조 막대 */
+  --ghost: #2a2d2c;       /* 아직 안 켜진 자리(뼈대 막대) */
+  --accent: #d1f426;      /* 형광 연두 강조 */
+  --accent-dim: #4f5b17;  /* 아직 안 켜진 강조(흐림 상태의 강조색) */
+  --warn: #ff6b5b;        /* 경고(참고 영상엔 거의 없음 · 우리 확장) */
+
+  /* 글꼴 */
+  --sans: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Noto Sans CJK KR", -apple-system, sans-serif;
+  --mono: "JetBrains Mono", "SF Mono", Menlo, monospace;
+
+  /* 글자 크기 위계(우리 규칙: 본문 40px 이상 · 가장 작은 글자 24px — 18px@1080 바닥에서 상향) */
+  --fs-brand: 36px;   --fw-brand: 800;
+  --fs-chip: 24px;
+  --fs-kicker: 28px;
+  --fs-title: 58px;   --fw-title: 800;
+  --fs-hero: 132px;   --fw-hero: 800;
+  --fs-item: 46px;    --fw-item: 700;
+  --fs-body: 40px;
+  --fs-label: 32px;
+  --fs-caption: 54px; --fw-caption: 800;
+  --fs-source: 24px;
+
+  /* 격자·여백 */
+  --margin-x: 64px;        /* 화면 좌우 여백 */
+  --card-top: 140px;  --card-bottom: 184px;   /* 카드 위·아래 끝(바닥에서) */
+  --pad: 76px;             /* 카드 안 여백 */
+  --grid-step: 60px;
+  --radius: 8px;
+  --progress-h: 6px;
+
+  /* 움직임 */
+  --enter-shift: 28px;     /* 등장할 때 아래에서 올라오는 거리 */
+  --dim: .22;              /* 아직 안 켜진 요소의 불투명도 */
+  --fade: .1s;             /* 장면·자막 바뀔 때 겹침 페이드(초) — 빌더 FADE 와 같은 값 */
+}

@@ -1,9 +1,11 @@
 ---
 name: heygen-avatar-render
-description: ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 아바타 영상으로 렌더하는 대표 스킬 — 오디오 자산 업로드, v3 API의 avatar_v 엔진·audio_asset_id 구동, 적격성 확인, 폴링·다운로드·립싱크 QC. "아바타 영상 / heygen 렌더 / avatar 5 / talking avatar" 트리거, 또는 youtube-video-pipeline 3단계로 발동.
+description: 나레이션 오디오를 HeyGen 아바타가 말하는 영상으로 렌더한다. 「헤이젠 / 아바타 영상 / talking avatar」 요청 때.
 ---
 
 # heygen-avatar-render
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 나레이션 오디오를 받아 말하는 아바타 영상을 만든다. 우리 파이프라인은 **오디오 우선**
 (ElevenLabs로 음성을 먼저 만든다) — HeyGen은 그 오디오로 립싱크만 한다.
@@ -22,6 +24,8 @@ description: ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 �
 - 공식 스킬 참고: `github.com/heygen-com/skills`의 `heygen-video`는 **스크립트 구동**(Video
   Agent)이라 오디오 구동 경로가 없다 — 우리는 `POST /v3/videos` + `audio_asset_id`를 직접
   쓴다. `heygen-avatar`(디지털 트윈 생성)는 아바타·음성 셋업 시 참고.
+- ⚠ 실제 사람의 디지털 트윈(얼굴·목소리)은 **그 사람의 동의 기록이 있을 때만** 만든다. 실존 인물이 하지 않은
+  말을 하는 것처럼 보이는 영상은 유튜브 AI 공개 대상이다(도움말 14328491 「real person … say or do」).
 
 ## 하위 스킬 오케스트레이션
 
@@ -49,3 +53,7 @@ audio 필드의 정확한 JSON 위치가 v3 reference(요청 본문 최상위)�
 `avatar/clip-NN.mp4`(세그먼트별, 오디오 길이와 일치) + `avatar/render-manifest.json`
 (video_id·engine·avatar_id·status). 전 클립 completed·다운로드 완료해야 상위
 `[[youtube-video-pipeline]]`가 합성 단계로 진행.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+ElevenLabs 나레이션 오디오를 HeyGen Avatar V로 말하는 아바타 영상으로 렌더하는 대표 스킬 — 오디오 자산 업로드, v3 API의 avatar_v 엔진·audio_asset_id 구동, 적격성 확인, 폴링·다운로드·립싱크 QC. "아바타 영상 / heygen 렌더 / avatar 5 / talking avatar" 트리거, 또는 youtube-video-pipeline 3단계로 발동.

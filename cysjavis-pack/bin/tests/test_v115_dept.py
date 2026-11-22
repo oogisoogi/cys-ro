@@ -728,6 +728,20 @@ class _OldCysNoResumeSaved(_FakeCys):
         return super().__call__(args, timeout)
 
 
+class _LaunchReplies(_FakeCys):
+    """launch-agent 가 지정한 rc·stderr 로 끝나는 cys 흉내(좌석 생성 0)."""
+
+    def __init__(self, rows, rc, err):
+        super().__init__(rows)
+        self.reply = (rc, "", err)
+
+    def __call__(self, args, timeout=15):
+        if args[1:2] == ["launch-agent"]:
+            self.calls.append(list(args))
+            return self.reply
+        return super().__call__(args, timeout)
+
+
 class V115r5T3BootNodeResumesSaved(A2B8BootNodeRun):
     """v115r5-t1 T3: ↻ 뒤 승계 좌석(부서장)이 저장된 대화를 잇도록 boot_node 가 --resume-saved 로 기동한다.
     VM r3: 편성 → boot_node → launch-agent 가 핀 없이 먼저 앉아 dept-1·dept-3 부서장이 새 대화(phoenix fork)."""
@@ -756,6 +770,142 @@ class V115r5T3BootNodeResumesSaved(A2B8BootNodeRun):
         self.assertNotIn("--resume-saved", launches[1], "재시도에 모르는 플래그를 또 붙였다")
         self.assertEqual([r["role"] for r in fake.rows if r["role"] == "master"], ["master"],
                          "재시도 뒤에도 부서장 좌석이 서지 않았다")
+
+    def _run_with(self, fake):
+        rows = fake.rows
+        saved = _FakeCys
+        globals()["_FakeCys"] = lambda r: fake
+        try:
+            return self._run(rows, "master", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+
+    def test_held_resume_stops_without_a_plain_launch(self):
+        """조각 1: rc 93 = 저장 대화를 지키려고 멈춤 — 플래그 없는 재시도(= 새 대화)를 하지 않고 93 을 그대로 낸다."""
+        fake = _LaunchReplies([{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                                "created": time.time() - 5}],
+                              93, "[launch-agent] --resume-saved: master 기동 중단 — 데몬이 저장 목록을 읽지 못했다\n")
+        rc, out, _ = self._run_with(fake)
+        launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+        self.assertEqual(len(launches), 1, fake.calls)
+        self.assertEqual((rc, out["result"]), (93, "resume_held"), out)
+        self.assertIn("저장 목록", out["reason"])
+
+    def test_lease_refusals_stop_as_held_without_a_plain_launch(self):
+        """seatkeep-t1(skt1 · 1.1.16 편입): cys 대화 임대 거절 — 92(작성자 살아 있음) · 93 + 임대 거절 줄(생존 판정 불가) — 은 조각 1 과
+        같이 플래그 없는 재시도(= 새 대화)를 하지 않고 끝 코드 93(EXIT_RESUME_HELD · 파괴 회수로 안 올림)으로 resume_refused 를 낸다."""
+        sid = "5e55aaaa-0000-4000-8000-000000000001"
+        for rc_c, err, why in (
+            (92, "[launch-agent] --resume-saved: master: 대화 %s — pid 12(출생 1.000002) 가 이 대화를 쓰는 중 — 띄우지 않음(같은 대화 작성자 둘 차단 · 새 대화로도 띄우지 않음)\n" % sid, "session_writer_live"),
+            (93, "[launch-agent] --resume-saved: master: 대화 %s 작성자 생존 판정 불가(lease:lock:timeout) — 띄우지 않음 · 확인: 잠시 뒤 다시\n" % sid, "session_liveness_unknown"),
+        ):
+            fake = _LaunchReplies([{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                                    "created": time.time() - 5}], rc_c, err)
+            rc, out, _ = self._run_with(fake)
+            launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+            self.assertEqual(len(launches), 1, fake.calls)
+            self.assertEqual((rc, out["result"], out["reason"]), (93, "resume_refused", why), out)
+
+    def test_profile_refusal_rc_2_is_not_mistaken_for_an_old_cys(self):
+        """조각 1: rc 2 라도 clap 의 「모르는 인자」 문구가 아니면 플래그를 빼고 다시 띄우지 않는다."""
+        fake = _LaunchReplies([{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                                "created": time.time() - 5}],
+                              2, "[launch-agent] --resume-saved: master 기동 중단 — 프로필 미관측\n")
+        rc, out, _ = self._run_with(fake)
+        launches = [c for c in fake.calls if c[1:2] == ["launch-agent"]]
+        self.assertEqual(len(launches), 1, fake.calls)
+        self.assertNotEqual(rc, 0, out)
+
+
+class _ResumeCheckReplies(_FakeCys):
+    """`cys daemon resume-check` 가 지정한 rc·stderr 로 끝나는 cys 흉내."""
+
+    def __init__(self, rows, rc, err):
+        super().__init__(rows)
+        self.reply = (rc, "", err)
+
+    def __call__(self, args, timeout=15):
+        if args[1:3] == ["daemon", "resume-check"]:
+            self.calls.append(list(args))
+            return self.reply
+        return super().__call__(args, timeout)
+
+
+class ReapLaunchChecksSavedListFirst(A2B8BootNodeRun):
+    """조각 1: reap-launch 는 저장 목록을 믿을 수 있을 때만 좌석을 회수한다(회수 뒤 93 이면 좌석만 잃는다)."""
+
+    def _worker_rows(self):
+        return [{"ref": "surface:3", "role": "worker", "pid": 333, "seat": "empty", "agent": "claude",
+                 "created": time.time() - 900}]
+
+    def _run_check(self, rc, err):
+        fake = _ResumeCheckReplies(self._worker_rows(), rc, err)
+        saved = _FakeCys
+        globals()["_FakeCys"] = lambda r: fake
+        try:
+            return self._run(fake.rows, "worker", self.env)
+        finally:
+            globals()["_FakeCys"] = saved
+
+    def _kinds(self, fake):
+        return [c[1] for c in fake.calls if c[1] in ("close-surface", "launch-agent")]
+
+    def test_unknown_saved_list_holds_before_the_reap(self):
+        for rc_c, err in ((93, "[daemon resume-check] worker: 데몬이 저장 목록을 읽지 못했다\n"),
+                          (1, "error: socket\n"),
+                          (255, "timed out"),
+                          (2, "error: unexpected argument '--role' found\n")):
+            rc, out, fake = self._run_check(rc_c, err)
+            self.assertEqual(self._kinds(fake), [], "회수·기동이 일어났다(rc=%d): %s" % (rc_c, fake.calls))
+            self.assertEqual((rc, out["result"], out["surface"]), (93, "resume_held", "surface:3"), out)
+            self.assertIn(err.strip().splitlines()[-1], out["reason"])
+
+    def test_check_runs_for_this_role_right_before_the_reap(self):
+        rc, out, fake = self._run_check(0, "")
+        names = [c[1] for c in fake.calls]
+        check = next(i for i, c in enumerate(fake.calls) if c[1:3] == ["daemon", "resume-check"])
+        self.assertEqual(fake.calls[check][3:7], ["--role", "worker", "--agent", "claude"], "launch-agent 와 같은 판정을 묻지 않는다")
+        self.assertEqual(names[check + 1], "close-surface", fake.calls)
+        self.assertEqual(self._kinds(fake), ["close-surface", "launch-agent"], fake.calls)
+
+    def test_old_cys_without_the_verb_reaps_as_before(self):
+        rc, out, fake = self._run_check(2, "error: unrecognized subcommand 'resume-check'\n\nUsage: cys daemon <COMMAND>\n")
+        self.assertEqual(self._kinds(fake), ["close-surface", "launch-agent"], fake.calls)
+
+    def test_takeover_path_is_unchanged(self):
+        rows = [{"ref": "surface:1", "role": "master", "pid": 111, "seat": "empty", "agent": None,
+                 "created": time.time() - 5}]
+        rc, out, fake = self._run(rows, "master", self.env)
+        self.assertEqual([c for c in fake.calls if c[1:2] == ["daemon"]], [], "승계 경로가 달라졌다")
+
+
+class ReviewerFallbackRespectsHeldResume(unittest.TestCase):
+    """조각 1: boot_node 93 은 대체 리뷰어로 넘어가지 않는다(대체 기동 = 새 대화)."""
+
+    def test_rc_93_is_permanent_and_no_substitute_is_booted(self):
+        import contextlib
+        import io
+        import javis_orchestra as O
+        self.assertEqual(O.classify_call_exit(93, "boot_node(r)")[0], O.EXIT_CLASS_PERMANENT)
+        booted = []
+
+        def one(role, agent, timeout=None):
+            booted.append(role)
+            cls, why = O.classify_call_exit(93, "boot_node(%s)" % role)
+            return False, 93, cls, why
+
+        class Args:
+            spawn, plan = True, False
+
+        saved = O._boot_one_node, O.reviewer_roster
+        O._boot_one_node = one
+        O.reviewer_roster = lambda: [{"role": s[0], "agent": s[1], "native": True, "reason": ""} for s in O.REVIEWER_SLOTS]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                O.cmd_boot_reviewers(Args())
+        finally:
+            O._boot_one_node, O.reviewer_roster = saved
+        self.assertEqual(booted, [s[0] for s in O.REVIEWER_SLOTS], "대체 리뷰어를 띄웠다")
 
 
 if __name__ == "__main__":

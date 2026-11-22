@@ -1,7 +1,7 @@
 //! Daemon state: surfaces (PTY sessions), health rules, process ledger.
 
 use crate::events::EventBus;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize};
 use regex::Regex;
 use serde_json::json;
 use serde_json::Value;
@@ -796,7 +796,7 @@ pub fn park_queue_for_role(
     let mut map = daemon.parked_queues.lock().unwrap();
     // ⑴ 게으른 만기 회수 — **지우지 말고 꺼낸다**(호출부가 사유를 달아 발행한다).
     //    걷이 규칙은 워치독 스윕(`governance::sweep_parked_queues`)과 **같은 함수**를 지난다(사본 0).
-    let mut expired = drain_expired_parked_locked(&mut map, now);
+    let mut expired = drain_expired_parked_locked(&mut map, now, &daemon.teams);
     // ⑵ 이 역할의 기존 배치에 **뒤에 붙인다**(시간 순서 보존). 위 걷이가 만기 항목을 이미 빼 갔으므로
     //    남은 것은 전부 살아 있다 — 만기 분기가 여기 없는 것이 정상이다(r2 #5 죽은 코드 제거).
     //    ★시각 장부(base_at)가 사라졌다: 만기는 항목별 `enqueued_at` 으로 재므로 배치에 시각을 부여할
@@ -838,6 +838,7 @@ pub fn park_queue_for_role(
 pub fn drain_expired_parked_locked(
     map: &mut HashMap<String, ParkedQueue>,
     now: f64,
+    teams: &crate::team::TeamBook,
 ) -> Vec<(String, u64, Vec<QueueEntry>)> {
     let mut out: Vec<(String, u64, Vec<QueueEntry>)> = Vec::new();
     let mut emptied: Vec<String> = Vec::new();
@@ -847,7 +848,8 @@ pub fn drain_expired_parked_locked(
         let (alive, gone): (Vec<QueueEntry>, Vec<QueueEntry>) = pq
             .entries
             .drain(..)
-            .partition(|e| now - e.enqueued_at < PARKED_QUEUE_TTL_SECS);
+            // (조각 6b · codex 1R M5) 주차 중 팀 정지 크레딧을 뺀다(없으면 0 = 종전 식 그대로).
+            .partition(|e| crate::team::parked_alive(teams, e, now));
         pq.entries = alive;
         if !gone.is_empty() {
             out.push((role.clone(), pq.from_surface, gone));
@@ -1712,6 +1714,52 @@ pub struct InjectTrack {
     /// ★(0.14.52 · S-a C7b) Writer requests that wrote at least one byte to this seat (any arm). A held partial write
     /// resumes only while this is unchanged since its hold (S4-1 "no foreign input since the loss").
     wrote: AtomicU64,
+    /// ★(cysr-queued-paste-submit) 큐 배달의 Return 을 **쓴 뒤** 제출 확인 기록 — [`SubmitCheck`]. 쓰기 = 큐 결판
+    /// (`governance::settle_queue_write` 의 WrittenSubmitted) · 소비 = watchdog 틱(`governance::recheck_queue_submits`). leaf 락.
+    submit_check: Mutex<Option<SubmitCheck>>,
+}
+
+/// ★(cysr-queued-paste-submit) 큐 배달 Return 의 **제출 확인** 기록 — Return 을 썼는데 TUI 가 먹지 않은(긴 붙여넣기 처리
+/// 지연 · 접힘 `[Pasted text #N +M lines]` 이 입력줄에 미제출로 남음) 경우의 상한 있는 재시도 재료.
+///
+/// 【왜】 큐 인계는 본문 → 400ms → Return 한 번이고 인계 순간 미제출 계수를 0 으로 둔다(`deliver_head_locked`). TUI 가 그 Return 을
+/// 먹으면 화면에는 우리 본문이 남는데 계수는 0 이라 처방 표 3행(`human_draft`)으로 읽혀 그 좌석 큐 전체가 사람 손을 기다렸고
+/// TTL 에 조용히 만료됐다(윈 dept-1 11-09 09:47 · base 10-13 00:28). 부트 경로(`javis_awaken`)만 확인·재시도가 있었다.
+#[derive(Debug, Clone)]
+pub(crate) struct SubmitCheck {
+    /// Return 을 쓴 큐 배달의 기계 본문 기록 시각([`MachineBody::at`]) — 그 뒤 새 기계 본문이 오면 이 기록은 낡았다.
+    pub(crate) body_at: Instant,
+    /// 기록을 세운 시각(= 큐 Return 을 쓴 직후) — 기록 수명 상한의 기준.
+    pub(crate) armed_at: Instant,
+    /// 마지막으로 Return 을 쓴(또는 인계한) 시각 — 재시도 간격의 기준.
+    pub(crate) last_return_at: Instant,
+    /// 다시 쓴 Return 수(0 = 아직 재시도 없음).
+    pub(crate) tries: u8,
+    /// 배달 항목의 발신 좌석(이벤트 표기).
+    pub(crate) from: Option<u64>,
+    /// 배달 항목 id(이벤트 표기 — 대조축).
+    pub(crate) entry_id: String,
+    /// 본문 대조 열쇠 — 공백을 모두 지운 **본문 전체**(세션 기록 user 레코드 대조 · 머리만 같은 다른 배달을 제출 증거로 오인하지 않는다 · codex 1R QPS-2).
+    pub(crate) needle: String,
+    /// 인계 순간(첫 바이트 전)의 좌석 세션 기록 경로와 그때 길이 — 이 뒤에 붙은 user 레코드만 이 배달의 제출 증거다. 모르면 None.
+    pub(crate) transcript: Option<(String, u64)>,
+    /// 배달 시점의 에이전트·대화 세대 — 다르면 다른 프로세스·다른 대화다(같은 pid·같은 좌석에만 다시 쓴다).
+    pub(crate) agent_epoch: u64,
+    pub(crate) conversation_epoch: u64,
+    /// ★(1.1.16 · cysr-1116-backlog · HANDOFF 1115-r2 §4-3 B) 배달 항목의 적재 출처([`QueueEntry::origin`] — 병합은 같은 출처끼리라
+    /// 머리 출처가 곧 이 배달의 출처). agy 좌석 문 재판정(`governance::agy_door_refuses_submit_retry`)이 사람 자판(`send_human`)을 가른다.
+    pub(crate) origin: String,
+    /// 배달 본문이 agy 를 가리키는 좌석 기동 줄인가(출처 `send_agent_launch` ∧ 기계 입구 낱말 검사 · 문 상태와 무관하게 기록 때 확정) —
+    /// 배달 직전 재판정(`drop_agy_door_closed` ⑵)과 같은 규칙: 문이 닫혀 있으면 어느 좌석이든 그 Return 을 다시 쓰지 않는다.
+    pub(crate) agy_launch_line: bool,
+}
+
+impl SubmitCheck {
+    /// 순수 — 본문에서 대조 열쇠를 만든다(공백 전부 제거 · **전체**). 머리만 대조하면 같은 발신자의 연속 다이제스트(머리 공통)끼리
+    /// 서로의 제출 증거가 된다(codex 1R QPS-2). 붙여넣기 본문은 큐 다이제스트 상한 안이라 길이가 유계다.
+    pub(crate) fn needle_of(body: &str) -> String {
+        body.chars().filter(|c| !c.is_whitespace()).collect()
+    }
 }
 
 /// ★(0.14.42 · 수정 2회차 F1 · 재개) 쓰지 않은(보류한) 제출 CR 의 기록 — 보류는 **버림이 아니라 미룸**이다. 창이 닫히고
@@ -1742,12 +1790,16 @@ pub(crate) struct WithheldSubmit {
     /// byte-exact: the body counted, the unwritten Return not) - the resubmission requires exactly these. `None` = a record
     /// whose Return was counted when it was handed off (the resubmission's own re-withhold): the count must then be 0.
     pub(crate) expect: Option<(u64, u64)>,
+    /// ★(1.1.16 · cysr-1116-backlog · codex 1R major 1) agy 좌석 문 재판정 문맥 — `Some(기동 줄)` = 기계 출처 큐 배달의 Return 재전송
+    /// (`queue_submit_retry`)이 보류한 기록(재제출 틱·재제출 CR 쓰기 직전에 `governance::agy_door_refuses_machine_cr` 로 다시 본다) ·
+    /// `None` = 종전 기록(문 재판정 없음 — 사람 자판 출처 재전송 포함). 재제출이 다시 보류하면 그대로 이어받는다.
+    pub(crate) agy_launch_line: Option<bool>,
 }
 
 impl WithheldSubmit {
     /// 보류 탐침이 창을 본 순간의 기록 — 두 시계 0 · 창 열림.
     pub(crate) fn new(at: Instant, body_at: Instant, from: Option<u64>) -> Self {
-        Self { at, body_at, from, seen_at: at, live_ms: 0, dialog_ms: 0, dialog_open: true, expect: None }
+        Self { at, body_at, from, seen_at: at, live_ms: 0, dialog_ms: 0, dialog_open: true, expect: None, agy_launch_line: None }
     }
 
     /// ★(R3C-1) 순수 — 틱 1회의 경과를 잰다: `seen_at` 을 `now` 로 옮기고, pause 가 아니면 `live_ms` 에 더한다.
@@ -1946,6 +1998,12 @@ impl InjectTrack {
         self.wrote.load(Ordering::Acquire)
     }
 
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 1) 마지막 기계 본문 기록을 지운다 — 사람 표지 원자 제출이 쓰는 도중 거부돼
+    /// 입력줄에 남은 글은 사람 몫이다(writer arm 이 첫 바이트 앞에서 그 본문을 「기계 본문」으로 적어 두었다 · [`Surface::restore_refused_line`]).
+    pub(crate) fn forget_body(&self) {
+        *self.last_body.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     /// ★(R3SH-1) 마지막 기계 본문 기록(없으면 None).
     pub(crate) fn last_body(&self) -> Option<MachineBody> {
         self.last_body.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -1954,6 +2012,52 @@ impl InjectTrack {
     /// ★(F1 · 재개) 보류 탐침 전용 — 보류 기록(덮어쓰기: 가장 최근 보류가 입력줄의 현재 사실이다).
     pub(crate) fn note_withheld(&self, w: WithheldSubmit) {
         *self.withheld.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
+    }
+
+    /// ★(1.1.16 · codex 2R major 1 잔여) 보류 기록 세우기 — 같은 본문(`body_at`)의 기존 기록이 agy 문 문맥(`Some`)을 갖고 있고 새 기록이
+    /// 문맥 없음(`None` — 일반 보류 탐침)이면 그 문맥을 **같은 잠금 안에서** 이어받는다(일반 Return 의 보류가 기계 큐 재전송의 agy 판정을
+    /// 지우지 않게). 새 본문(다른 `body_at`)은 이어받지 않는다 · 사람 자판 출처 재전송은 처음부터 `None` 이라 같은 본문의 `Some` 과 겹치지 않는다.
+    pub(crate) fn note_withheld_keeping_agy(&self, mut w: WithheldSubmit) {
+        let mut slot = self.withheld.lock().unwrap_or_else(|e| e.into_inner());
+        if w.agy_launch_line.is_none() {
+            if let Some(prev) = slot.as_ref().filter(|p| p.body_at == w.body_at) {
+                w.agy_launch_line = prev.agy_launch_line;
+            }
+        }
+        *slot = Some(w);
+    }
+
+    /// ★(cysr-queued-paste-submit) 큐 Return 제출 확인 기록을 세운다(덮어쓰기 — 가장 최근 큐 배달이 입력줄의 현재 사실이다).
+    pub(crate) fn arm_submit_check(&self, c: SubmitCheck) {
+        *self.submit_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+    }
+
+    /// ★(cysr-queued-paste-submit) 제출 확인 기록(없으면 None).
+    pub(crate) fn submit_check(&self) -> Option<SubmitCheck> {
+        self.submit_check.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// ★(cysr-queued-paste-submit) 그 기록(`armed_at`)이 아직 남아 있을 때만 지운다(그 사이 새 큐 배달이 기록을 바꿨으면 둔다).
+    pub(crate) fn take_submit_check_if(&self, armed_at: Instant) -> Option<SubmitCheck> {
+        let mut g = self.submit_check.lock().unwrap_or_else(|e| e.into_inner());
+        if g.as_ref().is_some_and(|c| c.armed_at == armed_at) {
+            g.take()
+        } else {
+            None
+        }
+    }
+
+    /// ★(cysr-queued-paste-submit) 그 기록(`armed_at`)이 아직 남아 있을 때만 재시도 1회를 적는다 — 적었으면 true.
+    pub(crate) fn note_submit_retry_if(&self, armed_at: Instant, at: Instant) -> bool {
+        let mut g = self.submit_check.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_mut() {
+            Some(c) if c.armed_at == armed_at => {
+                c.tries = c.tries.saturating_add(1);
+                c.last_return_at = at;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// ★(F1 · 재개) 보류 기록(없으면 None).
@@ -2094,6 +2198,21 @@ pub enum WriteReq {
         /// 같은 조건을 **쓰기 직전에** 한 번 더 볼 수 있다. 비-alt 경로는 세대 불변을 요구하지
         /// 않는 계약(스트리밍 중 주입 허용 · 기아 #1 의 수리)이라 가드를 걸지 않는다.
         guard: Option<Arc<InjectGuard>>,
+    },
+    /// ★(1.1.16 · cysr-1116-backlog · master#4f5897d7 · 조각 0.5 실측 M2-c) [`WriteReq::Inject`] 와 바이트·순서·지연이 같고, **CR 바로
+    /// 앞**에서 `refuse` 를 한 번 더 본다 — 참이면 CR 을 쓰지 않는다(Ctrl-U·본문은 이미 썼다 · 지우지도 다시 치지도 않음). 생산자 =
+    /// `refuse_on_approval` 을 실은 `clear_first` 직접 제출(사람 표지 원자 제출 = 앱 send_input 꼴) 하나. 종전 Inject 는 쓰기 전 한 번만
+    /// 봐서 쓰는 도중(Ctrl-U→CR ≈0.73~0.84초) 뜬 승인 창에 CR 까지 들어갔다(3/3). 인계 가드는 없다(그 경로의 종전 동작 = `guard: None`).
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118) 붙여넣기 **바로 앞**(Ctrl-U 정착 뒤)에도 `refuse_paste` 를 본다(검증 지적 4 — 정착 중 뜬 창에
+    /// 붙여넣기 본문이 들어갔다 · 질문 창은 그것을 「Other」 답 칸에 넣는다). 두 탐침의 처분은 같다(사람 몫 복원 · 거부 흔적 —
+    /// `handlers::approval_enter_guard`).
+    InjectRefusing {
+        text: String,
+        cr_delay_ms: u64,
+        clear_first: bool,
+        /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) 붙여넣기 **바로 앞**(Ctrl-U 정착 뒤) 재판정 — 참이면 붙여넣기·CR 0.
+        refuse_paste: SafetyProbe,
+        refuse: SafetyProbe,
     },
     /// ★B2(0.14.24) delay_ms 만큼 **먼저 기다렸다가** 그대로 쓰기 — 프로그램이 본문을 꽂은
     /// 직후 곧바로 도착한 제출 CR 을 최소 간격 뒤로 밀어내는 전용 변형이다.
@@ -2277,6 +2396,10 @@ pub struct Surface {
     pub boot_ack: Mutex<Option<BootAck>>,
     pub title: Mutex<String>,
     pub role: Mutex<Option<String>>,
+    /// (tabs-sidebar 2d · 설계 §5) 사람·master 가 `cys seat-group` 으로 옮긴 묶음 — **메모리 전용**(영속·복원 무접촉).
+    /// 바깥 None = 이 데몬 기동 뒤 아무도 정하지 않음(데몬 재시작 포함 = 앱 기록을 쓴다) · Some(None) = 사람이 **해제함**(자동 규칙) ·
+    /// Some(Some(g)) = 묶음 g. 해제와 「모름」을 갈라야 앱이 놓친 해제를 목록으로 되살린다(codex 1R ③).
+    pub group: Mutex<Option<Option<String>>>,
     pub cmd: String,
     pub cwd: String,
     pub pid: u32,
@@ -2320,6 +2443,9 @@ pub struct Surface {
     /// Serializes close preparation through removal for this incarnation only.
     /// Acquire before daemon/queue locks; EOF queue cleanup does not take this gate.
     pub close_operation: Mutex<()>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#565d7c18 P1) 조건부 닫기(`surface.close` `if_quiet`)가 `input_gate` 안에서 「닫는다」로 판정한 표식 — 그 뒤 직접 쓰기(`try_write`)는 바이트 0 거부.
+    /// 판정과 표식이 같은 `input_gate` 임계영역이고 사람 쓰기 길도 같은 게이트 안에서 이 표식을 본다 = 사람 바이트는 판정이 보거나 쓰이지 않거나 둘 중 하나. 닫기 실패면 내린다.
+    pub close_decided: AtomicBool,
     /// PTY 쓰기는 전용 writer 스레드만 수행 — async 경로는 유한 채널 try_send.
     /// 정체된 pane의 블로킹 write가 tokio 워커·watchdog을 멈추는 경로를 원천 차단한다.
     pub write_tx: crate::writer_gate::WriterSender,
@@ -2358,11 +2484,21 @@ pub struct Surface {
     pub quiesce_owner: Mutex<Option<(u32, f64, f64)>>,
     /// T2-5 에이전트 메타: launch-agent가 등록한 (agent 이름, 실행 바이너리)
     pub agent_meta: Mutex<Option<(String, String)>>,
+    /// ★agy 좌석 문(TICKET=cysr-agy-door-r6 · codex 5R blocking 3): **생성 때 확정한** 좌석 종류 — 선언 agent·cmd 가 agy 를 가리키는가
+    ///   (`cys::agy_door::seat_kind_is_agy` · 문 상태와 무관 · 낱말 검사). 자동 지시 대상 식별의 1순위 — 저장된 cmd 를 실행 자리 검사로
+    ///   다시 읽지 않는다(치환 괄호 오인). 휘발(영속 안 함 · restore 는 surface.create 로 다시 확정).
+    pub agy_kind: bool,
     /// T2-5 사망 감지 상태머신: 자식 트리에서 agent 바이너리를 처음 본 뒤 사라지면 발화
     pub agent_seen: AtomicBool,
     pub agent_exit_notified: AtomicBool,
     /// T3-13 타이핑 가드: 사람(UI) 입력의 마지막 시각 — 원격 주입 충돌 보호
     pub last_human_input: Mutex<Option<Instant>>,
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · 조각 5 S1-5) 지금 `last_human_input` 에 남은 찍기의 번호(0 = 찍기 없음) — 앱 대화 화면이
+    /// 「지금 남은 사람 입력 = 내 원자 제출」을 짝짓는 열쇠(`surface.send_text` 응답 · `org.status` 행 `human_input_stamp` = `<데몬 기동 ms>:<번호>`).
+    /// 쓰기 0 으로 끝난 원자 제출(S1-10)은 찍은 시각과 이 번호를 **앞 값으로** 되돌린다 — 그 사이 다른 찍기가 있었으면 그대로 둔다.
+    pub human_input_seq: AtomicU64,
+    /// 찍기 번호 발급기 — **줄지 않는다**(되돌림이 있어도 같은 번호를 다시 내지 않음 · codex 1R ABA).
+    pub human_input_issued: AtomicU64,
     /// ★B1(0.14.30): 이 pane 에 쓰였으나 **제출(CR)·선정리(Ctrl-U/Ctrl-C)를 아직 보지 못한**
     /// 입력 바이트 수. 큐 배달의 '입력줄 점유' 1차 축이다(화면 무의존 결정론 신호 —
     /// `governance::pending_input_step` 가 전이 규칙, `governance::input_line_state` 가 소비자).
@@ -2404,6 +2540,10 @@ pub struct Surface {
     /// 좌석이 살아 있는 동안 `master` 도 이 구조체 안에서 살아 있으므로 fd 는 유효하다(자식이 죽어도 master 는 남는다 — 그때 `tcgetpgrp` 는 실패 → V2).
     #[cfg(unix)]
     pub pty_master_fd: AtomicI32,
+    /// ★(T3 · cysr-seatkeep-t3) seatkeep 경유 좌석의 전경 질의 연결(맥 · 노브 `CYS_SEATKEEP=1`). 그때 `pty_master_fd` 는
+    /// `seat_proc::FG_VIA_LINK`(−2)이고 전경 질의는 이 연결로 간다 — `master` Mutex 를 잡지 않는 계약 그대로. 직접 PTY = None.
+    #[cfg(target_os = "macos")]
+    pub seat_link: Option<Arc<crate::seat_proc::SeatLink>>,
     /// ★(0.14.43 · R1F-IN ⓑ) 이 좌석 PTY 의 전경 프로세스 그룹이 **"엄격 일치한 에이전트 프로세스(`cmdline_matches_agent_exec`)의 그룹"** 이면 그 그룹 id, 아니면 0(unix).
     /// 단일 writer = `governance::sync_lone_key_exempt`(watchdog 틱 · 좌석마다 매 틱 — 종료 좌석·맨 셸·엄격 증거 없음·시스템 콜 실패·전경이 뿌리 셸 그룹이면 0). 틱이 엄격 일치한 자손 pid 들의 `getpgid` 집합 P 와
     /// `tcgetpgrp(pty_master_fd)` 를 비교해 `fg ∈ P` 일 때만 `fg` 를 적는다. 읽는 곳: 계수 시점의 V3 판정([`Surface::pending_input_model`] — 지금의 `tcgetpgrp` 와 같을 때만 · "면제해도 되는가"의 판정).
@@ -2457,6 +2597,9 @@ pub struct Surface {
     /// 자가 업데이트류 「잠깐 죽음」을 role 회수로 오판하지 않으려면 이 시각과 유예가 필요하다
     /// (죽음 관측 1회 = 회수 근거가 아니다).
     pub agent_dead_since: Mutex<Option<f64>>,
+    /// ★조각 1: `role.restore_released` 로 역할을 되돌린 때. 재결합 판정이 이 시각부터 나이를 다시 잰다 —
+    /// 재개가 뜨는 동안 빈 좌석으로 보여 다른 좌석이 역할을 가져가지 못하게 한다.
+    pub role_restored_at: Mutex<Option<std::time::Instant>>,
     /// T4-17 헬스 조치: 이 시각까지 queued 배달 일시정지 (직접 send는 통과)
     pub queue_paused_until: Mutex<Option<Instant>>,
     /// ★(0.14.31 · WP-5 M) **만료 큐** — TTL 을 넘긴 항목의 보존소. 활성 큐(`pending_queue`)와
@@ -2598,6 +2741,9 @@ pub struct Surface {
     /// (B2) OSC 9/99/777 알림 스캐너 carry — reader 스레드 전용(단일 스레드 접근이라 Mutex면 충분).
     /// strip 전 raw chunk를 누적해 완성 OSC 시퀀스만 추출한다(화면 렌더/strip 경로와 독립).
     pub osc_carry: Mutex<Vec<u8>>,
+    /// ★(1.1.16 · 차용 ②) OSC 7501 프로그램 상태 — 흐름 스캐너(reader 스레드 전용) + 좌석별 기록(표시 전용 · `program_status.rs`).
+    pub ps_scanner: Mutex<crate::program_status::Scanner>,
+    pub program_status: Mutex<crate::program_status::Store>,
     /// T4-4/T6-P3 능력 가드: 이 surface의 정규화된 권한 집합(write⊇read·deny-by-default).
     /// 역할 변경(claim_role)과 동기 갱신 — cysd-매개 변형 경로(send/scoped run)의 게이트 키.
     /// role과 함께 도출하되 self-declared role을 신뢰하지 않고 cysd-인증 발신 surface를 키로 쓴다.
@@ -2685,6 +2831,9 @@ pub struct Surface {
     /// 소비 = 직접 경로 울타리 판정(handlers `direct_fence_mode` 의 마지막 클로저) — 핸들러가 파서 락을 새로
     /// 잡지 않게 하는 원자 미러다. 파서 패닉 재초기화 시 fresh 파서의 false 가 들어가 원문(종전)으로 폴백한다.
     pub bracketed_paste: AtomicBool,
+    /// ★(1.1.16 · cysr-1116-s2) 화면 행 커서 미러 — [`pack_screen_cursor`](파서 세대 · 주 화면 위로 밀려난 물리 행 누적).
+    /// 단일 write path = [`mirror_screen_modes`](파서 락 임계영역 안). 소비 = surface.list `screen_cursor` → surface.attach `history_since`.
+    pub screen_cursor: AtomicU64,
     /// ★(U-10) **좌석 제4 등급** `gate_pending` — 프로세스는 살아 있으나 **첫기동 관문**
     /// (테마 → 로그인방식 → OAuth → 폴더신뢰 → 면책 → 새기능안내)에 갇혀 **입력을 받을 수
     /// 없는** 좌석. `None` = 이 축에 대해 말할 것이 없음(= 종전 판정) · `Some(_)` = 보류.
@@ -2899,6 +3048,8 @@ struct DisplayGrant {
     row_owned: bool,
     /// 좌석이 surfaces 맵에 들어가면 해제 — 그 뒤엔 되돌리지 않는다.
     armed: bool,
+    /// 입양(T4) 번호 — 실패 되돌림 때 행을 `spawn_failed` 가 아니라 `boot_orphan` 으로 되돌린다(다음 기동이 다시 입양할 수 있게 · codex T4 1R #7).
+    adopt: bool,
 }
 
 /// ★v116-num: 좌석 생성이 surfaces 맵 등록 전에 실패(`?` 반환 · panic)하면 번호를 되돌린다(설계 §3-2 ③
@@ -2925,7 +3076,7 @@ impl Drop for DisplaySpawnGuard<'_> {
                 &self.daemon.socket_path,
                 g.id,
                 now_epoch(),
-                "spawn_failed",
+                if g.adopt { "boot_orphan" } else { "spawn_failed" },
             ) {
                 eprintln!("[cysd] surface_numbers spawn_failed 기록 실패 surface:{}: {e}", g.id);
             }
@@ -3093,8 +3244,10 @@ impl Surface {
     /// raw fd 를 읽는 곳은 이 함수 하나다(계수 시점 판정과 틱의 에이전트 그룹 판정·되돌리기가 같은 읽기를 쓴다).
     #[cfg(unix)]
     pub fn foreground_pgid_now(&self) -> Option<i32> {
-        let fd = self.pty_master_fd.load(Ordering::Relaxed);
-        (fd >= 0).then(|| unsafe { libc::tcgetpgrp(fd) }).filter(|p| *p > 0)
+        #[cfg(target_os = "macos")]
+        return crate::seat_proc::foreground_pgid(&self.pty_master_fd, self.seat_link.as_deref());
+        #[cfg(not(target_os = "macos"))]
+        return crate::seat_proc::foreground_pgid(&self.pty_master_fd, None);
     }
 
     /// 지금 이 좌석 PTY 의 전경 프로세스 그룹이 **틱이 적어 둔 에이전트 그룹**이면 그 그룹 번호(unix) — [`Surface::agent_fg_pgid`] 가 0 이면 시스템 콜 없이 `None`(V2).
@@ -3185,6 +3338,30 @@ impl Surface {
             self.esc_exempt_pgid.store(0, Ordering::Relaxed);
         }
         self.set_pending_input(0);
+    }
+
+    /// ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 1) 사람 표지 원자 제출(`InjectRefusing`)이 쓰는 도중 거부됐다 — 입력줄에 남은
+    /// 글을 **사람 몫**으로 센다: 계수 = max(지금, `count`) · 사람 몫 = min(max(지금 사람 몫, `human`), 계수) · 마지막 기계 본문 기록 지움(writer arm 이 첫 바이트
+    /// 앞에서 그 본문을 기계 본문으로 적었다). 그래야 뒤따르는 기계 Return·`clear_first`·스케줄 push 가 기존 사람 초안 규칙(HumanDraft 거부 ·
+    /// 초안 보류)에 걸린다 — 종전(계수만 ≥1)은 사람 몫 0 · 마지막 기계 본문 = 그 사람 본문이라 그것들이 사람 말을 제출·삭제·이어붙였다.
+    /// 소유자 각인은 `set_pending_input` 이 세대를 올려 결측이 된다([`Surface::pending_input_owner`]). 결과 계수가 0 이면 계수를 건드리지
+    /// 않는다(codex 1R — 빈 줄에 없는 사람 본문을 만들지 않는다 · 본문 기록만 지운다).
+    /// 호출자는 `input_gate` 안에서 부른다(규약) — `pending_input` leaf 와 본문 기록 leaf 만 잡는다.
+    pub fn restore_refused_line(&self, count: u64, human: u64) {
+        let count = {
+            let mut st = self.pending_input.lock().unwrap_or_else(|e| e.into_inner());
+            let count = self.pending_input_bytes.load(Ordering::Relaxed).max(count);
+            if count > 0 {
+                st.count = count;
+                // ★(codex 2R) 덮지 않고 합친다 — 인계 뒤(Ctrl-U 정착 중 등) 들어온 사람 키가 올린 사람 몫을 지우지 않는다.
+                st.human = st.human.max(human).min(count);
+            }
+            count
+        };
+        if count > 0 {
+            self.set_pending_input(count);
+        }
+        self.inject_track.forget_body();
     }
 
     /// ★(0.14.43 · R1F-IN ⓐ) 줄이 **제출됐다고 계상**하는 큐 인계(`governance::deliver_head_locked`)가 잠정 Esc 면제 표식을 내리고 **직전 값**(면제 당시의 그룹 번호 · 없으면 0)을 돌려준다 —
@@ -3878,6 +4055,18 @@ pub fn seat_token_same_generation(token: &str, started_at: f64) -> bool {
     token.split('.').next() == Some(seat_token_generation(started_at).as_str())
 }
 
+impl Daemon {
+    /// ★T5: claim 「불일치」 갈래의 세대 판정 — 현 세대(`seat_token_same_generation` · 이 프로세스) ∨ 입양으로 이어받은 세대
+    /// (`adopted_token_gens` · 출처 = seatkeep 이 상호 확인 뒤 넘긴 토큰). 둘 다 아니면 전세대/형식 불명(조용한 체인 폴백).
+    pub fn seat_token_known_generation(&self, token: &str) -> bool {
+        seat_token_same_generation(token, self.started_at)
+            || token
+                .split('.')
+                .next()
+                .is_some_and(|g| self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).contains(g))
+    }
+}
+
 /// 워커 인스턴스 dedup: 복수 워커가 같은 역할명(→같은 todo 파일)을 공유하지 않도록,
 /// "worker" 요청에 충돌 없는 고유 역할명(worker, worker-2, worker-3 …)을 배정한다.
 /// 슬롯은 roles에 없거나 점유자가 죽은(없거나 exited) 경우 '빈' 것으로 본다 →
@@ -3890,6 +4079,18 @@ pub fn dedup_worker_role(
     is_alive: impl Fn(u64) -> bool,
     my_id: u64,
 ) -> String {
+    dedup_worker_role_avoiding(requested, roles, is_alive, my_id, |_| false)
+}
+
+/// `dedup_worker_role` + 피할 이름(`reserved` 가 참인 번호는 점유로 본다 — T4 미결 좌석 예약 · `seat_adopt::role_name_reserved`).
+/// `reserved` 는 유한 개 이름에만 참이어야 한다(모든 이름이 참이면 끝나지 않음 — 호출자 계약).
+pub fn dedup_worker_role_avoiding(
+    requested: &str,
+    roles: &HashMap<String, u64>,
+    is_alive: impl Fn(u64) -> bool,
+    my_id: u64,
+    reserved: impl Fn(&str) -> bool,
+) -> String {
     if requested != "worker" {
         return requested.to_string();
     }
@@ -3900,6 +4101,10 @@ pub fn dedup_worker_role(
         } else {
             format!("worker-{n}")
         };
+        if reserved(&name) {
+            n += 1;
+            continue;
+        }
         match roles.get(&name) {
             None => return name,                        // 미점유 → 사용
             Some(&h) if h == my_id => return name,       // 이미 내 것(재진입)
@@ -3982,6 +4187,18 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn force_parser_panic_once() {
     FORCE_PARSER_PANIC.with(|f| f.set(true));
+}
+
+/// 입양(T4) 첫 재생 중 「옛 cysd 가 이미 처리한」 앞부분 — 파서·화면 모드만 갱신한다. DSR 응답(옛 질의에 다시 답하지 않음)·화면
+/// 송출·OSC 알림·전사(중복)는 하지 않는다. 출력 시각·세대는 올리지 않는다(새 출력이 아니다).
+fn replay_screen_only(surf: &Surface, bytes: &[u8]) {
+    let mut parser = surf.parser.lock().unwrap_or_else(|e| e.into_inner());
+    let (_resp, panicked) = process_chunk_isolated(&mut parser, bytes, 0);
+    if panicked {
+        surf.parser_panics.fetch_add(1, Ordering::Relaxed);
+        eprintln!("[cysd] surface {} 입양 재생 중 vt100 파서 패닉 격리 — 화면 스냅샷 소실(이어지는 출력은 계속)", surf.id);
+    }
+    mirror_screen_modes(surf, parser.screen());
 }
 
 /// (W4) PTY 청크를 vt100 파서에 반영하되, 파서 내부 인덱스 패닉을 격리한다.
@@ -4197,6 +4414,17 @@ mod dedup_tests {
         // 자기 자신이 이미 'worker'를 보유하면 같은 이름 반환(재진입 idempotent)
         let r = roles(&[("worker", 7)]);
         assert_eq!(dedup_worker_role("worker", &r, |_| true, 7), "worker");
+    }
+
+    #[test]
+    fn dedup_avoids_reserved_names() {
+        // T4 미결 좌석 예약(독립 검증 차단): 예약된 이름은 비어 있어도 점유로 본다 — worker 살아 있음 · worker-2 예약 → worker-3.
+        let r = roles(&[("worker", 1)]);
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |n| n == "worker-2"), "worker-3");
+        // 첫 이름이 예약이어도 건너뜀 · 예약 없음 = 종전과 같음 · worker 아닌 요청 = 그대로
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &roles(&[]), |_| true, 9, |n| n == "worker"), "worker-2");
+        assert_eq!(crate::state::dedup_worker_role_avoiding("worker", &r, |_| true, 9, |_| false), dedup_worker_role("worker", &r, |_| true, 9));
+        assert_eq!(crate::state::dedup_worker_role_avoiding("seatr", &r, |_| true, 9, |_| true), "seatr");
     }
 
     // ---- (E-b) live_worker_count ----
@@ -4670,6 +4898,9 @@ pub struct Daemon {
     pub ledger: Mutex<HashMap<u32, LedgerEntry>>,
     /// 역할 레지스트리: role → surface_id (launch-agent가 등록, --to <role> 주소 해석에 사용)
     pub roles: Mutex<HashMap<String, u64>>,
+    /// ★조각 1: 에이전트 사망 유예로 거둔 역할 → 거둔 좌석(역할당 한 좌석 · 메모리 전용 · 리프 락).
+    /// 그 역할이나 그 좌석이 다시 역할을 쥐는 순간 [`Daemon::note_role_held`] 가 지운다.
+    pub released_roles: Mutex<HashMap<String, u64>>,
     /// ★불사의 예외(W2a): 의도적으로 닫힌(surface.close 경유) 역할의 묘비 집합.
     /// close_surface가 role 보유 surface를 닫을 때 추가하고, 역할이 명시적으로 재기동
     /// (launch-agent/claim_role로 role 등록)되면 제거한다("살아있는 역할=묘비 아님" 불변식).
@@ -4695,6 +4926,13 @@ pub struct Daemon {
     /// 잡는다(락 순서: topology_write → surfaces → 좌석 필드). 다른 곳에서 잡지 않는다.
     /// static 이 아니라 데몬 필드인 이유: 운영 데몬은 하나라 전역과 같고, 검체의 격리 데몬끼리는 줄 세우지 않는다.
     pub topology_write: Mutex<()>,
+    /// ★조각 1: topology.json 을 읽지 못해 저장을 건너뛴 변경이 남아 있다. 저장이 성공하면 내려간다.
+    /// watchdog 틱과 정상 종료 직전이 이 값을 보고 다시 저장한다(`persist_topology_if_dirty`).
+    pub topology_dirty: AtomicBool,
+    /// ★조각 1: `Some` = 시작 때 topology.json 을 읽지 못해 디스크 묘비를 아직 모른다. 안의 집합은 그동안 메모리에서
+    /// 해제한 역할이다 — 읽히게 된 첫 저장이 (디스크 − 이 집합) 을 메모리에 합치고 `None` 으로 내린다.
+    /// 락 순서: `tombstones` → 이 락(해제 기록과 합치기가 어긋나지 않게 둘을 함께 쥔다).
+    pub tombstones_unread: Mutex<Option<std::collections::HashSet<String>>>,
     /// 적대검증 벡터-9 방어심화: master role이 현재 보유 surface로 (재)claim된 epoch초.
     /// master surface가 죽는 윈도우에 다른 노드가 claim_role("master")로 합법 승계 → 즉시
     /// approval.sign으로 위험명령을 정당 서명할 수 있다. 이 값으로 갓 승계한 master의 서명을
@@ -4703,6 +4941,10 @@ pub struct Daemon {
     /// 암호학적으로 완전 구분 불가 — 이건 윈도우 축소·탐지(방어심화)이지 암호보증이 아니다.
     pub master_claimed_at: Mutex<Option<f64>>,
     pub feed_items: Mutex<Vec<FeedItem>>,
+    /// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · S4-4 · codex 1R blocking ①) 데몬 감지 승인 항목의 **감지 때** 창 지문(request_id → 16자).
+    /// feed.list 가 이 값을 싣고 feed.reply 가 키 직전 지금 창과 대조한다 — 같은 좌석의 창이 바뀌면(옛 항목 · 새 창) 대조가 어긋나 키 0.
+    /// 대기가 아닌 항목 것은 새 항목을 묶을 때 걷는다. 데몬 재시작 뒤 복원된 옛 항목 = 칸 없음(지문 없음 = 직접 허락 표지 없음).
+    pub approval_fps: Mutex<HashMap<String, String>>,
     pub feed_waiters: Mutex<HashMap<String, tokio::sync::oneshot::Sender<String>>>,
     /// ★GUI 오퍼레이터 승인(오너 2026-07-15): 기동 시 재발급되는 오퍼레이터 토큰 —
     /// state_dir의 `operator.token`(unix 0600) 파일과 동일 값. feed.reply가 이 값과 일치하는
@@ -4815,6 +5057,10 @@ pub struct Daemon {
     /// Requests an earlier daemon run left `writing` without a terminal (restore as PartialUnknown).
     pub writer_inconclusive: Mutex<Vec<crate::agent_write::Inconclusive>>,
     pub started_at: f64,
+    /// ★T5(좌석 토큰 이음 · TICKET=cysr-1116-seatkeep-1119): 입양으로 이어받은 좌석 토큰의 세대 접두(`{시작 시각 hex}-{cysd pid hex}`) 집합.
+    /// claim 의 「불일치」 갈래에서 현 세대와 같이 「알려진 세대」로 본다(같은 세대 남의 토큰 = 시끄러운 거절). 무영속 · 접두만(비밀 아님) ·
+    /// 좌석이 끝나도 빼지 않는다(그 세대의 다른 좌석이 살 수 있고, 빼면 같은 세대 위조가 조용한 폴백으로 바뀐다).
+    pub adopted_token_gens: Mutex<std::collections::HashSet<String>>,
     /// ★v116-pack(R-B1 P2-b): 이 데몬의 콜드부트 자동 복원 단계(`crate::AUTO_RESTORE_*` · writer = main.rs 단독).
     /// org.status `daemon.auto_restore` 로 노출 — 편성이 복원과 같은 순간 좌석을 세우지 않게 기다리는 근거.
     pub auto_restore_phase: AtomicU8,
@@ -4910,6 +5156,8 @@ pub struct Daemon {
     /// (밖에서 하면 id 5 와 id 1004 가 순서를 바꿔 할당돼 정상 경로에서 I1 보호가 오발한다).
     /// surfaces·roles 락을 쥔 채로 이 락을 잡지 않는다 · 이 락 안에서 DB·다른 락 0.
     pub display_alloc: Mutex<DisplayAlloc>,
+    /// (조각 6b · TICKET=cysr-1116-s6-1119) 팀별 기계 장치 장부(정지 팀 · 마스터 큐 꼬리표 · 보고 시각) — 메모리 전용 · 말단 락.
+    pub teams: crate::team::TeamBook,
 }
 
 /// (B3 · §3-3) 진행 중인 부트 런의 관측 표. **데몬 인메모리**다 — 영속 소유권은 스풀 인텐트
@@ -5126,6 +5374,64 @@ pub(crate) fn proc_brief(pid: u32) -> Option<ProcBrief> {
         libc::proc_pidpath(cpid, path.as_mut_ptr() as *mut libc::c_void, path.len() as u32) > 0
     };
     decide_brief(bsd, pidpath_ok, || procargs2_ok(cpid))
+}
+
+// ▼ (tabs-sidebar 948 D4-b · master#8258a495) fix/1115-caller-check(950) src/bin/cysd/caller_class.rs 의 parent_any_user·proc_stat_fields 와 **같은 구현**(글자 그대로 옮김 ·
+//   나중 병합 때 그 모듈 하나로 합치면 된다 · 원작자 병합 때 볼 것 = HANDOFF).
+/// 다른 사용자(root `login`·launchd) 프로세스도 읽히는 부모 판독. 판독 실패 = None.
+#[cfg(target_os = "macos")]
+pub(crate) fn parent_any_user(pid: u32) -> Option<u32> {
+    // <sys/proc_info.h> struct proc_bsdshortinfo (64 바이트) — libc 크레이트에 정의가 없어 여기서 둔다.
+    #[repr(C)]
+    struct ProcBsdShortInfo {
+        pbsi_pid: u32,
+        pbsi_ppid: u32,
+        pbsi_pgid: u32,
+        pbsi_status: u32,
+        pbsi_comm: [u8; 16],
+        pbsi_flags: u32,
+        pbsi_uid: u32,
+        pbsi_gid: u32,
+        pbsi_ruid: u32,
+        pbsi_rgid: u32,
+        pbsi_svuid: u32,
+        pbsi_svgid: u32,
+        pbsi_rfu: u32,
+    }
+    const PROC_PIDT_SHORTBSDINFO: libc::c_int = 13;
+    let cpid = pid as libc::c_int;
+    if cpid <= 0 {
+        return None;
+    }
+    // SAFETY: 정수·바이트 배열뿐인 repr(C) 구조라 0 비트 패턴이 유효하다. 커널은 넘긴 크기 이하만 쓴다.
+    unsafe {
+        let mut info: ProcBsdShortInfo = std::mem::zeroed();
+        let size = std::mem::size_of::<ProcBsdShortInfo>() as libc::c_int;
+        let n = libc::proc_pidinfo(
+            cpid,
+            PROC_PIDT_SHORTBSDINFO,
+            0,
+            &mut info as *mut ProcBsdShortInfo as *mut libc::c_void,
+            size,
+        );
+        (n == size && info.pbsi_pid == pid).then_some(info.pbsi_ppid)
+    }
+}
+
+/// Linux — `/proc/<pid>/stat` 의 4번째 칸(ppid). 판독 실패 = None.
+#[cfg(target_os = "linux")]
+pub(crate) fn parent_any_user(pid: u32) -> Option<u32> {
+    proc_stat_fields(pid).and_then(|f| f.first().and_then(|s| s.parse().ok()))
+}
+
+/// Linux `/proc/<pid>/stat` 에서 `)` 뒤 칸들(state 다음부터: [ppid, pgrp, session, tty_nr, …]).
+#[cfg(target_os = "linux")]
+fn proc_stat_fields(pid: u32) -> Option<Vec<String>> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &s[s.rfind(')')? + 1..];
+    let mut it = rest.split_whitespace();
+    it.next()?; // state
+    Some(it.map(str::to_string).collect())
 }
 
 /// ③ KERN_PROCARGS2 폴백(bsd=Some ∧ pidpath 실패일 때만 호출된다) — 크기 조회 뒤 **커널이 알려준
@@ -6538,6 +6844,65 @@ fn wal_write_verdict(
 }
 
 impl Daemon {
+    /// 역할 묘비 해제의 단일 입구. 디스크 묘비를 아직 못 읽은 동안에는 해제 의도를 남겨, 나중에 합칠 때 되살아나지 않게 한다.
+    /// ★조각 1: `role` 을 `sid` 가 쥐었다 — 그 역할의 거둔 표시와 그 좌석의 옛 거둔 표시는 무효다. `roles` 에 넣는 모든 곳이 부른다.
+    pub fn note_role_held(&self, role: &str, sid: u64) {
+        self.released_roles.lock().unwrap().retain(|r, s| r != role && *s != sid);
+    }
+
+    /// (1.1.16 · TICKET=cysr-1116-s5-1119 · master#fe289e63) 멱등 재반환(`surface.create` idempotency_key)된 **역할 없는** 좌석에 요청 역할을 다시 단다 —
+    /// 에이전트 죽음 유예(60초) 뒤 `role.released` 로 딱지가 내려간 좌석을 120초 안 다시 기동하면 같은 좌석이 되살아나는데 종전엔 역할이 0 이었다(마스터 0).
+    /// 생성 경로(`create_surface_with_env` 의 역할 공개 블록)와 같은 규약 — 락 순서 surfaces → roles → surface.role · worker 는 고유 이름 · caps · 거둔 역할 장부 ·
+    /// 묘비 해제 · master 쿨다운 스탬프 · 위상 영속. 이미 역할이 있으면 아무것도 안 하고 None.
+    pub fn reattach_role_on_reuse(self: &Arc<Self>, surface: &Arc<Surface>, role: &str) -> Option<String> {
+        let final_role = {
+            let surfaces = self.surfaces.lock().unwrap();
+            let mut roles = self.roles.lock().unwrap();
+            let mut srole = surface.role.lock().unwrap();
+            // (master#c78fa28f F1) 「되살리러 왔다」를 회수 시계에 알린다 — 역할이 아직 있어도(사망 유예 안 재반환) 시계를 비워, 새 에이전트가 보이기 전
+            //   watchdog 틱이 역할을 거두지 못하게 한다(다음 틱이 죽음을 다시 보면 유예를 새로 시작). roles·surface.role 잠금 안 = 회수 쪽 재판정과 직렬.
+            // 뮤턴트 S5R-NODEADRESET(시계 안 비움) — 시험 빌드에서만.
+            if !(cfg!(test) && std::env::var("CYS_S5R_MUTANT").as_deref() == Ok("NODEADRESET")) {
+                *surface.agent_dead_since.lock().unwrap() = None;
+            }
+            if srole.is_some() {
+                return None;
+            }
+            let final_role = dedup_worker_role(
+                role,
+                &roles,
+                |h| surfaces.get(&h).map(|s| !s.exited.load(Ordering::Relaxed)).unwrap_or(false),
+                surface.id,
+            );
+            *srole = Some(final_role.clone());
+            *surface.caps.lock().unwrap() = crate::caps::Caps::for_role(Some(final_role.as_str()));
+            roles.insert(final_role.clone(), surface.id);
+            final_role
+        };
+        self.note_role_held(&final_role, surface.id);
+        self.caller_gen.fetch_add(1, Ordering::Relaxed);
+        self.remove_tombstone(&final_role);
+        if final_role == "master" {
+            *self.master_claimed_at.lock().unwrap() = Some(now_epoch());
+        }
+        crate::governance::persist_topology(self);
+        self.bus.publish(
+            "role.reattached",
+            "surface",
+            Some(surface.id),
+            json!({"role": final_role, "surface_ref": cys::surface_ref(surface.id), "path": "surface.create(idempotent_reuse)"}),
+        );
+        Some(final_role)
+    }
+
+    pub fn remove_tombstone(&self, role: &str) {
+        let mut tombstones = self.tombstones.lock().unwrap();
+        tombstones.remove(role);
+        if let Some(removed) = self.tombstones_unread.lock().unwrap().as_mut() {
+            removed.insert(role.to_string());
+        }
+    }
+
     pub fn new(socket_path: PathBuf) -> Arc<Self> {
         let dir = state_dir(&socket_path);
         let _ = std::fs::create_dir_all(&dir);
@@ -6791,6 +7156,9 @@ impl Daemon {
         //   전용 동기 연결로(설계 §3-2 부팅 행). 경보는 이벤트 버스가 생긴 뒤(아래) 발행한다.
         let numbers_boot_at = now_epoch();
         let numbers_boot = crate::recall::surface_numbers_boot(&socket_path, numbers_boot_at);
+        // ★조각 1: 묘비·rev·직전 영속본·「못 읽었는가」는 **같은 한 번의 읽기**에서 나온다(갈리면 rev 가 뒤로 간다).
+        let start_tombstones = crate::governance::load_start_tombstones(&socket_path);
+        let isolated_topology = start_tombstones.isolated.clone();
         let daemon = Arc::new(Daemon {
             receipt_registry: Arc::new(crate::rpc_receipt::ReceiptRegistry::default()),
             surfaces: Mutex::new(HashMap::new()),
@@ -6826,25 +7194,22 @@ impl Daemon {
             create_caller: Mutex::new(HashMap::new()),
             ledger: Mutex::new(HashMap::new()),
             roles: Mutex::new(HashMap::new()),
+            released_roles: Mutex::new(HashMap::new()),
             // ★W2a 콜드부트 생존: topology.json에 영속된 묘비를 기동 시 로드(구 topology=빈 집합).
-            tombstones: Mutex::new(crate::governance::load_tombstones_from_disk(&socket_path)),
+            tombstones: Mutex::new(start_tombstones.tombstones),
+            tombstones_unread: Mutex::new(start_tombstones.unreadable.then(std::collections::HashSet::new)),
             dept_tombstones: Mutex::new(crate::governance::load_dept_tombstones_from_disk(
                 &socket_path,
             )),
             // ★W2/A-S1: rev 를 disk topology 에서 시드(재시작 넘어 단조성 유지)·직전 영속본=시드 묘비.
-            tombstones_rev: std::sync::atomic::AtomicU64::new(
-                crate::governance::load_tombstones_rev_from_disk(&socket_path),
-            ),
-            last_persisted_tombstones: Mutex::new({
-                let mut v: Vec<String> =
-                    crate::governance::load_tombstones_from_disk(&socket_path).into_iter().collect();
-                v.sort();
-                v
-            }),
+            tombstones_rev: std::sync::atomic::AtomicU64::new(start_tombstones.rev),
+            last_persisted_tombstones: Mutex::new(start_tombstones.last_persisted),
             topology_write: Mutex::new(()),
+            topology_dirty: AtomicBool::new(false),
             // 벡터-9 방어심화: 기동 시 master 미승계 → None (첫 claim_role("master")에서 기록).
             master_claimed_at: Mutex::new(None),
             feed_items: Mutex::new(restored),
+            approval_fps: Mutex::new(HashMap::new()),
             feed_waiters: Mutex::new(HashMap::new()),
             operator_token,
             feed_persist_lock: Mutex::new(()),
@@ -6872,6 +7237,7 @@ impl Daemon {
             writer_journal: Mutex::new(None),
             writer_inconclusive: Mutex::new(Vec::new()),
             started_at: now_epoch(),
+            adopted_token_gens: Mutex::new(std::collections::HashSet::new()),
             auto_restore_phase: AtomicU8::new(crate::AUTO_RESTORE_OFF),
             started_instant: Instant::now(),
             consumption: Mutex::new(Consumption::default()),
@@ -6898,13 +7264,25 @@ impl Daemon {
             boot_fenced: Mutex::new(Vec::new()),
             // ★(0.14.31 · WP-3 B) enabled 는 alert_route::spawn 이 실제로 태스크를 열 때만 true.
             alert_route: Mutex::new(Default::default()),
+            teams: Default::default(),
         });
+        // ★조각 1: 시작 때 손상본을 옮겼으면 사람에게 알린다(저장 핀도 함께 빠졌을 수 있다).
+        if let Some(name) = isolated_topology {
+            daemon.push_feed_notification(
+                "error",
+                "좌석 기록 손상",
+                &format!("저장된 좌석 기록이 손상되어 따로 보관했다. 이전 대화를 자동으로 잇지 못할 수 있다 ({name})"),
+                None,
+            );
+        }
         // 재시작에도 오늘 소비/비용/모델믹스/스파크라인 보존 — 최근 12h usage_records 리플레이.
         crate::analytics::seed_consumption(&daemon);
         // ★v116-num: 부팅 경보(seed_failed · 고아 UPDATE 실패 write_io) — 버스가 선 뒤 · 종류별 1회.
         for (kind, error) in numbers_boot.alarms {
             daemon.numbers_alarm(kind, None, Some(&error));
         }
+        // (조각 6b · 검증 m4) 앞 실행의 팀 정지는 되살리지 않는다 — 있었으면 사건 `team.pause_lost` 1건(버스가 선 뒤).
+        crate::team::announce_lost_pauses(&daemon);
         daemon
     }
 
@@ -6952,7 +7330,34 @@ impl Daemon {
         if let Some(kind) = alarm {
             self.numbers_alarm(kind, Some(id), None);
         }
-        DisplayGrant { id, display_no, prev, row_owned: true, armed: true }
+        DisplayGrant { id, display_no, prev, row_owned: true, armed: true, adopt: false }
+    }
+
+    /// 입양(T4): 살아 있는 좌석의 내부 번호·보이는 번호를 그대로 되찾는다 — 내부 번호 할당기가 그 번호를 다시 주지 않게 올리고(시드는
+    /// 대응표 최대값이라 보통 이미 위), 보이는 번호는 그 칸이 이 좌석이었거나(부팅이 Closed 로 둠) 비어 있을 때만 Live 로 되찾는다.
+    /// 다른 좌석이 그 사이 가져갔으면 번호 없음(「—」) + 경보 — 같은 번호 두 좌석을 만들지 않는다.
+    fn adopt_display(&self, id: u64, display_no: Option<u16>) -> DisplayGrant {
+        let mut a = self.display_alloc.lock().unwrap_or_else(|p| p.into_inner());
+        self.next_id.fetch_max(id + 1, Ordering::SeqCst);
+        let mut taken = false;
+        let (n, prev) = match display_no.filter(|n| (*n as usize) < a.holders.len()) {
+            Some(n) => {
+                let slot = &mut a.holders[n as usize];
+                match slot {
+                    Some(h) if h.surface_id != id && h.state == HolderState::Live => {
+                        taken = true;
+                        (None, None)
+                    }
+                    _ => (Some(n), std::mem::replace(slot, Some(Holder { surface_id: id, state: HolderState::Live }))),
+                }
+            }
+            None => (None, None),
+        };
+        drop(a);
+        if taken {
+            self.numbers_alarm("adopt_display_taken", Some(id), None);
+        }
+        DisplayGrant { id, display_no: n, prev, row_owned: true, armed: true, adopt: true }
     }
 
     /// ★v116-num: 좌석 닫힘을 할당기·대응표에 반영(설계 §3-2 ③ 닫기 행) — surfaces 락을 푼 **뒤** 호출.
@@ -7033,6 +7438,22 @@ impl Daemon {
             wait: false,
         };
         self.feed_items.lock().unwrap().push(item.clone());
+        // ★1.1.16(S4-4 · codex 1R blocking ①) 승인 감지 항목은 지금(감지 때) 창 지문을 묶는다(항목 잠금을 놓은 뒤 · 좌석 파서 잠금은 짧게).
+        if kind == "approval" {
+            if let Some(fp) = surface_id.and_then(|sid| self.get_surface(sid)).and_then(|s| crate::governance::approval_fingerprint_now(&s)) {
+                let pending: std::collections::HashSet<String> = self
+                    .feed_items
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|i| i.status == "pending")
+                    .map(|i| i.request_id.clone())
+                    .collect();
+                let mut fps = self.approval_fps.lock().unwrap();
+                fps.retain(|rid, _| pending.contains(rid));
+                fps.insert(request_id.clone(), fp);
+            }
+        }
         self.persist_feed_item(&item);
         self.bus.publish(
             "feed.item.created",
@@ -7710,20 +8131,61 @@ impl Daemon {
         //   (= 이 티켓이 고치는 결함 그 자체의 축소판).
         agent: Option<String>,
     ) -> Result<Arc<Surface>, String> {
+        self.create_surface_core(cwd, cmd, title, role, rows, cols, env, claude_config_dir_override, agent, None)
+    }
+
+    /// 좌석 생성 본체. `adopt` = None 이면 위 `create_surface_with_env` 와 같다(새 자식 기동). Some 이면 **입양**(T4 · `seat_adopt`):
+    /// 살아 있는 seatkeep 에 이미 붙은 손잡이로 같은 번호의 좌석을 다시 등록한다 — 번호·약속은 좌석 기록에서, 자식은 띄우지 않고,
+    /// 좌석 토큰은 없음(T5 전 · 무토큰 좌석과 같은 체인 폴백) · 그 밖(쓰기 스레드·맵·역할·이벤트·읽기 스레드)은 새 좌석과 같은 길.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn create_surface_core(
+        self: &Arc<Self>,
+        cwd: Option<String>,
+        cmd: Option<String>,
+        title: Option<String>,
+        role: Option<String>,
+        rows: u16,
+        cols: u16,
+        env: &[(String, String)],
+        claude_config_dir_override: Option<String>,
+        agent: Option<String>,
+        adopt: Option<crate::seat_adopt::AdoptSeat>,
+    ) -> Result<Arc<Surface>, String> {
+        let (adopt_rec, adopt_spawned, mut adopt_token) = match adopt {
+            Some(a) => (Some(a.rec), Some(a.spawned), a.token),
+            None => (None, None, None),
+        };
         // ★v116-num: 내부 번호 + 보이는 번호(할당기 락 안 · 메모리만) → 대응표 행 INSERT(락 밖 · 동기 ·
         //   **PTY 를 열기 전** — 자식이 env 로 내부 번호를 받기 전에 기록이 있어야 X-10 이 닫힌다 · 설계 §3-2 ①②).
         //   쓰기가 실패해도 좌석은 만든다(4군 ③) — 경보만.
         // 아래 `?` 반환(PTY 열기·spawn 실패)·panic 이면 번호를 이전 주인으로 되돌리고 행을 spawn_failed 로
         // 닫는다 — guard 는 INSERT **전에** 세운다(INSERT 안의 panic 도 덮게 · Fable code-1R LOW-3).
-        let mut spawn_guard = DisplaySpawnGuard { daemon: self, grant: self.allocate_display() };
+        let mut spawn_guard = DisplaySpawnGuard {
+            daemon: self,
+            grant: match &adopt_rec {
+                Some(r) => self.adopt_display(r.surface_id, r.display_no),
+                None => self.allocate_display(),
+            },
+        };
         let id = spawn_guard.grant.id;
-        match crate::recall::surface_numbers_insert(
-            &self.socket_path,
-            id,
-            spawn_guard.grant.display_no,
-            now_epoch(),
-        ) {
+        match match &adopt_rec {
+            // 입양: 행은 이미 있다(부팅이 boot_orphan 으로 닫음) — 그 행을 다시 연다.
+            Some(r) => crate::recall::surface_numbers_reopen(&self.socket_path, id, spawn_guard.grant.display_no, r.created_at),
+            None => crate::recall::surface_numbers_insert(
+                &self.socket_path,
+                id,
+                spawn_guard.grant.display_no,
+                now_epoch(),
+            ),
+        } {
             Ok(()) => {}
+            // 입양(T4 · codex 2R): 행이 boot_orphan 이 아니다(열린 행·다른 닫힘) = 이 번호를 지금 다른 무엇이 쥐고 있을 수 있다 — 입양하지 않는다
+            // (호출자 = 미결 예약 · 행은 건드리지 않음 · 번호는 guard 가 되돌림).
+            Err(crate::recall::NumbersWriteErr::PkConflict(e)) if adopt_rec.is_some() => {
+                spawn_guard.grant.row_owned = false;
+                self.numbers_alarm("pk_conflict", Some(id), Some(&e));
+                return Err(format!("입양: 대응표 행 충돌 — {e}"));
+            }
             Err(crate::recall::NumbersWriteErr::PkConflict(e)) => {
                 spawn_guard.grant.row_owned = false;
                 self.numbers_alarm("pk_conflict", Some(id), Some(&e));
@@ -7740,17 +8202,20 @@ impl Daemon {
         let resolved_config_dir = claude_config_dir_override
             .clone()
             .unwrap_or_else(|| daemon_resolved.clone());
-        let config_dir_trusted =
-            claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved);
-        let pty = native_pty_system();
-        let pair = pty
-            .openpty(PtySize {
+        let config_dir_trusted = match &adopt_rec {
+            Some(r) => r.config_dir_trusted,
+            None => claude_config_dir_override.is_none() && caller_env_keeps_config_dir(env, &daemon_resolved),
+        };
+        // 좌석 프로세스 손잡이(T3) — PTY 열기는 `seat_proc` 한 곳에서. 입양 = 이미 붙은 손잡이(열지 않음).
+        let opened = match adopt_spawned {
+            Some(_) => None,
+            None => Some(crate::seat_proc::open(self, PtySize {
                 rows,
                 cols,
                 pixel_width: 0,
                 pixel_height: 0,
-            })
-            .map_err(|e| map_pty_open_error(e.as_ref()))?;
+            })?),
+        };
 
         let shell = default_shell();
         let mut builder = CommandBuilder::new(&shell);
@@ -7858,11 +8323,18 @@ impl Daemon {
         for (k, v) in env {
             builder.env(k, v);
         }
+        // ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이 도장 — 호출자 env(agents.json env 맵 등) **뒤**에 덮어 좌석 값이 데몬 값과 갈리지 않게.
+        //   ★진단 표지일 뿐 판정 재료가 아니다(codex 2R 1번 — 명령 앞 export 로 위조 가능) · 판정 = RPC `system.boot_fleet`. full 기본도 이 2개만큼 1.1.15 와 env 가 다르다.
+        let (fleet, _) = crate::knobs::boot_fleet();
+        builder.env(cys::ENV_BOOT_FLEET, fleet);
+        builder.env(cys::ENV_BOOT_FLEET_DAEMON, fleet);
         // ★dbg-D2 R12: 좌석 프로세스 exec **전** 프로필 배선(스킬 심링크·appbuild 게이트 훅) — 이
         //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
         //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
-        wire_seat_profile_before_exec(self, &builder, id, env);
+        if adopt_rec.is_none() {
+            wire_seat_profile_before_exec(self, &builder, id, env);
+        }
         // ★(0.14.41 · U18) 작업 폴더 읽기 관측 — **맥 한정 · 역할 좌석만 · 스폰 동작 불변**.
         // · 자리: 호출자 env 오버레이 **뒤**(호출자·상속 env 가 이 키를 위조·잔존시키지 못하게 먼저
         //   걷는다 — 부서 데몬이 막힌 좌석 안에서 떴다면 그 env 를 물려받았을 수 있다), 스폰 **앞**
@@ -7896,7 +8368,20 @@ impl Daemon {
         // · 실패 = 무토큰 스폰 + 경고(operator_token 선례 — 스폰 중단 금지: 전 좌석 생성 사망
         //   벡터 차단, 치명위험 ④). 무토큰 pane 은 claim 시 체인 폴백으로 종전과 동일 동작.
         // · 롤백: CYS_BOOT_GATES=0(스폰 시 판독 — U-20 선례 lib.rs 와 동형) → 미주입 = 완전 레거시.
-        let seat_token: Option<String> = if cys::boot_gates_master_off_from(
+        let seat_token: Option<String> = if adopt_rec.is_some() {
+            // 입양(T4·T5): 살아 있는 자식은 옛 데몬이 준 토큰을 env 로 쥐고 있다 — seatkeep 이 상호 확인 뒤 WELCOME 칸으로 넘긴 같은 값을
+            // (세대 정합 = `seat_adopt::check_adopted_token` 통과분만) 그대로 이 좌석 토큰으로 잇고 그 세대를 「입양 세대」로 등록한다.
+            // 없으면(옛 seatkeep · 정합 실패 · 롤백 스위치) 무토큰 좌석(claim = 체인 폴백 · 「실패 = 무토큰 스폰」과 같은 강등).
+            match adopt_token.take() {
+                Some(tok) if !cys::boot_gates_master_off_from(std::env::var(cys::ENV_BOOT_GATES).ok().as_deref()) => {
+                    if let Some(g) = tok.split('.').next() {
+                        self.adopted_token_gens.lock().unwrap_or_else(|e| e.into_inner()).insert(g.to_string());
+                    }
+                    Some(tok)
+                }
+                _ => None,
+            }
+        } else if cys::boot_gates_master_off_from(
             std::env::var(cys::ENV_BOOT_GATES).ok().as_deref(),
         ) {
             None
@@ -7915,33 +8400,46 @@ impl Daemon {
             }
         };
 
-        let mut child = pair
-            .slave
-            .spawn_command(builder)
-            .map_err(|e| format!("spawn failed: {e}"))?;
-        let pid = child.process_id().unwrap_or(0);
-        // ★D3(W5): 자식을 데몬 소유 Job 에 결박 — 데몬 사후 동반사망(Windows P2-9). unix 는 no-op.
-        //   ★(1R#4) 자기 편입(bind_self)이 성립한 정상 경로에서는 **상속으로 이미 결박**돼 있어
-        //   이 호출은 Ok 로 즉시 끝난다(경쟁 창 0). 강등 모드에서만 실제 편입을 시도하고,
-        //   실패는 **조용히 넘어가지 않는다**(종전엔 반환값이 없어 실패가 보이지 않았다).
-        #[cfg(windows)]
-        if let Err(e) = winjob::assign_child(pid) {
-            eprintln!("[cysd] ⚠ PTY 자식 pid={pid} Job 결박 실패: {e} — 데몬 사후 고아 가능");
+        // 좌석 프로세스 손잡이(T3) — 자식 기동·Job 결박·slave 닫기는 `seat_proc::Opened::spawn`.
+        // T4(입양 노브 켬 · 새 seatkeep 좌석): 자식을 띄우기 **전** 임시본 기록 — 못 쓰면 좌석을 만들지 않는다(기록 없는 산 좌석 = 입양도 정리도
+        // 못 하는 좌석 · codex T4 1R #1). 노브 끔·직접 PTY·입양 갈래 = 이 블록 없음.
+        if adopt_rec.is_none() && crate::seat_adopt::enabled() {
+            if let Some((skid, dir)) = opened.as_ref().and_then(|o| o.seatkeep_ids()) {
+                crate::seat_adopt::record_provisional(
+                    &dir,
+                    &skid,
+                    id,
+                    spawn_guard.grant.display_no,
+                    &title.clone().unwrap_or_else(|| format!("surface {id}")),
+                    role.as_deref(),
+                    cmd.as_deref().unwrap_or(shell.as_str()),
+                    &cwd_str,
+                    !env.is_empty(),
+                    rows,
+                    cols,
+                    Some(resolved_config_dir.as_str()),
+                    config_dir_trusted,
+                )?;
+            }
         }
-        drop(pair.slave);
+        let adopted = adopt_spawned.is_some();
+        let mut spawned = match (adopt_spawned, opened) {
+            (Some(sp), _) => sp,
+            (None, Some(o)) => o.spawn(builder)?,
+            (None, None) => return Err("좌석 생성: 열린 PTY 도 입양 손잡이도 없음".into()),
+        };
+        let pid = spawned.pid;
 
         // Observation failure only leaves R absent. The original child stays owned
         // here and is transferred unchanged into Surface.child below.
-        let root_registration = crate::root_registration::observe(child.as_mut(), pid);
+        // 입양(T4 · T0 §2-9 권고 ⓑ): 이 cysd 가 띄운 자식이 아니다 — 「관측 없음」으로 둔다(발행 전 1회 · 소급 금지 계약 그대로).
+        let root_registration = if adopted {
+            crate::root_registration::RootRegistration::default()
+        } else {
+            crate::root_registration::observe(spawned.child.as_mut(), pid)
+        };
 
-        let reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("clone reader failed: {e}"))?;
-        let writer = pair
-            .master
-            .take_writer()
-            .map_err(|e| format!("take writer failed: {e}"))?;
+        let (reader, writer) = spawned.take_io()?;
 
         let (out_tx, _) = broadcast::channel(256);
 
@@ -7966,16 +8464,21 @@ impl Daemon {
 
         // ★(0.14.43 · RQFIX2 m-2) PTY master raw fd 캐시(unix) — master 를 Mutex 로 옮기기 전에 읽는다. 모르면 −1(= 전경 판정 불능 → V2).
         #[cfg(unix)]
-        let pty_master_fd = pair.master.as_raw_fd().unwrap_or(-1);
+        let pty_master_fd = spawned.foreground_fd();
+        #[cfg(target_os = "macos")]
+        let seat_link = spawned.link();
+        let cmd_for_kind = cmd.clone(); // ★agy 좌석 문: 좌석 종류는 셸 기본값으로 채우기 **전** cmd 로 확정한다
         let surface = Arc::new(Surface {
             id,
             title: Mutex::new(title.unwrap_or_else(|| format!("surface {id}"))),
             role: Mutex::new(role.clone()),
+            group: Mutex::new(None),
             cmd: cmd.unwrap_or_else(|| shell.clone()),
             cwd: cwd_str,
             pid,
             root_registration,
-            created_at: now_epoch(),
+            // 입양(T4) = 처음 만든 때 그대로(기록값).
+            created_at: adopt_rec.as_ref().map(|r| r.created_at).unwrap_or_else(now_epoch),
             // 경과 측정 전용(§Surface.created_instant) — 벽시계 보정과 절전/복귀에 면역이다.
             created_instant: std::time::Instant::now(),
             // (B5 · §2-8) 부트 논스·ack — arm 전에는 둘 다 None 이고, arm 은 explicit RPC 로만
@@ -8013,7 +8516,7 @@ impl Daemon {
             //   ∴ 지금 고치면 얻는 안전은 0 이고 Windows 부트 경로의 판정만 흔든다. 정본 수리는
             //     '격리 키가 pane 에 실렸는가'를 별도 bool 로 기록하는 것이며, 그때 이 주석과
             //     아래 회귀 핀(create_surface_with_env_records_env_injected_flag)을 함께 고쳐라.
-            env_injected: !env.is_empty(),
+            env_injected: adopt_rec.as_ref().map(|r| r.env_injected).unwrap_or(!env.is_empty()),
             // ★(P1) 인메모리 저장이 전부다 — persist_topology(governance.rs)는 필드를 손으로
             // 골라 조립하므로 이 값이 topology.json 으로 샐 구조적 경로가 없다(명시 제외 불요·
             // '조립 지점에 추가하지 않는 한' 영속 금지가 기본값). 회귀 핀 P5 가 봉인한다.
@@ -8021,9 +8524,10 @@ impl Daemon {
             exited: AtomicBool::new(false),
             exited_at: Mutex::new(None),
             close_operation: Mutex::new(()),
+            close_decided: AtomicBool::new(false),
             write_tx,
-            master: Mutex::new(pair.master),
-            child: Mutex::new(child),
+            master: Mutex::new(spawned.master),
+            child: Mutex::new(spawned.child),
             parser: Mutex::new(vt100::Parser::new(rows, cols, SCROLLBACK_LINES)),
             scrollback: Mutex::new(VecDeque::with_capacity(1024)),
             ingest: Mutex::new(IngestState {
@@ -8054,17 +8558,22 @@ impl Daemon {
             //   ⚠관측이 아니라 **선언**이므로 Windows 2-표본 확정(claim_role 의 pending_agent_obs)
             //   대상이 아니다 — 스폰한 쪽이 무엇을 띄우는지 아는 것은 추정이 아니다.
             agent_meta: Mutex::new(agent.clone().map(|a| (a.clone(), a))),
+            agy_kind: cys::agy_door::seat_kind_is_agy(agent.as_deref(), cmd_for_kind.as_deref()),
             agent_seen: AtomicBool::new(false),
             agent_exit_notified: AtomicBool::new(false),
             crash_notified: AtomicBool::new(false),
             last_cmd_ack: Mutex::new(None),
             last_human_input: Mutex::new(None),
+            human_input_seq: AtomicU64::new(0),
+            human_input_issued: AtomicU64::new(0),
             pending_input_bytes: AtomicU64::new(0),
             pending_input: Mutex::new(Default::default()),
             // ★(0.14.43 · RQFIX B-1) 신생 좌석은 거짓(v2 = 종전 동작) — 첫 watchdog 틱의 생존·마커 판정이 확정한다.
             lone_key_exempt: AtomicBool::new(false),
             #[cfg(unix)]
             pty_master_fd: AtomicI32::new(pty_master_fd),
+            #[cfg(target_os = "macos")]
+            seat_link,
             // ★(R1F-IN) ⓑ 에이전트 전경 그룹은 틱 전이라 0(= V2) · ⓐ 신생 좌석은 면제한 Esc 가 없다(0).
             #[cfg(unix)]
             agent_fg_pgid: AtomicI32::new(0),
@@ -8078,6 +8587,7 @@ impl Daemon {
             line_count: AtomicU64::new(0),
             last_line_at: Mutex::new(None),
             agent_dead_since: Mutex::new(None),
+            role_restored_at: Mutex::new(None),
             queue_paused_until: Mutex::new(None),
             // ★(0.14.31 · WP-5) 만료 큐·배달 간격 시계·stale 입력 관측 — 전부 빈 채로 출발.
             expired_queue: Mutex::new(std::collections::VecDeque::new()),
@@ -8109,6 +8619,8 @@ impl Daemon {
             // 그 외 deny-by-default none). claim_role이 역할 전이 시 동기 재도출한다.
             caps: Mutex::new(crate::caps::Caps::for_role(role.as_deref())),
             osc_carry: Mutex::new(Vec::new()),
+            ps_scanner: Mutex::new(crate::program_status::Scanner::default()),
+            program_status: Mutex::new(crate::program_status::Store::default()),
             parser_panics: AtomicU64::new(0),
             activity_pending: AtomicU64::new(0),
             activity_identity_rev: AtomicU64::new(0),
@@ -8127,6 +8639,7 @@ impl Daemon {
             // (W4 · D5) 신생 pane 은 primary screen 에서 출발 — 첫 청크 반영 시 reader 가 갱신.
             alt_screen: AtomicBool::new(false),
             bracketed_paste: AtomicBool::new(false),
+            screen_cursor: AtomicU64::new(0), // 아래 생성 직후 새 파서 값으로 미러(첫 출력 전 커서도 이 파서 세대)
             // ★(U-10) 관문 보류는 항상 None 으로 시작한다 — 생성 시점엔 관문 관측 자체가 없다.
             //   restore 하이드레이션도 하지 않는다(필드 doc 의 A1 라이브락 사유).
             gate_pending: Mutex::new(None),
@@ -8135,6 +8648,12 @@ impl Daemon {
             // ★(0.14.41 · U18) 생성 시 관측 1회의 결과(불변) — 위 관측 블록 참조.
             cwd_blocked,
         });
+        // (1.1.16 · cysr-1116-s2) 첫 출력 전에도 surface.list 의 화면 행 커서가 이 파서 세대를 가리키게
+        mirror_screen_modes(&surface, surface.parser.lock().unwrap_or_else(|e| e.into_inner()).screen());
+        // 입양(T4): 맵에 넣기 전에 기록의 약속 칸을 되살린다(맵에 들어간 순간부터 RPC·watchdog 이 읽는다).
+        if let Some(r) = &adopt_rec {
+            crate::seat_adopt::apply_record(&surface, r);
+        }
 
         // ★W2a: 이 create가 실제 등록한(dedup 후) 역할 — 아래에서 묘비 해제에 쓴다.
         let mut registered_role: Option<String> = None;
@@ -8151,7 +8670,7 @@ impl Daemon {
                 let mut roles = self.roles.lock().unwrap();
                 // worker면 충돌 없는 고유 역할명 배정(worker-N) — 복수 워커 todo 충돌 방지.
                 // 비-worker는 기존 latest-wins(같은 역할 재등록=최신 승리).
-                let final_role = dedup_worker_role(
+                let final_role = dedup_worker_role_avoiding(
                     r,
                     &roles,
                     |h| {
@@ -8161,9 +8680,11 @@ impl Daemon {
                             .unwrap_or(false)
                     },
                     id,
+                    crate::seat_adopt::role_name_reserved,
                 );
                 *surface.role.lock().unwrap() = Some(final_role.clone());
                 roles.insert(final_role.clone(), id);
+                self.note_role_held(&final_role, id);
                 registered_role = Some(final_role);
             }
         }
@@ -8176,7 +8697,7 @@ impl Daemon {
         // 이후 이 역할의 비정상 종료는 다시 정상 부활 대상이 되게 한다("살아있는 역할=묘비 아님").
         // tombstones는 리프 락 — surfaces/roles 락 해제 후 획득(락 순서 무변경).
         if let Some(rr) = registered_role {
-            self.tombstones.lock().unwrap().remove(&rr);
+            self.remove_tombstone(&rr);
             // ★W2/P1-2: master 역할로 (재)기동되면 master_claimed_at 스탬프 — 부활 master 가 approval.sign
             //   동결(master_unstable 거부) 상태로 깨어나 자율주행 게이트가 마비되던 결함 해소. claim_role
             //   경로(handlers.rs)의 승계 스탬프와 동일 의미(새 보유자=쿨다운 시작). tombstones 와 동일 리프 락.
@@ -8194,6 +8715,20 @@ impl Daemon {
             json!({"surface_ref": cys::surface_ref(id), "pid": pid, "cwd": surface.cwd,
                    "cmd": surface.cmd, "role": role, "display_no": surface.display_no}),
         );
+        // T4: seatkeep 좌석 기록(입양 노브 끔 = 아무것도 안 함) · 입양 좌석 = 재생 뒤 크기 흔들기.
+        crate::seat_adopt::record_surface(&surface);
+        // 입양 좌석의 첫 재생 중 「옛 cysd 가 처리를 끝냈다고 알린」 앞부분 = 화면만 다시 그린다(전사·응답·알림·화면 송출 중복 0 · T4).
+        // 재생 전체(앞 + 뒤)를 다 먹은 직후 크기를 한 번 흔든다(codex T4 1R #8 — 타이머 아님).
+        #[cfg(target_os = "macos")]
+        let (mut screen_only_left, mut replay_left): (u64, u64) = match surface.seat_link.as_ref().map(|l| l.replay_split()) {
+            Some((a, b)) if adopted => (a, a + b),
+            _ => (0, 0),
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (mut screen_only_left, mut replay_left): (u64, u64) = (0, 0);
+        if adopted && replay_left == 0 {
+            crate::seat_adopt::nudge_now(Arc::clone(&surface));
+        }
 
         // Reader thread: PTY output → vt100 parser + scrollback + attach broadcast + health rules.
         let daemon = Arc::clone(self);
@@ -8202,6 +8737,8 @@ impl Daemon {
         let debug = cys::env_compat("CYS_DEBUG")
             .map(|v| v == "1")
             .unwrap_or(false);
+        // ★(1.1.16 · 차용 ②) 좌석 기동 때 한 번 읽는다(`CYS_PROGRAM_STATUS=0` = 1.1.15 동작 · 질의 무응답).
+        let ps_enabled = crate::program_status::enabled() && crate::activity::observer_enabled();
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 16 * 1024];
@@ -8231,7 +8768,32 @@ impl Daemon {
                         if debug {
                             eprintln!("[debug] surface {} read {n} bytes", surf.id);
                         }
+                        let mut start = 0usize;
+                        // 이 조각에서 첫 재생이 끝나는가 — 끝나면 이 조각의 화면·파서·전사 처리가 **다 끝난 뒤** 크기를 흔든다(codex T4 2R).
+                        let mut nudge_after = false;
+                        if replay_left > 0 {
+                            replay_left = replay_left.saturating_sub(n as u64);
+                            nudge_after = replay_left == 0;
+                        }
+                        if screen_only_left > 0 {
+                            let k = screen_only_left.min(n as u64) as usize;
+                            replay_screen_only(&surf, &buf[..k]);
+                            screen_only_left -= k as u64;
+                            // 경계에 걸친 DSR 질의를 잇는다(codex T4 1R #4 · 2R) — 이전 꼬리 + 화면 전용 조각을 이어 마지막 3바이트를 남긴다.
+                            dsr_tail.extend_from_slice(&buf[..k]);
+                            let cut = dsr_tail.len().saturating_sub(3);
+                            dsr_tail.drain(..cut);
+                            if k == n {
+                                if nudge_after {
+                                    crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                                }
+                                continue;
+                            }
+                            start = k;
+                        }
                         let chunk = &buf[..n];
+                        // 입양 재생의 화면 전용 앞부분(위)을 뺀 나머지만 아래 정상 처리로(새 좌석·직접 PTY = start 0 = 그대로).
+                        let chunk = &chunk[start..];
                         // ★(0.14.31 · H-1 · 리뷰 R1) 출력 세대 **홀수** = 발행 시작. 스탬프(`last_output`)는
                         //   파서 반영·스크롤백 ingest 보다 **앞**에 찍는다 — `surface.read_text` 는 스냅샷 뒤에
                         //   스탬프를 읽고 세대가 이 창과 겹치면 관측을 버리므로, 스냅샷에 보이는 바이트는
@@ -8379,13 +8941,47 @@ impl Daemon {
                                 );
                             }
                         }
+                        // ★(1.1.16 · 차용 ②) OSC 7501 — 지원 질의에 답하고 상태 보고를 좌석 기록에 담는다(표시 전용).
+                        //   응답은 DSR 응답과 같은 데몬 쓰기(WriteReq::Data)다 — 사람 입력 계수·타이핑 가드·입력 원장을 지나지 않는다.
+                        if ps_enabled {
+                            let events = surf.ps_scanner.lock().unwrap_or_else(|e| e.into_inner()).feed(chunk);
+                            if !events.is_empty() {
+                                // 생애 = 답할 때의 PTY 전경 프로세스 그룹(codex 2R 3번) — 사건이 있는 청크에서만 묻는다(락 없음 · 비-unix = 모름).
+                                #[cfg(unix)]
+                                let fg = surf.foreground_pgid_now();
+                                #[cfg(not(unix))]
+                                let fg: Option<i32> = None;
+                                let res = crate::program_status::ingest_fg(
+                                    &mut surf.program_status.lock().unwrap_or_else(|e| e.into_inner()),
+                                    events,
+                                    Instant::now(),
+                                    daemon.activity.running.load(Ordering::SeqCst),
+                                    fg,
+                                );
+                                for reply in res.replies {
+                                    if !send_write_req_bounded(&surf.write_tx, WriteReq::Data(reply), DSR_SEND_DEADLINE) {
+                                        eprintln!("[cysd] surface {} OSC 7501 질의 응답 드롭 — write 채널 포화", surf.id);
+                                    }
+                                }
+                            }
+                        }
                         daemon.ingest_output(&surf, chunk);
                         // ★(리뷰 R1) 출력 세대 **짝수** = 이 청크의 발행(파서·스크롤백) 끝.
                         surf.output_gen.fetch_add(1, Ordering::AcqRel);
+                        if nudge_after {
+                            crate::seat_adopt::nudge_now(Arc::clone(&surf));
+                        }
                     }
                 }
             }
             surf.exited.store(true, Ordering::Relaxed);
+            // ★(1.1.16 · 차용 ② ⒟) PTY 프로세스가 끝났다 — 7501 기록 전부 지움(표시 전용).
+            surf.program_status
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .wipe(true, "process exited", Instant::now());
+            // T4: 끝난 좌석의 입양 기록을 지운다(노브 끔·직접 PTY = 아무것도 안 함).
+            crate::seat_adopt::forget_surface(&surf);
             // 종료 시각 stamp — watchdog reap_exited_surfaces가 grace 경과를 이 시점 기준으로 잰다.
             *surf.exited_at.lock().unwrap() = Some(Instant::now());
             // writer 스레드 종료 신호 — 자력 종료(셸 EOF)는 close_surface를 거치지 않아
@@ -8394,13 +8990,7 @@ impl Daemon {
             reader_writer_stop.store(true, Ordering::Relaxed);
             // 좀비 회수: 자력 종료(셸 exit)는 close_surface를 거치지 않으므로 여기서 reap.
             // EOF 시점엔 거의 항상 이미 종료 — 즉시 회수, 아니면 1초 후 한 번 더.
-            {
-                let mut child = surf.child.lock().unwrap();
-                if child.try_wait().ok().flatten().is_none() {
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
-                    let _ = child.try_wait();
-                }
-            }
+            crate::seat_proc::reap_after_eof(&surf.child);
             // ★1.1.8 병합(판정 갈림 S1 · 잠정 = 우리 D7⑵): 원작자 Q7 은 같은 자리에서 역할 좌석의 활성 큐를 데몬 보존소
             //   (`restored_queue` · `governance::park_active_to_restored`)로 옮긴다. 잠정으로 우리 역할 주차(`parked_queues` →
             //   claim_role 상속)를 유지하고, 원작자의 인계 중 항목 보존(`drain_active_except_inflight`)·원장 묘비·만료 큐 처분은 받는다.
@@ -8950,17 +9540,37 @@ pub(crate) fn cr_gap_delay_ms(
 pub(crate) fn mirror_screen_modes(surf: &Surface, screen: &vt100::Screen) {
     surf.alt_screen.store(screen.alternate_screen(), Ordering::Relaxed);
     surf.bracketed_paste.store(screen.bracketed_paste(), Ordering::Relaxed);
+    let (epoch, rows) = screen.scroll_cursor();
+    surf.screen_cursor.store(pack_screen_cursor(epoch, rows), Ordering::Relaxed); // (cysr-1116-s2)
+}
+
+/// ★(1.1.16 · cysr-1116-s2) 화면 행 커서 한 수 = 세대 하위 13비트 << 40 | 밀려난 행 하위 40비트 — JS 수(2^53) 안에서 정확하다.
+/// 세대가 8,192 번 바뀌어 같은 값으로 돌아오는 경우만 구별 못 한다(파서 교체 = 패닉 격리·RIS 로만 생긴다).
+pub(crate) const SCREEN_CURSOR_ROW_BITS: u32 = 40;
+pub(crate) fn pack_screen_cursor(epoch: u64, rows: u64) -> u64 {
+    ((epoch & 0x1FFF) << SCREEN_CURSOR_ROW_BITS) | (rows & ((1u64 << SCREEN_CURSOR_ROW_BITS) - 1))
+}
+/// 되풀기 = (세대 하위 13비트, 행). 2^53 이상(우리가 만들 수 없는 값) = None.
+pub(crate) fn unpack_screen_cursor(c: u64) -> Option<(u64, u64)> {
+    if c >> (SCREEN_CURSOR_ROW_BITS + 13) != 0 {
+        return None;
+    }
+    Some((c >> SCREEN_CURSOR_ROW_BITS, c & ((1u64 << SCREEN_CURSOR_ROW_BITS) - 1)))
 }
 
 /// `WriteReq::Inject` 의 바이트 시퀀스 — (선정리 Ctrl-U → settle) → bracketed paste → cr_delay →
 /// CR. 종전 arm 본문 그대로이며, 인계 가드(`InjectGuard`)를 arm 머리에 넣기 위해 함수로만 뺐다
 /// (한 arm = 원자 · 다른 WriteReq 끼어듦 없음이라는 계약은 호출부가 그대로 지킨다).
+/// 반환 `Ok(true)` = 끝 CR 까지 썼다 · `Ok(false)` = `refuse_paste` 가 붙여넣기 바로 앞에서(붙여넣기·CR 0) 또는 `refuse` 가 CR 바로
+/// 앞에서(CR 0) 참이라 거기서 멈췄다(그 앞 바이트는 썼다).
 fn inject_write<W: Write>(
     writer: &mut W,
     text: &str,
     cr_delay_ms: u64,
     clear_first: bool,
-) -> std::io::Result<()> {
+    refuse_paste: Option<&SafetyProbe>,
+    refuse: Option<&SafetyProbe>,
+) -> std::io::Result<bool> {
     if clear_first {
         // Ctrl-U(0x15) 선정리 → settle: 잔존 미제출 텍스트를 지우고 TUI가 처리할 짬을 준다.
         // paste·CR과 같은 arm에 묶여 다른 주입이 끼어들 수 없다(원자). 키 의미 게이트는
@@ -8969,6 +9579,11 @@ fn inject_write<W: Write>(
         writer.flush()?;
         std::thread::sleep(std::time::Duration::from_millis(clear_settle_ms()));
     }
+    // ★(1.1.16 · cysr-1116-backlog-fix-1118 · 검증 지적 4) 붙여넣기 직전 재판정 — Ctrl-U 정착(0.15초 · 부하 아래 0.18~0.34초 실측) 중 뜬
+    //   창에 본문을 붙여 넣지 않는다(질문 창은 붙여넣기를 「Other」 답 칸에 넣는다 · InjectRefusing doc).
+    if refuse_paste.is_some_and(|p| p()) {
+        return Ok(false);
+    }
     // ★(0.14.42 · 설계 C D2) 백스톱 — Inject 생산자 전부(큐 다이제스트·clear_first·CEO·스케줄·채널·부트 통보·
     //   승계 고지 등)를 한 곳에서 덮는다. 본문 안 표지(`ESC[201~`·C1 형)와 끝 미완성 이스케이프가 봉투를 조기에
     //   닫아 뒤 글자가 키 입력(줄바꿈=제출 · ESC=취소)이 되던 결함을 막는다. 표지가 없고 끝이 완결인 본문은
@@ -8976,8 +9591,12 @@ fn inject_write<W: Write>(
     writer.write_all(cys::paste_fence::wrap(text).as_bytes())?;
     writer.flush()?;
     std::thread::sleep(std::time::Duration::from_millis(cr_delay_ms));
+    // ★(1.1.16 · master#4f5897d7) Enter 직전 재판정 — 대기(cr_delay) **뒤**, CR 바로 앞(InjectRefusing doc).
+    if refuse.is_some_and(|p| p()) {
+        return Ok(false);
+    }
     writer.write_all(b"\r")?;
-    writer.flush()
+    writer.flush().map(|_| true)
 }
 
 /// (테스트 가시성) `delivery` 모듈의 race 봉쇄 실증이 이 루프를 직접 구동한다 —
@@ -9100,15 +9719,30 @@ pub(crate) fn run_writer_loop_tracked<W: Write, R: Into<crate::writer_gate::Queu
                     t.note_body(&text, None);
                     t.begin();
                 }
-                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first);
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, None, None);
                 if let Some(t) = &track {
                     // ★(0.14.42 · S21-SETTLE) 끝 CR 까지 썼으면 제출 CR 을 쓴 시각이다(분리 보류의 기준점).
-                    if r.is_ok() {
+                    if matches!(r, Ok(true)) {
                         t.submit_written();
                     }
                     t.end();
                 }
-                r
+                r.map(|_| ())
+            }
+            // ★(1.1.16 · master#4f5897d7) Inject 와 같은 표식 규율 — CR 을 거부했으면 제출 CR 을 쓴 시각을 찍지 않는다.
+            WriteReq::InjectRefusing { text, cr_delay_ms, clear_first, refuse_paste, refuse } => {
+                if let Some(t) = &track {
+                    t.note_body(&text, None);
+                    t.begin();
+                }
+                let r = inject_write(&mut writer, &text, cr_delay_ms, clear_first, Some(&refuse_paste), Some(&refuse));
+                if let Some(t) = &track {
+                    if matches!(r, Ok(true)) {
+                        t.submit_written();
+                    }
+                    t.end();
+                }
+                r.map(|_| ())
             }
             // ★B2″(agy 감사 R2-①): Inject 는 기준점을 **찍지 않는다**. 이 arm 은 자체
             // cr_delay_ms(기본 400)를 두고 본문→CR 까지 원자로 보내므로, 뒤따라 오는 제출
@@ -10146,7 +10780,7 @@ mod tests {
             *s.agent_meta.lock().unwrap() = Some(("claude".into(), "claude".into()));
         }
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let get = |role: &str| {
             entries.as_array().unwrap().iter().find(|e| e["role"].as_str() == Some(role)).cloned()
                 .unwrap_or_else(|| panic!("{role} entry 영속"))
@@ -10222,7 +10856,7 @@ mod tests {
         );
         // 영속 → 재로드 라운드트립: 기록된 config_dir이 topology에 살아 있어야 restore가 인라인할 수 있다.
         crate::governance::persist_topology(&daemon);
-        let entries = crate::governance::load_topology(&daemon);
+        let entries = crate::governance::load_saved_topology(&daemon).0;
         let found = entries
             .as_array()
             .unwrap()
@@ -10240,7 +10874,7 @@ mod tests {
         let dir = state_dir(&sock);
         let old = r#"{"updated_at":1.0,"entries":[{"role":"worker-9","agent":"claude","cwd":"/x"}]}"#;
         std::fs::write(dir.join("topology.json"), old).unwrap();
-        let loaded = crate::governance::load_topology(&daemon);
+        let loaded = crate::governance::load_saved_topology(&daemon).0;
         let e9 = loaded
             .as_array()
             .unwrap()
@@ -13750,8 +14384,8 @@ mod tests {
                    "cursor_col": null, "after_cursor_dim": null, "alt_screen": false, "human_idle_secs": null,
                    "layout_why": null,
                    "repaint_knob_off": false, "rows_too_small": false, "repaint_unresolved": false, "nudge_ineligible": false,
-                   "repaint_last_obs": null}),
-            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why + ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 사유 다섯은 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
+                   "repaint_last_obs": null, "composer_machine_body": null}),
+            "결측은 null(값이 아니다) — ★(0.14.47 · 계측) 추가형 키 넷 + ★(1.1.10 · cysr-1110-winqueue 축2) layout_why + ★(1.1.11 · win-qstarved-ctrl-bytes) 다시 그리기 사유 다섯 + ★(cysr-queued-paste-submit) composer_machine_body 는 screen_diag 객체 안이다(최상위 키 수 16 은 그대로)"
         );
         // 커서 뒤에 글자가 있으면(회색 제안인지 직접 쓴 글인지 모른다) 유령 단정이 아니라 `after_cursor_text`(표 7행) — 사람이 화면을 보고 가린다.
         let p_after = queue_starved_payload("surface:5", Some("cso".into()), &head, 4200, 3, blocked, &c5_diag_ga(Some(false), Some(true)));
@@ -17157,5 +17791,34 @@ mod c8_proof_pending_v2_api_tests {
         assert_eq!(g.expect_gen, Some(4));
         assert!(!g.claim_for_write());
         assert_eq!(g.cleanup_owner(), Ok(InjectCleanupOwner::Controller));
+    }
+}
+
+// ★(1.1.16 · TICKET=cysr-1116-backlog-fix-1118 · 검증 지적 4) `InjectRefusing` 의 바이트 순서 — 붙여넣기 앞 탐침이 참이면 Ctrl-U 만 쓰고
+// 멈추고(붙여넣기·CR 0), Enter 앞 탐침이 참이면 Ctrl-U·붙여넣기까지만(CR 0). 둘 다 거짓이면 종전 Inject 바이트와 같다.
+#[cfg(test)]
+mod b16fix_inject_write_tests {
+    use super::*;
+
+    fn probe(v: bool) -> SafetyProbe {
+        Arc::new(move || v)
+    }
+
+    #[test]
+    fn b16fix_inject_write_stops_before_paste_or_before_enter() {
+        let body = "사람이 보낸 말";
+        let paste = cys::paste_fence::wrap(body).into_bytes();
+        let mut w = Vec::new();
+        assert!(!inject_write(&mut w, body, 0, true, Some(&probe(true)), Some(&probe(false))).unwrap());
+        assert_eq!(w, b"\x15", "붙여넣기 앞 거부: Ctrl-U 만");
+        let mut w = Vec::new();
+        assert!(!inject_write(&mut w, body, 0, true, Some(&probe(false)), Some(&probe(true))).unwrap());
+        assert_eq!(w, [b"\x15".as_slice(), &paste].concat(), "Enter 앞 거부: Ctrl-U + 붙여넣기");
+        let mut w = Vec::new();
+        assert!(inject_write(&mut w, body, 0, true, Some(&probe(false)), Some(&probe(false))).unwrap());
+        let mut legacy = Vec::new();
+        assert!(inject_write(&mut legacy, body, 0, true, None, None).unwrap());
+        assert_eq!(w, legacy, "거부 없음 = 종전 Inject 바이트");
+        assert_eq!(legacy, [b"\x15".as_slice(), &paste, b"\r"].concat());
     }
 }

@@ -16,7 +16,7 @@
 | `doctor` | 오너(인간) | 헌법 변경·외부발행·비가역 삭제·break-glass·고위험 승격의 유일 승인자 |
 | `master` | master 노드(Claude CLI) | 기술 판단·리뷰·위임·검증 집행. 오너가 위임한 기술 결정 대행. 인간 전속 항목은 대행 불가 |
 | `worker` | 구현 노드 | 위임 범위 내 구현·자기검증. 승인 발급 불가 |
-| `verifier` | agy(Gemini)·codex(GPT) 이종모델 | advisory 판정(ACCEPT/REVISE/BLOCK/ESCALATE)·근거 제시. 집행 권한 없음 |
+| `verifier` | codex(GPT)·Claude 대체 검토자 이종 검증(agy(Gemini)는 사람이 좌석 문을 연 기업 요금제 등에서만 — 구글 개인 요금제 약관) | advisory 판정(ACCEPT/REVISE/BLOCK/ESCALATE)·근거 제시. 집행 권한 없음 |
 | `CI` | 결정론 스크립트(exit code) | 게이트 판정의 기계 집행. 판단 재량 없음 |
 
 ### C1.2 인간 전속 vs master 대행 가능 (조문별 명시)

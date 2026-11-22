@@ -6,7 +6,7 @@ exclude = ["vendor/portable-pty", "vendor/vt100"]
 
 [package]
 name = "cys-terminal"
-version = "1.1.14"
+version = "1.1.16"
 edition = "2021"
 description = "cys — the CYSJavis terminal: bidirectional socket IPC, multi-agent OS (CYSJavis Pack), governance, heartbeat"
 license = "MIT"
@@ -22,6 +22,12 @@ path = "src/bin/cysd/main.rs"
 [[bin]]
 name = "cys"
 path = "src/bin/cys.rs"
+
+# ★좌석 보유 장치 시제품(설계 요지 = src/bin/cys-seatkeep/main.rs 머리말).
+#   cysd 미연결 · 제품 경로에서 아직 아무도 띄우지 않는다. 이름에 MacOS/cysd 가 들어가지 않게 별도 실행 파일(master 결정 ⓐ).
+[[bin]]
+name = "cys-seatkeep"
+path = "src/bin/cys-seatkeep/main.rs"
 
 [features]
 # ★S8 D-r2-8: 윈도우 휴지통 삭제는 **검증된 빌드에서만** 켜진다. 이 feature 는 default 에 없다 —
@@ -47,6 +53,8 @@ portable-pty = { path = "vendor/portable-pty" }
 vt100 = { path = "vendor/vt100" }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
+# (tabs-sidebar 948 D7 · master#cb40d4a3 A안) 묶음 이름 NFKC 정규화 — 데몬·앱 같은 규칙. 판 정확 고정(원작자 병합 때 볼 것 · HANDOFF).
+unicode-normalization = "=0.1.26"
 # ★FATAL-1(0.14.42 WP-transport 리뷰): 기본 feature 의 `multithread`(rayon 전역 풀)를 끈다 — 나머지 기본
 #   feature(component·disk·network·system·user)는 그대로다(윈도우 `windows` 크레이트 feature 집합 무변).
 #   multithread 는 요청마다 rayon 작업을 전역 풀에 넣고, join 대기 중인 워커가 **다른 요청의** 작업을 훔쳐
@@ -73,6 +81,9 @@ tar = "0.4"
 icu_normalizer = { version = "2.2", default-features = false, features = ["compiled_data"] }
 # 3-way 병합 엔진(순수 Rust·셸아웃 0). 0.5.1 하한 = #85 무개행 마커 접합 수리 포함.
 diffy = "0.5.1"
+# ★T3(cysr-seatkeep-t3): seatkeep 경유 좌석 손잡이가 portable-pty `MasterPty` 를 구현한다 — 그 트레이트의 오류 타입이 `anyhow::Error` 라
+#   이름을 써야 한다. anyhow 는 이미 의존 그래프·Cargo.lock 에 있다(portable-pty 전이) — 직접 의존 승격(flate2/tar 관례).
+anyhow = "1"
 
 # 테스트 fixture 전용: minisign keypair 생성·서명(서명 roundtrip 테스트). 런타임 의존 아님.
 [dev-dependencies]
@@ -111,6 +122,9 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_RestartManager",
     "Win32_System_SystemInformation",  # r9 fix D1: GetSystemTimeAsFileTime — 표를 찍은 뒤 재사용된 pid 의 시작 시각을 거른다
+    "Win32_System_RemoteDesktop",  # ★TICKET=cysr-1116-win-restore-1121: WTSEnumerateProcessesExW — 대화 임대 argv 훑기의 프로세스 사용자 SID(핸들 없음 · src/session_lease.rs win_scan)
+    "Wdk_System_SystemInformation",    # ★같은 티켓: NtQuerySystemInformation(SystemProcessInformation) — 세션(핸들 없음)
+    "Win32_System_WindowsProgramming",  # ★같은 티켓: SYSTEM_PROCESS_INFORMATION
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을
@@ -121,3 +135,12 @@ windows-sys = { version = "0.59", features = [
 # 전부 windows-latest 네이티브(host==target)이므로 host 기준 게이트로 충분하다.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# ★TICKET=cysr-dev-opt1-stack-budget(1.1.15): 디버그(dev·test 프로필) 빌드에서 **이 패키지만** 최적화 1단.
+#   까닭: clap derive 가 만드는 `<Command as Subcommand>::augment_subcommands` 한 함수의 디버그 틀이 1,766,848 바이트라
+#   `Cli` 한 번 풀이가 스택 ≈2.10 MB 를 쓴다 — 기본 2 MiB 시험 스레드 여유 96~191 바이트 · 전체 시험 때 할당기 느린 경로로 넘침
+#   (측정 = cys.rs `cli_stack_budget_tests`). opt-level 1 이면 같은 풀이 ≈229 KB(−89%). 릴리스 프로필·의존 크레이트는 그대로다.
+#   debug-assertions·overflow-checks 는 opt-level 과 따로 dev 기본값(켜짐) 그대로다. 예산 핀 = cys.rs `cli_stack_budget_tests`.
+#   이 줄을 지우거나 0 으로 내리면 그 시험이 붉어진다(필요 스택 > 1 MiB).
+[profile.dev.package.cys-terminal]
+opt-level = 1

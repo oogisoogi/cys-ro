@@ -4445,24 +4445,24 @@ fn dispose_held_bodies(
     superseded_by: Option<&str>,
     now: std::time::Instant,
 ) {
+    // ★TICKET=cysr-1118-seat ③-3(master#44ce6e4c): 버린 본문을 버스(메모리 링)에만 두지 않고 증거 파일에도 남긴다 — `cys doctor`
+    //   「held-dropped」 가 최근 버려진 입력 수를 센다(조용한 유실 0). 종전엔 데몬 재시작분만 파일에 남았다(본문 글자는 쓰지 않는다 · 해시·길이만).
+    let dir = crate::state::state_dir(&daemon.socket_path);
     for b in bodies {
-        daemon.bus.publish(
-            "surface.submit_undelivered",
-            "surface",
-            Some(sid),
-            json!({
-                "surface_ref": cys::surface_ref(sid),
-                "request_id": b.request_id,
-                "reason": reason,
-                "superseded_by": superseded_by,
-                "held_ms": now.saturating_duration_since(b.received_at).as_millis() as u64,
-                "window_ms": crate::submit_assoc::LEGACY_ASSOCIATION_WINDOW_MS,
-                "chars": b.text.chars().count(),
-                "text_sha256": crate::delivery::digest_text(&b.text),
-                "note": "A body sent without its own Return was held untyped and was not delivered; nothing was typed. \
-                         Send it again with its Return (cys send then cys send-key Return within the window, or --queued).",
-            }),
-        );
+        let payload = json!({
+            "surface_ref": cys::surface_ref(sid),
+            "request_id": b.request_id,
+            "reason": reason,
+            "superseded_by": superseded_by,
+            "held_ms": now.saturating_duration_since(b.received_at).as_millis() as u64,
+            "window_ms": crate::submit_assoc::LEGACY_ASSOCIATION_WINDOW_MS,
+            "chars": b.text.chars().count(),
+            "text_sha256": crate::delivery::digest_text(&b.text),
+            "note": "A body sent without its own Return was held untyped and was not delivered; nothing was typed. \
+                     Send it again with its Return (cys send then cys send-key Return within the window, or --queued).",
+        });
+        append_held_undelivered(&dir, &payload);
+        daemon.bus.publish("surface.submit_undelivered", "surface", Some(sid), payload);
     }
 }
 

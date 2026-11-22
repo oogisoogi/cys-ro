@@ -2915,11 +2915,18 @@ pub fn win_input_guards_legacy_for(windows: bool, env: Option<&str>) -> bool {
 ///   ⇒ 워커에서 RC 를 켜려면 `~/.cys/policy.json` 의 `rc_allowed_roles` 에 그 역할명을 넣고 좌석을 재기동한다.
 /// * `permissions.allow` — `~/.cys/policy.json` 의 `seat_permissions_allow`(문자열 배열 · 기본 없음 = 1.1.8 기본 목록 0).
 /// 둘 다 해당 없으면 빈 객체 — 호출자는 인자를 붙이지 않는다(종전 바이트).
-pub fn claude_seat_settings(role: &str, dept_socket: bool, policy_allow: &[String], rc_allowed: &[String]) -> serde_json::Value {
+/// * ★TICKET=cysr-1118-seat ④(master#06f081e8 · 박사님 11-23 00:3x 「rc는 기본이다 … 기본값이 활성화가 되어야 한다. 단, 마스터만이다.」)
+///   본부 master 좌석(역할 `master` · 부서 데몬 아님 · RC 허용 목록 안)은 `remoteControlAtStartup:true` 를 싣는다 — 기동 인자(`--settings`)는
+///   사용자 설정(`~/.claude/settings.json` · 윈 설치기가 false 를 써 둠)보다 위다(공식 문서 settings 「managed > command line > … > user ·
+///   A key set at a higher level overrides the same key set lower down」). 끄는 길 = 정책 `rc_master_autostart: false`(`rc_autostart` 인자).
+///   허용 목록의 다른 역할(예: relay)은 종전 그대로(허용만 · 켜지 않음).
+pub fn claude_seat_settings(role: &str, dept_socket: bool, policy_allow: &[String], rc_allowed: &[String], rc_autostart: bool) -> serde_json::Value {
     let mut v = serde_json::Map::new();
     if !rc_allowed_for(role, dept_socket, rc_allowed) {
         v.insert("remoteControlAtStartup".into(), serde_json::Value::Bool(false));
         v.insert("disableRemoteControl".into(), serde_json::Value::Bool(true));
+    } else if rc_autostart && role == "master" {
+        v.insert("remoteControlAtStartup".into(), serde_json::Value::Bool(true));
     }
     if !policy_allow.is_empty() {
         v.insert("permissions".into(), serde_json::json!({ "allow": policy_allow }));
@@ -3038,13 +3045,28 @@ pub fn rc_allowed_roles() -> Vec<String> {
 
 /// [`rc_allowed_roles`] 의 순수 판. 키가 배열이면 그 배열이 정본(빈 배열 = 아무도 허용 안 함).
 pub fn rc_allowed_roles_from(text: &str) -> Vec<String> {
-    match serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("rc_allowed_roles").cloned()) {
+    // BOM 허용(TICKET=cysr-1118-seat ④ codex 1R — 윈 메모장 저장본 · `rc_master_autostart` 와 같은 해석이어야 「허용 목록이 노브보다 먼저」가 선다).
+    match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')).ok().and_then(|v| v.get("rc_allowed_roles").cloned()) {
         Some(serde_json::Value::Array(a)) => a
             .into_iter()
             .filter_map(|x| x.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from))
             .collect(),
         _ => vec!["master".to_string()],
     }
+}
+
+/// `~/.cys/policy.json` 의 `rc_master_autostart`(TICKET=cysr-1118-seat ④) — 본부 master 좌석 RC 기동 시 켜기. 기본 = 켬 ·
+/// 값이 `false` 일 때만 끔(파일·키 부재·형식 오류 = 켬 — 박사님 결정 「기본값이 활성화」).
+pub fn rc_master_autostart() -> bool {
+    rc_master_autostart_from(&std::fs::read_to_string(home_dir().join(".cys").join("policy.json")).unwrap_or_default())
+}
+
+/// [`rc_master_autostart`] 의 순수 판(정책 파일 본문 → 켬/끔).
+pub fn rc_master_autostart_from(text: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+        .ok()
+        .and_then(|v| v.get("rc_master_autostart").and_then(|b| b.as_bool()))
+        != Some(false)
 }
 
 /// `~/.cys/policy.json` 의 `seat_permissions_allow`(D24ⓒ) — 파일·키 부재·형식 오류 = 빈 목록(넓히지 않는 쪽).
@@ -3068,6 +3090,14 @@ pub fn seat_policy_permissions_allow_from(text: &str) -> Vec<String> {
 /// 미실측 · master 결정: 그때는 기동 뒤 검사·끄기만 · 안전 쪽).
 pub fn cmd_has_settings_flag(cmd: &str) -> bool {
     cmd.split_whitespace().any(|w| w == "--settings" || w.starts_with("--settings="))
+}
+
+/// 좌석 기동 설정 파일 이름 줄기(순수 · TICKET=cysr-1118-seat ④ codex 1R) — `<역할>-<내용 sha256 앞 8자>`. 같은 역할이어도 내용(본부 master RC 켬 ·
+/// 부서 master 끄기)이 다르면 다른 파일 → 다른 데몬의 기동이 claude 가 읽기 전 파일을 덮지 못한다. 같은 내용 = 같은 파일(원자 쓰기 · 같은 바이트).
+pub fn seat_settings_stem(role: &str, settings: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(settings.to_string().as_bytes());
+    format!("{role}-{}", h.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 /// 좌석 기동 설정 파일 자리 — `~/.cys/seat-settings/<역할>.json`(역할명은 파일 안전 문자만). 파일로 넘기는 이유:
@@ -5718,6 +5748,33 @@ mod tests {
         assert!(!win_input_guards_legacy(), "이 호스트(비윈도우) = 켬");
     }
 
+    /// ★TICKET=cysr-1118-seat ④ 본부 master 좌석만 RC 기동 시 켬(`remoteControlAtStartup:true`) · cso·worker·부서 좌석 = 끄기 두 키 그대로 ·
+    /// 허용 목록의 다른 역할 = 켜지 않음 · 정책 `rc_master_autostart: false` = 종전(키 0).
+    #[test]
+    fn rc_master_autostart_only_for_the_hq_master_seat() {
+        let allowed = vec!["master".to_string(), "worker-5".to_string()];
+        let chrome_off = serde_json::json!({ENV_CLAUDE_CHROME: "false"});
+        let off = serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true, "env": chrome_off});
+        assert_eq!(claude_seat_settings("master", false, &[], &allowed, true), serde_json::json!({"remoteControlAtStartup": true}), "본부 master = 켬");
+        for role in ["cso", "worker", "worker-2", "worker-4", "reviewer-codex", ""] {
+            assert_eq!(claude_seat_settings(role, false, &[], &allowed, true), off, "{role}: 끄기 두 키 그대로");
+        }
+        assert_eq!(claude_seat_settings("master", true, &[], &allowed, true), off, "부서 데몬 master = 꺼짐 강제");
+        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed, true), serde_json::json!({"env": chrome_off}), "허용 목록의 다른 역할 = 켜지 않음");
+        assert_eq!(claude_seat_settings("master", false, &[], &allowed, false), serde_json::json!({}), "노브 끔 = 종전 키 0");
+        assert_eq!(
+            claude_seat_settings("master", false, &[], &[], true),
+            serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true}),
+            "허용 목록에서 master 를 뺀 정책 = 꺼짐(노브보다 허용 목록이 먼저 · 크롬은 master 라 켬 유지)"
+        );
+        // 정책 노브 해석 — 값이 false 일 때만 끔.
+        for (text, want) in [("", true), ("{}", true), ("not json", true), (r#"{"rc_master_autostart": true}"#, true),
+                             (r#"{"rc_master_autostart": "false"}"#, true), (r#"{"rc_master_autostart": false}"#, false),
+                             ("\u{feff}{\"rc_master_autostart\": false}", false)] {
+            assert_eq!(rc_master_autostart_from(text), want, "{text:?}");
+        }
+    }
+
     /// ★D25·D24ⓒ(1.1.8 · [master#99924a73] 시험) 허용 목록 밖 역할 = 두 키 존재 · 안 역할 = 키 0 · 부서 좌석 = 언제나 두 키.
     #[test]
     fn d25_claude_seat_settings_table() {
@@ -5725,14 +5782,14 @@ mod tests {
         let chrome_off = serde_json::json!({ENV_CLAUDE_CHROME: "false"});
         let off = serde_json::json!({"remoteControlAtStartup": false, "disableRemoteControl": true, "env": chrome_off});
         for role in ["worker", "worker-2", "cso", "reviewer-codex", "reviewer-claude-1", "terminal", ""] {
-            assert_eq!(claude_seat_settings(role, false, &[], &allowed), off, "{role}: 허용 목록 밖 = 두 키 + 크롬 끔");
+            assert_eq!(claude_seat_settings(role, false, &[], &allowed, false), off, "{role}: 허용 목록 밖 = 두 키 + 크롬 끔");
         }
-        assert_eq!(claude_seat_settings("master", false, &[], &allowed), serde_json::json!({}), "master = 키 0");
-        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed), serde_json::json!({"env": chrome_off}), "relay(RC 허용) = 크롬만 끔");
-        assert_eq!(claude_seat_settings("master", true, &[], &allowed), off, "부서 데몬 좌석 = RC 0 · 크롬 끔");
+        assert_eq!(claude_seat_settings("master", false, &[], &allowed, false), serde_json::json!({}), "master = 키 0");
+        assert_eq!(claude_seat_settings("worker-5", false, &[], &allowed, false), serde_json::json!({"env": chrome_off}), "relay(RC 허용) = 크롬만 끔");
+        assert_eq!(claude_seat_settings("master", true, &[], &allowed, false), off, "부서 데몬 좌석 = RC 0 · 크롬 끔");
         let allow = vec!["Bash(ls:*)".to_string()];
         assert_eq!(
-            claude_seat_settings("master", false, &allow, &allowed),
+            claude_seat_settings("master", false, &allow, &allowed, false),
             serde_json::json!({"permissions": {"allow": ["Bash(ls:*)"]}}),
             "정책 allow 목록은 역할 무관하게 실린다"
         );
@@ -5752,6 +5809,14 @@ mod tests {
         assert_eq!(seat_settings_arg(Path::new(r"C:\Users\x\my dir\.cys\seat-settings\worker.json"), true), r#" --settings "C:\Users\x\my dir\.cys\seat-settings\worker.json""#);
         assert!(seat_settings_path("worker-2").ends_with("seat-settings/worker-2.json"));
         assert!(seat_settings_path("../x").ends_with("seat-settings/x.json"), "역할명 경로 탈출 차단");
+        // ★cysr-1118-seat ④: 내용별 줄기 — 본부 master(켬)와 부서 master(끄기)는 다른 파일 · 같은 내용은 같은 파일.
+        let hq = claude_seat_settings("master", false, &[], &["master".to_string()], true);
+        let dept = claude_seat_settings("master", true, &[], &["master".to_string()], true);
+        assert_ne!(seat_settings_stem("master", &hq), seat_settings_stem("master", &dept));
+        assert_eq!(seat_settings_stem("master", &hq), seat_settings_stem("master", &hq.clone()));
+        assert!(seat_settings_stem("master", &hq).starts_with("master-") && seat_settings_stem("master", &hq).len() == "master-".len() + 8);
+        // BOM 정책 = 허용 목록도 같은 해석(빈 목록 = master 도 꺼짐).
+        assert!(rc_allowed_roles_from("\u{feff}{\"rc_allowed_roles\": []}").is_empty());
     }
 
     #[test]

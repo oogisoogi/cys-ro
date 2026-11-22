@@ -62,11 +62,17 @@ fn current_gen() -> Option<String> {
 /// 운영 세계 — 보유자 = 프로세스 신원 · 좌석 = 데몬 surface.list · 증거 = 데몬 live 세션 + argv 훑기.
 pub(crate) struct CliWorld {
     exclude: Vec<u32>,
+    /// 복원 대상 좌석의 claude 설정 폴더(검증된 값 · 등록 파일 훑기의 필수 후보 — TICKET=cysr-1118-seat ① codex 1R).
+    cfg: Option<std::path::PathBuf>,
 }
 
 impl CliWorld {
     pub(crate) fn new() -> Self {
-        CliWorld { exclude: sl::self_and_ancestors() }
+        CliWorld { exclude: sl::self_and_ancestors(), cfg: None }
+    }
+
+    pub(crate) fn with_cfg(cfg: Option<&str>) -> Self {
+        CliWorld { cfg: cfg.filter(|c| !c.trim().is_empty()).map(std::path::PathBuf::from), ..Self::new() }
     }
 }
 
@@ -155,7 +161,13 @@ impl World for CliWorld {
         // ★5회차(master 설계 2): 윈 주인 후보 이름 집합에 데몬 좌석 메타 agent_bin 을 더한다(agents.json 이 그 뒤 바뀌었어도 떠 있는 좌석의 실제 실행 파일) ·
         //   ★codex 5R H4(fail-closed): 판독 실패·형식 이상 = None → 이름 좁히기 전체 끔. 유닉스 = 이름 집합을 쓰지 않으므로 묻지 않는다(빈 목록).
         let seat_bins = if cfg!(windows) { seat_agent_bins(request("surface.list", json!({})).ok().as_ref()) } else { Some(Vec::new()) };
-        sl::scan_argv(norm, &self.exclude, seat_bins.as_deref())
+        // ★TICKET=cysr-1118-seat ①: 바깥 증거 ⓒ(claude 세션 등록 파일) — 명령줄에 대화 id 가 없는 작성자(`claude --continue` · 세션 안 `/resume`)를 본다.
+        //   등록이 Seen 이면 argv 훑기 없이 막는다 · 그 밖은 둘을 합친다(하나라도 판정 불가면 판정 불가).
+        let reg = sl::scan_registry(norm, &cys::home_dir(), self.cfg.as_slice());
+        if matches!(reg, Evidence::Seen(_)) {
+            return reg;
+        }
+        sl::combine_evidence(sl::scan_argv(norm, &self.exclude, seat_bins.as_deref()), reg)
     }
 
     fn now(&self) -> u64 {
@@ -292,7 +304,7 @@ pub(crate) fn lease_gate(role: &str, sess: Option<&str>, surface_id: Option<u64>
             ),
         };
     };
-    let world = CliWorld::new();
+    let world = CliWorld::with_cfg(cfg);
     let cx = sl::AcquireCtx { me, surface_id, daemon_gen: Some(gen), cfg: cfg.map(String::from), world: &world };
     match sl::acquire(&store, &id, &cx) {
         Decision::Granted(g) => LeaseGate::Proceed(Some(g)),

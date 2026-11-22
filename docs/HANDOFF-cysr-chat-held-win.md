@@ -37,3 +37,14 @@
 - ui `bun test` 전체: 3964 pass · 89 skip · 0 fail (4053) · `heldwin.test.ts` 15/15 · `bunx tsc -p tsconfig.check.json` 오류 0.
 - cargo `cargo test --bin cys-app viewcore`(TAURI_CONFIG 빈 번들): 26 passed.
 - 재현: `cd ui && bun test src/views/heldwin.test.ts`.
+
+## 추가 고침 (master#633f7ac0 · 윈 실측 뒤)
+윈 실측(win-measure.ps1 · 00:18): 데몬 파이프 org.status 중앙 4.1ms·최대 10.3 · 새 연결 4.7ms · 60초 표본 3.8~23.1ms = 데몬 쪽 500ms 초과 없음. master 행 `status` 비어 있음(재시작 뒤 좌석 492 set-status 0회) · idle_secs 60초 내내 0.
+- **[코드 확정] idle_secs** = `src/bin/cysd/state.rs` PTY 읽기 고리에서 출력 바이트가 오면 `last_output = Instant::now()`(거름 없음 · 커서·상태줄·에코 전부) → org.status `idle_secs` = 그 뒤 경과 초(handlers.rs org.status 행).
+- **[코드 확정] 앱 공통 판정** `appearance.nodeWorking`: 자기 신고 신선(≤120초)이면 그 state · 아니면 `idle_secs ≤ 60` = 일하는 중. 대화 화면 문턱은 working 이면 `busy` 로 붙잡는다(U25_BUSY_PASTE_OK=false).
+  → 자기 신고 없는 마스터는 **답을 마친 뒤에도 최소 60초(+조회 3초)** 「답하는 중」으로 막힌다(확정 지연). 쉬는 TUI 가 60초 안에 주기 출력을 내면 영구 막힘.
+- **[실측 · 맥 대조]** Claude Code 좌석 2373 · org.status 0.5초 간격: 쉬는 중 75초 = idle_secs 13→98 단조 증가(0 복귀 0회) / 일하는 중(도구 실행 대기 25초) = 50표본 전부 0. → 맥에선 영구 막힘 없음 · 60초 지연만.
+- **[미확정 · 윈]** 윈 Claude(ConPTY)가 쉬는 중에 주기 출력을 내는지 = `win-idle-sample.ps1`(백그라운드 90초 · 읽기 전용) 결과 대기. 주기 출력이 10초보다 잦으면 아래 고침으로도 막힘이 남는다(그때는 화면 입력창 표식(readiness) 신호를 org.status 에 싣는 데몬 고침이 필요).
+- 고침: `judge/gate.ts chatWorking` — 자기 신고가 신선하면 앱 판정 그대로, 아니면 **출력 10초 정적 = 쉬는 중**(`CHAT_QUIET_SECS`). 주입 = `views/index.ts` bootViews → `Deps.chatWorking`(대화 화면 문턱·마스터 카드만 · 작업 화면·메뉴바·되살리기 판정 무변경). 시험 3건(heldwin.test.ts · 순수 판정 · 값 맞물림 · 윈 492 꼴 통합).
+- 위험: 자기 신고 없는 마스터가 10초 넘게 출력 없이 일하는 경우 「쉬는 중」으로 보고 붙여넣는다(= U25 미측정 영역). 맥 실측상 일하는 동안 스피너가 계속 출력해 해당 없음.
+- 시험: ui 전체 3967 pass · 89 skip · 0 fail(4056) · heldwin 18/18 · tsc 0.

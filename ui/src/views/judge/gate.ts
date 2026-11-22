@@ -18,6 +18,27 @@ export const MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS = 31.2;
  *  값이 오면 이 상수만 바꾼다: true = 바쁠 때도 보냄 · false = 못 믿음(마스터가 쉬면 보냄 · 지금 기본값). */
 export const U25_BUSY_PASTE_OK: boolean = false;
 
+/** (TICKET=cysr-chat-held-win) 자기 신고(status)가 없거나 낡았을 때 대화 화면 문턱이 「답하는 중」을 가르는 출력 정적 초.
+ *  앱 공통 판정(appearance.nodeWorking)은 「출력 60초 안 = 일하는 중」이라, 자기 신고가 없는 마스터(윈 좌석 492 = 재시작 뒤 set-status 0회)에선
+ *  답을 마친 뒤에도 최소 60초 동안 대화 화면 말이 「답하는 중」으로 붙잡혔다.
+ *  실측(맥 · 11-23 00:23~00:25 · Claude Code 좌석 2373 · org.status 0.5초 간격): 일하는 중(도구 실행 대기 25초) idle_secs 50표본 전부 0 /
+ *  쉬는 중 75초 idle_secs 13→98 단조 증가(0 으로 돌아감 0회) → 출력 10초 정적이면 쉬는 중으로 본다. 작업 화면 표시 판정은 바꾸지 않는다. */
+export const CHAT_QUIET_SECS = 10;
+/** appearance.STATUS_FRESH_SECS 와 같은 값(이 파일은 순수 판정이라 가져오지 않고 시험이 같은지 대조한다). */
+export const CHAT_STATUS_FRESH_SECS = 120;
+
+/** 대화 화면 문턱용 「답하는 중」 — 자기 신고가 신선하면 앱 공통 판정(base) 그대로, 아니면 출력 정적 CHAT_QUIET_SECS 초로. idle_secs 모름 = base. 순수. */
+export function chatWorking(r: Record<string, unknown>, base: (row: Record<string, unknown>) => boolean): boolean {
+  if (r.exited === true) return false;
+  const st = r.status as { age_secs?: unknown } | null | undefined;
+  if (st && typeof st === "object") {
+    const age = typeof st.age_secs === "number" ? st.age_secs : 0;
+    if (age <= CHAT_STATUS_FRESH_SECS) return base(r);
+  }
+  const idle = r.idle_secs;
+  return typeof idle === "number" && Number.isFinite(idle) && idle >= 0 ? idle <= CHAT_QUIET_SECS : base(r);
+}
+
 /** 마스터 좌석 한 줄(org.status 행에서 판정에 쓰는 칸만). null = 데몬이 그 칸을 주지 않음(모름). */
 export interface MasterRow {
   surface_id: number;

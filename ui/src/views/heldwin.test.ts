@@ -4,10 +4,12 @@
 // 판정 단위 = chat_send 호출 수(원자 제출 1 = 쓰기 1).
 import { describe, it, expect } from "bun:test";
 import { ChatCore, needsClick, OBS_MAX_MS, POLL_MS, STATUS_SLOW, type Deps } from "./core";
+import { CHAT_QUIET_SECS, CHAT_STATUS_FRESH_SECS, chatWorking } from "./judge/gate";
+import { nodeWorking, STATUS_FRESH_SECS } from "../appearance";
 
 type Mode = "mac" | "win";
 
-function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: number; serial?: boolean; master?: Record<string, unknown> }) {
+function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: number; serial?: boolean; master?: Record<string, unknown>; working?: (r: Record<string, unknown>) => boolean; chatWorking?: (r: Record<string, unknown>) => boolean }) {
   const calls: string[] = [];
   const mem = new Map<string, string>();
   let now = 1_000_000;
@@ -58,7 +60,8 @@ function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: numbe
       if (i >= 0) timers.splice(i, 1);
     },
     store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v), remove: (k) => void mem.delete(k) },
-    working: (r) => r.working === true,
+    working: o.working ?? ((r) => r.working === true),
+    chatWorking: o.chatWorking,
   };
   const flush = async () => {
     for (let i = 0; i < 30; i++) await Promise.resolve();
@@ -210,5 +213,40 @@ describe("붙잡힌 까닭이 바뀌면 안내도 지금 까닭으로", () => {
     (s.st.master as Record<string, unknown>).working = false;
     await s.advance(POLL_MS * 2);
     expect(s.sends()).toBe(1);
+  });
+});
+
+/** main.ts bootViews 와 같은 앱 공통 판정(appearance.nodeWorking) — 자기 신고 신선(≤120초)이면 그 state · 아니면 출력 60초 안 = 일하는 중. */
+const appWorking = (n: Record<string, unknown>): boolean => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true);
+
+describe("대화 화면 「답하는 중」 — 자기 신고(status) 없는 마스터는 출력 10초 정적이면 쉬는 중(앱 공통 60초 대신)", () => {
+  it("문턱 값은 appearance 와 맞물린다(신선 120초 동일)", () => {
+    expect(CHAT_STATUS_FRESH_SECS).toBe(STATUS_FRESH_SECS);
+    expect(CHAT_QUIET_SECS).toBeLessThan(60);
+  });
+  it("순수 판정: status 없음 = idle_secs 로(≤10 일함 · >10 쉼) · status 신선 = 앱 판정 그대로 · status 낡음 = idle_secs 로 · 끝난 좌석 = 쉼 · idle 모름 = 앱 판정", () => {
+    const row = (o: Record<string, unknown>) => ({ surface_id: 1, role: "master", ...o });
+    expect(chatWorking(row({ idle_secs: 0 }), appWorking)).toBe(true);
+    expect(chatWorking(row({ idle_secs: 10 }), appWorking)).toBe(true);
+    expect(chatWorking(row({ idle_secs: 11 }), appWorking)).toBe(false);
+    expect(appWorking(row({ idle_secs: 11 }))).toBe(true); // 고치기 전 판정 = 60초까지 「답하는 중」
+    expect(chatWorking(row({ idle_secs: 999, status: { state: "working", age_secs: 30 } }), appWorking)).toBe(true);
+    expect(chatWorking(row({ idle_secs: 0, status: { state: "idle", age_secs: 30 } }), appWorking)).toBe(false);
+    expect(chatWorking(row({ idle_secs: 30, status: { state: "working", age_secs: 376 } }), appWorking)).toBe(false);
+    expect(chatWorking(row({ idle_secs: 0, exited: true }), appWorking)).toBe(false);
+    expect(chatWorking(row({ idle_secs: null }), appWorking)).toBe(appWorking(row({ idle_secs: null })));
+  });
+  it("통합(윈 좌석 492 꼴 · status 없음): 답을 마치고 출력 20초 정적 → 바로 씀(고치기 전 = 60초까지 「답하는 중」 붙잡힘) · 출력 중(0초)엔 붙잡음", async () => {
+    const master: Record<string, unknown> = { surface_id: 492, role: "master", exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, idle_secs: 0, status: null };
+    const s = sim({ mode: "win", lat: () => 5, master, working: appWorking, chatWorking: (r) => chatWorking(r, appWorking) }); // index.ts bootViews 배선 그대로
+    await ready(s);
+    void s.core.submit("출력 중에 보낸 말");
+    await s.advance(1_000);
+    expect(s.sends()).toBe(0);
+    expect(s.core.state.msgs[0].code).toBe("busy");
+    master.idle_secs = 20; // 답을 마침 · 20초 정적
+    await s.advance(POLL_MS * 2);
+    expect(s.sends()).toBe(1);
+    expect(s.core.state.health).toBe("ready");
   });
 });

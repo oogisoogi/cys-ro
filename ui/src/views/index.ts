@@ -10,7 +10,7 @@ import { chatView } from "./chat/index";
 import { workView, type WorkExtra } from "./work/adapter";
 import { createWorkBand } from "./work/band"; // (s79 조각 9) 작업 화면 띠
 import { chatAvailability, pickView, VIEW_KEY } from "./judge/viewpick";
-import { masterRowOf } from "./judge/gate";
+import { chatWorking, masterRowOf } from "./judge/gate";
 import { Registry } from "./registry";
 
 export interface BootDeps {
@@ -71,6 +71,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
     store,
     working: deps.working,
+    chatWorking: (r) => chatWorking(r, deps.working), // (TICKET=cysr-chat-held-win) 대화 화면 문턱만 — 작업 화면·메뉴바·되살리기 판정은 deps.working 그대로
     // (cysr-1116-s2 · integ I3·S4-3) 데몬 사건은 main.ts 의 하나뿐인 daemon-event 구독이 viewsIngest(아래) 로 넘긴다 —
     //   종전 조각 3 `listen` · 조각 4 `listenDaemon` 두 구독과 `defaultSlug`(default_socket_slug 재조회)는 걷었다(구독 1 · 조회 0 · 대화 화면이 꺼진 동안 온 사건도 장부가 받음).
     goView: (id) => void booted?.registry.choose(id),

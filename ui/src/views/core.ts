@@ -122,6 +122,8 @@ export interface Deps {
   store: Store;
   /** org.status 행 → 지금 답하는 중인가(appearance.nodeWorking) */
   working(row: Record<string, unknown>): boolean;
+  /** (TICKET=cysr-chat-held-win) 대화 화면 문턱·마스터 카드 전용 「답하는 중」(judge/gate chatWorking — 자기 신고 없으면 출력 10초 정적 = 쉼). 없으면 working. */
+  chatWorking?(row: Record<string, unknown>): boolean;
   /** (조각 4) daemon-event 구독 — 대화 화면이 켜져 있을 때만(attach~detach). 없으면 사건 없이(멈춤 = org.status·5분 규칙만).
    *  (통합 1116) 조각 3 의 `listen(name, handler)` 와 이름이 겹쳐 `listenDaemon` 으로 — 두 구독 모두 그대로 산다. */
   listenDaemon?(fn: (ev: unknown) => void): () => void;
@@ -566,7 +568,7 @@ export class ChatCore {
     const t0 = this.d.now();
     const org = await this.timed(this.d.invoke("org_status", { socket: null })).catch(() => undefined);
     const stale = this.d.now() - t0 > this.obsLimit();
-    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0, feed, org };
+    return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.chatWorking ?? this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0, feed, org };
   }
 
   /** (TICKET=cysr-chat-held-win · ⓐ) 관측 기반 상한 = clamp(최근 OBS_RTT_WINDOW 회 끝난 왕복의 최대 × OBS_RTT_FACTOR, OBS_MAX_MS, OBS_CAP_MS).

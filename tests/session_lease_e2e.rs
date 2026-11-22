@@ -32,6 +32,8 @@ struct Box_ {
     daemons: std::cell::RefCell<Vec<i32>>,
     /// 이 시험이 마지막에 손으로 쓴 저장 핀(파일 본문 · 그때의 live) — [`Box_::write_saved_pin`] 의 「덜 끝난 영속 없음」 판정 ⑵.
     pin_written: std::cell::RefCell<Option<(String, Vec<(String, Option<String>)>)>>,
+    /// 좌석 셸(`CYS_SHELL` · 데몬 env 로 전달) — None = 데몬 기본(TICKET=cysr-1118-seat ② 줄 편집 없는 셸 재현).
+    seat_shell: Option<PathBuf>,
 }
 
 impl Box_ {
@@ -62,7 +64,7 @@ impl Box_ {
         let entries = vec![json!({"role": ROLE, "agent": "claude", "cwd": proj, "session_id": sid,
                                   "claude_config_dir": cfg})];
         std::fs::write(base.join("run/topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None, daemons: Default::default(), pin_written: Default::default() }
+        Self { sock: base.join("run/cysd.sock"), base, path, sid, role: ROLE.into(), owns_base: true, no_reg: false, reg_gate: None, helper_gate: None, daemons: Default::default(), pin_written: Default::default(), seat_shell: None }
     }
 
     /// 같은 상자(같은 HOME = 같은 임대 폴더 · 같은 프로젝트 폴더)의 **두 번째 데몬**(소켓·상태 폴더 `run2`).
@@ -80,7 +82,7 @@ impl Box_ {
         }
         let entries = vec![json!({"role": role, "agent": "claude", "cwd": proj, "session_id": sid, "claude_config_dir": cfg})];
         std::fs::write(run.join("topology.json"), json!({"entries": entries}).to_string()).unwrap();
-        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone(), daemons: Default::default(), pin_written: Default::default() }
+        Self { sock: run.join("cysd.sock"), base: self.base.clone(), path: self.path.clone(), sid, role: role.into(), owns_base: false, no_reg: self.no_reg, reg_gate: self.reg_gate.clone(), helper_gate: self.helper_gate.clone(), daemons: Default::default(), pin_written: Default::default(), seat_shell: self.seat_shell.clone() }
     }
 
     /// 이 대화의 임대 파일(상자 HOME 의 임대 폴더 · 키 = sha256("v1\0" + 소문자 id)).
@@ -148,6 +150,9 @@ impl Box_ {
         }
         if let Some(g) = &self.helper_gate {
             c.env("FAKE_HELPER_GATE", g);
+        }
+        if let Some(sh) = &self.seat_shell {
+            c.env("CYS_SHELL", sh);
         }
         // 가짜 claude 의 등록 명령 = 이 시험이 지은 cys(절대 경로) — 좌석 셸은 로그인 셸이라 PATH 가 재정렬돼 맨 `cys` 가
         //   설치본(/usr/local/bin/cys · T1 없음)으로 풀렸다(skt1 실측: 등록이 T1 follow 를 한 번도 안 거침).
@@ -432,6 +437,43 @@ fn same_daemon_rerestore_within_600s_keeps_the_conversation() {
               std::env::var("CYS_SESSION_LEASE").unwrap_or_else(|_| "on".into()), q(0.5), q(0.95), q(1.0));
     assert_eq!(rc93, 0, "정상 조건 재복원에서 판정 불가(rc 93) {rc93}/{rr}");
     assert_eq!(lost, 0, "600초 안 재복원에서 대화를 잃었다 {lost}/{rr}:\n{}\n--- fake.log\n{}", rounds.join("\n"), b.fake_log());
+}
+
+/// TICKET=cysr-1118-seat ② — 강제 종료된 claude 가 끄지 못한 포커스 보고 모드(ESC[?1004h)가 뷰어에 남아, 포커스가 바뀔 때마다
+/// GUI 가 `ESC[O`/`ESC[I` 를 맨 셸 입력줄로 보낸 좌석(rc8 P2 「[O[Iclaude」 실측 꼴). 그 좌석에서 재연결 복원이 성공해야 한다 —
+/// 같은 좌석(in-seat) · 작성자 1 · fresh 폴백 0.
+#[test]
+fn residual_focus_report_bytes_do_not_break_in_seat_reconnect() {
+    let mut b = Box_::new("rf1");
+    // 잔재가 글자 그대로 입력줄에 남는 셸(윈 PowerShell 실측 꼴의 맥 재현) — 줄 편집기 없음 = tty 정규 모드(ESC 도 글자 · ^U = VKILL).
+    //   zsh·readline 은 ESC[O/ESC[I 를 키 열로 삼켜 이 결함이 맥 기본 셸에선 드러나지 않는다(대조 실측 11-23: 고침 없이도 초록).
+    let sh = b.base.join("sbin/noedit-sh");
+    std::fs::write(&sh, "#!/bin/bash\nexec /bin/bash --noprofile --norc --noediting -i\n").unwrap();
+    assert!(Command::new("/bin/chmod").arg("755").arg(&sh).status().unwrap().success());
+    b.seat_shell = Some(sh);
+    b.up();
+    let first = b.cys(&["restore"]);
+    assert_eq!(b.settle_writers(6).len(), 1, "첫 복원이 대화를 잇지 않았다: {}\n{}", out(&first), b.fake_log());
+    let seats = b.role_seats();
+    assert_eq!(seats.len(), 1, "좌석 {seats:?}");
+    let seat = seats[0];
+    b.kill_writers();
+    b.wait_seat_empty();
+    // 뷰어(xterm.js 5.5 sendFocus 잔류)가 보내는 바이트 — GUI `send_input` 과 같은 인자(human · quiet).
+    for _ in 0..2 {
+        let r = b.rpcp("surface.send_text", json!({"surface_id": seat, "text": "\u{1b}[O\u{1b}[I", "quiet": true, "human": true,
+                                                   "queued": false, "clear_first": false, "machine_origin": false}));
+        assert!(r.as_ref().is_ok_and(|v| !v.is_null()), "포커스 바이트 주입 실패: {r:?}");
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    let o = b.cys(&["restore"]);
+    let w = b.settle_writers(6);
+    let log = b.fake_log();
+    assert!(out(&o).contains("좌석 내 재연결"), "in-seat 경로가 아니다: {}", out(&o));
+    assert_eq!(w.len(), 1, "잔류 포커스 바이트 좌석에서 재연결이 대화를 잇지 못했다: {}\n--- fake.log\n{log}", out(&o));
+    assert!(!out(&o).contains("fresh 기동으로 폴백"), "fresh 폴백: {}", out(&o));
+    let last = log.lines().rev().find(|l| l.starts_with("sid=")).unwrap_or("");
+    assert!(last.contains(&format!("surface={seat} ")), "같은 좌석에서 이어야 한다(surface:{seat}): {last}");
 }
 
 /// 두 복원 입구 동시 실행 — `cys restore` ∥ `cys launch-agent --resume-saved` 가 같은 대화를 동시에 이으면 작성자는 하나.

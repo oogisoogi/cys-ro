@@ -14030,6 +14030,25 @@ mod seat_latch_negation_tests {
     /// ★(0.14.31 · 리뷰 R2 · codex major) 관문 보류 채택이 복원 연속 지시([RESTORE]/[RECOVER])를 잃지 않는다 —
     /// 지시는 **첫 표식**에 실리고(`mark_gate_pending` 의 `followup`), 채택은 해제 전에 표식에서 읽어 전문 뒤에
     /// **한 제출**로 잇는다. 순수 함수는 직접 실행하고, 배선(세 호출부가 지시를 넘기는가 · 채택이 읽는가)은 소스로 잰다.
+    /// TICKET=cysr-1118-seat ② — in-seat 재연결은 기동 글 앞에 입력줄을 비운다(잔류 포커스 보고 `[O[I` · 윈 PowerShell rc8 P2).
+    /// 순서 = 선정리 키(첫 키 C-u = 사람 초안 관문 · 거부 = `?` 로 0바이트 건너뜀) → 200ms → `boot_agent_on_surface`.
+    #[test]
+    fn in_seat_restore_preclears_the_input_line_before_the_launch_text() {
+        assert_eq!(in_seat_preclear_keys(false), ["C-u"]);
+        assert_eq!(in_seat_preclear_keys(true), ["C-u", "Backspace", "Escape"], "윈 = ^U 글자 지우기 뒤 Escape(RevertLine)가 맨 끝");
+        let src = include_str!("cys.rs");
+        let body = {
+            let i = src.find("\nfn restore_in_seat_boot(").expect("restore_in_seat_boot 소실") + 1;
+            let rest = &src[i..];
+            &rest[..rest.find("\n}\n").expect("함수 끝")]
+        };
+        let pre = body.find("for key in in_seat_preclear_keys(cfg!(windows))").expect("선정리 없음");
+        let gate = body[pre..].find("recover_refusal_from_input_guard(e)))?;").map(|i| i + pre).expect("선정리 거부가 전파되지 않는다");
+        let lock = body.find("acquire_launch_lock()").expect("boot 락");
+        let boot = body.find("boot_agent_on_surface(").expect("기동");
+        assert!(lock < pre && pre < gate && gate < boot, "순서 = 락 → 선정리(거부 전파) → 기동");
+        assert!(body[pre..boot].contains("from_millis(200)"), "선정리 뒤 쉼 없음");
+    }
     #[test]
     fn gate_pending_adoption_carries_the_restore_followup_from_the_first_mark() {
         // ① 표식 행 파싱 — 구 데몬(키 부재)·null·공백은 None(전문만 = 오늘의 거동).
@@ -27010,7 +27029,7 @@ fn restore_launch_would_rename(role: &str, held_by_empty_seat: bool) -> bool {
 /// ★2판 ⑪(codex 1R): `run_restore` 의 기동 두 갈래 — 운영 = [`ProdRestoreLauncher`](종전 호출 그대로) ·
 /// 시험 = mock 데몬(topology) 위에서 **실제 루프**가 넘기는 인자(resume·sess·cfg)와 판정 뒤 처리를 잰다.
 trait RestoreLauncher {
-    /// in-seat 재연결. 바깥 Err = agent spec 해석 실패(건너뜀 · fresh 폴백 0) · 안 = `boot_agent_on_surface` 판정.
+    /// in-seat 재연결. 바깥 Err = 좌석에 0바이트(agent spec 해석 실패 · 입력줄 선정리 거부 — 건너뜀 · fresh 폴백 0) · 안 = `boot_agent_on_surface` 판정.
     #[allow(clippy::too_many_arguments)]
     fn in_seat(&mut self, sid: u64, role: &str, agent: &str, resume: bool, sess: Option<&str>,
                cwd: Option<&str>, cfg: Option<&str>) -> Result<Result<BootVerdict, String>, String>;
@@ -27034,6 +27053,20 @@ impl RestoreLauncher for ProdRestoreLauncher {
     }
 }
 
+/// in-seat 재연결의 기동 글 앞 선정리 키(순수 · TICKET=cysr-1118-seat ②) — 첫 키 C-u 는 사람 초안 관문을 겸한다(거부 = 0바이트 · 건너뜀).
+/// 유닉스 = C-u(zsh·bash 줄 편집기 kill-line · 줄 편집 없는 셸은 tty 의 VKILL) 하나.
+/// 윈 = C-u · Backspace · Escape — PowerShell 은 0x15 를 줄 지우기로 받지 않고 글자로 넣으므로(1.1.12 r7-7) 그 한 글자를 지우고,
+/// 잔재(`[O[I` · rc8 P2 실측 = 포커스 보고의 ESC 가 빠지고 남은 글자)는 PSReadLine 기본(Windows 편집 모드) Escape = RevertLine 으로 줄째 비운다.
+/// Escape 를 node-recover 처럼 빼지 않는 까닭: 이 경로는 빈 좌석(에이전트 없음)에서만 열린다(`empty_seats`) — 살아 있는 Claude 의 턴을 끊을 일이 없다.
+/// Escape 를 맨 끝에 두는 까닭: ESC 뒤에 바로 다른 바이트가 오면 Alt+키로 읽힐 수 있다 — 뒤는 200ms 쉼.
+fn in_seat_preclear_keys(windows: bool) -> &'static [&'static str] {
+    if windows {
+        &["C-u", "Backspace", "Escape"]
+    } else {
+        &["C-u"]
+    }
+}
+
 /// 운영 in-seat 재연결 — agent spec(실패 = 바깥 Err) → boot 락 → `boot_agent_on_surface`(restore=true).
 fn restore_in_seat_boot(
     sid: u64,
@@ -27051,6 +27084,16 @@ fn restore_in_seat_boot(
     //   보내면 화면 파괴·이중 기동이다. 가드는 이 함수 수명이다 — run_restore_with 의 fresh 폴백
     //   (`run_launch_agent_opts`)이 같은 락을 다시 잡으므로(자기 교착 방지) 그 전에 반드시 drop 된다.
     let _seat_lock = acquire_launch_lock();
+    // ★TICKET=cysr-1118-seat ②: 기동 글 앞 입력줄 선정리 — 형제 경로(node-recover · launch-agent 재사용)와 같은 모양.
+    //   강제 종료된 claude 가 끄지 못한 DECSET 1004(포커스 보고)가 뷰어(xterm.js)에 남아 포커스가 바뀔 때마다 `ESC[I`/`ESC[O` 가
+    //   맨 셸 입력줄에 쌓인다(데몬은 이것을 자동 응답으로 쳐 초안 계수 0) → C-u 없이 기동 글을 이으면 `[O[Iclaude` 구문 오류(rc8 P2 실측).
+    //   C-u 는 사람 초안 관문을 겸한다 — 거부(사람이 입력 중) = 0바이트 · 이 좌석은 건드리지 않고 건너뛴다(바깥 Err = 주입 0 · fresh 폴백 0).
+    //   ⚠남는 틈: C-u 와 기동 Return 사이(≈200ms + 왕복)에 새 포커스 보고가 끼면 그 줄은 여전히 오염된다(뷰어 1004 끄기 = 별도 판단).
+    for key in in_seat_preclear_keys(cfg!(windows)) {
+        request("surface.send_key", json!({"surface_id": sid, "key": key, "authoritative": true}))
+            .map_err(|e| format!("입력줄 선정리({key}) 거부 — 기동 글 0: {}", recover_refusal_from_input_guard(e)))?;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
     let verdict = boot_agent_on_surface(
         sid,
         role,
@@ -27271,7 +27314,8 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 let verdict = match launcher.in_seat(sid, role, agent, resume, sess.as_deref(), seat_cwd.as_deref(), cfg.as_deref()) {
                     Ok(v) => v,
                     Err(e) => {
-                        println!("· {role}: agent spec 해석 실패({e}) — 건너뜀");
+                        // 바깥 Err = 좌석에 아무것도 치지 않음(agent spec 해석 실패 · 입력줄 선정리 거부 — TICKET=cysr-1118-seat ②).
+                        println!("· {role}: 좌석 내 재연결 준비 실패({e}) — 건너뜀(주입 0 · 좌석 보존 · fresh 폴백 0)");
                         fail += 1;
                         continue;
                     }

@@ -155,7 +155,13 @@ impl World for CliWorld {
         // ★5회차(master 설계 2): 윈 주인 후보 이름 집합에 데몬 좌석 메타 agent_bin 을 더한다(agents.json 이 그 뒤 바뀌었어도 떠 있는 좌석의 실제 실행 파일) ·
         //   ★codex 5R H4(fail-closed): 판독 실패·형식 이상 = None → 이름 좁히기 전체 끔. 유닉스 = 이름 집합을 쓰지 않으므로 묻지 않는다(빈 목록).
         let seat_bins = if cfg!(windows) { seat_agent_bins(request("surface.list", json!({})).ok().as_ref()) } else { Some(Vec::new()) };
-        sl::scan_argv(norm, &self.exclude, seat_bins.as_deref())
+        // ★TICKET=cysr-1118-seat ①: 바깥 증거 ⓒ(claude 세션 등록 파일) — 명령줄에 대화 id 가 없는 작성자(`claude --continue` · 세션 안 `/resume`)를 본다.
+        //   등록이 Seen 이면 argv 훑기 없이 막는다 · 그 밖은 둘을 합친다(하나라도 판정 불가면 판정 불가).
+        let reg = sl::scan_registry(norm, &self.exclude, &cys::home_dir());
+        if matches!(reg, Evidence::Seen(_)) {
+            return reg;
+        }
+        sl::combine_evidence(sl::scan_argv(norm, &self.exclude, seat_bins.as_deref()), reg)
     }
 
     fn now(&self) -> u64 {

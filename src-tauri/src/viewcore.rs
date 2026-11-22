@@ -275,6 +275,51 @@ fn content_text(content: &Value) -> (Option<String>, Vec<String>) {
     }
 }
 
+/// (TICKET=cysr-1118-ui ①) 진행 줄에 싣는 도구 단서 글자 상한(글자 수 · 바이트 아님).
+pub(crate) const TOOL_HINT_MAX: usize = 60;
+
+/// 글자 상한으로 자른다(순수 · 글자 경계 · 넘으면 끝에 `…`) · 줄바꿈은 첫 줄만.
+fn clip_hint(s: &str) -> Option<String> {
+    let first = s.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut out: String = first.chars().take(TOOL_HINT_MAX).collect();
+    if first.chars().count() > TOOL_HINT_MAX {
+        out.push('…');
+    }
+    Some(out)
+}
+
+/// (TICKET=cysr-1118-ui ①) 도구 호출 한 건 → 사람이 읽을 짧은 단서(순수) — 진행 줄 「과정 보기」 재료. **입력 전문은 넘기지 않는다**:
+/// 파일 = 마지막 이름만 · 명령 = 설명(description) 우선 · 없으면 첫 줄 60자 · 찾기 = 찾는 말 · 웹 = 검색어/주소의 호스트 · 도우미 = 설명. 그 밖 = 없음(이름만).
+pub(crate) fn tool_hint(name: &str, input: &Value) -> Option<String> {
+    let s = |k: &str| input[k].as_str().filter(|v| !v.trim().is_empty());
+    let base = |p: &str| p.rsplit(['/', '\\']).find(|x| !x.is_empty()).map(str::to_owned);
+    match name {
+        "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => s("file_path").or(s("notebook_path")).and_then(base).and_then(|b| clip_hint(&b)),
+        "Bash" | "PowerShell" => s("description").or(s("command")).and_then(clip_hint),
+        "Grep" | "Glob" => s("pattern").and_then(clip_hint),
+        "WebSearch" => s("query").and_then(clip_hint),
+        "WebFetch" => s("url").map(|u| u.split("://").nth(1).unwrap_or(u).split(['/', '?', '#']).next().unwrap_or("").to_owned()).and_then(|h| clip_hint(&h)),
+        "Task" | "Agent" => s("description").and_then(clip_hint),
+        _ => None,
+    }
+}
+
+/// assistant 레코드 content → (도구 단계들, 생각 조각 있음)(순수). 단계 = `{name, hint}` · 도구 이름도 60자 상한.
+fn tool_steps(content: &Value) -> (Value, bool) {
+    let Some(arr) = content.as_array() else { return (Value::Null, false) };
+    let think = arr.iter().any(|b| matches!(b["type"].as_str(), Some("thinking") | Some("redacted_thinking")));
+    let tools: Vec<Value> = arr
+        .iter()
+        .filter(|b| b["type"].as_str() == Some("tool_use"))
+        .filter_map(|b| {
+            let name: String = b["name"].as_str()?.chars().take(TOOL_HINT_MAX).collect();
+            let hint = tool_hint(&name, &b["input"]);
+            Some(json!({"name": name, "hint": hint}))
+        })
+        .collect();
+    (if tools.is_empty() { Value::Null } else { Value::Array(tools) }, think)
+}
+
 /// 세션 기록 덩이(순수) → (레코드들, 소비한 바이트). 줄 끝(`\n`)까지 온전한 줄만 읽고 마지막 미완 줄은 남긴다(다음 호출이 잇는다).
 /// 레코드 = `{uuid, parent, role:"user"|"assistant", text(없으면 null), parts, ts, sidechain, at}` — user/assistant 전부(글 없는 고리 포함). 줄 파싱 실패는 건너뛴다(세기만).
 /// (조각 3 고침 · 검증 지적 B) 그 밖 종류(attachment·system 등)도 uuid 가 있으면 **글 없는 고리** `{uuid, parent, role:"link", text:null, …}` 로 넘긴다 —
@@ -319,6 +364,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             }
         };
         let (text, parts) = content_text(&v["message"]["content"]);
+        // (TICKET=cysr-1118-ui ①) 마스터 쪽 레코드만 도구 단계·생각 표지(진행 줄 재료 · 메모리만 · 화면 저장소 0 = NFR-S3)
+        let (tools, thinking) = if role == "assistant" { tool_steps(&v["message"]["content"]) } else { (Value::Null, false) };
         out.push(json!({
             "uuid": v["uuid"].as_str(),
             "parent": v["parentUuid"].as_str(),
@@ -328,6 +375,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             "ts": v["timestamp"].as_str(),
             "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
             "at": at,
+            "tools": tools,
+            "thinking": thinking,
         }));
     }
     (out, consumed, bad)
@@ -1362,6 +1411,38 @@ mod tests {
         assert_eq!(recs[2]["parent"], "a1");
         assert_eq!(bad, 1);
         assert_eq!(consumed, buf.len() - partial.len());
+    }
+
+    /// (TICKET=cysr-1118-ui ①) 진행 줄 재료 — 도구 이름 + 짧은 단서만(입력 전문 0) · 생각 표지 · user 레코드엔 없음.
+    #[test]
+    fn assistant_tool_use_becomes_short_steps_without_full_input() {
+        let long_cmd = format!("echo {}\nrm -rf /tmp/x", "가".repeat(100));
+        let a = json!({"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"t","message":{"content":[
+            {"type":"thinking","thinking":""},
+            {"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/Users/x/secret/dir/core.ts","limit":5}},
+            {"type":"tool_use","id":"t2","name":"Bash","input":{"command":"cargo test","description":"시험 돌리기"}},
+            {"type":"tool_use","id":"t3","name":"Bash","input":{"command": long_cmd}},
+            {"type":"tool_use","id":"t4","name":"Grep","input":{"pattern":"open_bound","path":"/a"}},
+            {"type":"tool_use","id":"t5","name":"WebFetch","input":{"url":"https://example.com/p?q=1","prompt":"비밀 질문"}},
+            {"type":"tool_use","id":"t6","name":"mcp__x__y","input":{"token":"zzz"}},
+            {"type":"tool_use","id":"t7","name":"Edit","input":{"file_path":"C:\\Users\\x\\main.rs","old_string":"a","new_string":"b"}}
+        ]}}).to_string();
+        let u = json!({"type":"user","uuid":"u2","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"파일 내용"}]}}).to_string();
+        let (recs, _, _) = parse_transcript_chunk(format!("{a}\n{u}\n").as_bytes());
+        let t = &recs[0]["tools"];
+        assert_eq!(recs[0]["thinking"], true);
+        assert_eq!(t[0], json!({"name":"Read","hint":"core.ts"}), "파일 = 마지막 이름만");
+        assert_eq!(t[1], json!({"name":"Bash","hint":"시험 돌리기"}), "명령 = 설명 우선");
+        let h2 = t[2]["hint"].as_str().unwrap();
+        assert!(h2.chars().count() == TOOL_HINT_MAX + 1 && h2.ends_with('…') && !h2.contains("rm -rf"), "설명 없는 명령 = 첫 줄 60자");
+        assert_eq!(t[3], json!({"name":"Grep","hint":"open_bound"}));
+        assert_eq!(t[4], json!({"name":"WebFetch","hint":"example.com"}), "웹 = 호스트만");
+        assert_eq!(t[5], json!({"name":"mcp__x__y","hint":null}), "모르는 도구 = 이름만");
+        assert_eq!(t[6], json!({"name":"Edit","hint":"main.rs"}), "윈 경로도 마지막 이름");
+        let all = recs[0].to_string();
+        assert!(!all.contains("secret") && !all.contains("비밀") && !all.contains("zzz") && !all.contains("old_string"), "입력 전문·다른 칸 0");
+        assert!(recs[1]["tools"].is_null() && recs[1]["thinking"] == false, "user 레코드(도구 결과)엔 없음");
+        assert!(!recs[1].to_string().contains("파일 내용"));
     }
 
     #[cfg(unix)]

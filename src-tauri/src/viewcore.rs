@@ -275,6 +275,61 @@ fn content_text(content: &Value) -> (Option<String>, Vec<String>) {
     }
 }
 
+/// (TICKET=cysr-1118-ui ①) 진행 줄에 싣는 도구 단서 글자 상한(글자 수 · 바이트 아님).
+pub(crate) const TOOL_HINT_MAX: usize = 60;
+
+/// 글자 상한으로 자른다(순수 · 글자 경계 · 넘으면 끝에 `…`) · 줄바꿈은 첫 줄만.
+fn clip_hint(s: &str) -> Option<String> {
+    let first = s.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let mut out: String = first.chars().take(TOOL_HINT_MAX).collect();
+    if first.chars().count() > TOOL_HINT_MAX {
+        out.push('…');
+    }
+    Some(out)
+}
+
+/// (TICKET=cysr-1118-ui ①) 도구 호출 한 건 → 사람이 읽을 짧은 단서(순수) — 진행 줄 「과정 보기」 재료. **입력 전문은 넘기지 않는다**:
+/// 파일 = 마지막 이름만 · 명령 = 설명(description)만(★codex 1R major — 명령 원문은 짧아도 비밀이 들 수 있어 **안 넘김** · 설명 없으면 단계 이름만) ·
+/// 찾기 = 찾는 말 · 웹 = 검색어 / 주소의 호스트 이름만(사용자·비밀번호·포트·경로 0 · 못 풀면 없음) · 도우미 = 설명. 그 밖 = 없음(이름만).
+pub(crate) fn tool_hint(name: &str, input: &Value) -> Option<String> {
+    let s = |k: &str| input[k].as_str().filter(|v| !v.trim().is_empty());
+    let base = |p: &str| p.rsplit(['/', '\\']).find(|x| !x.is_empty()).map(str::to_owned);
+    match name {
+        "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => s("file_path").or(s("notebook_path")).and_then(base).and_then(|b| clip_hint(&b)),
+        "Bash" | "PowerShell" => s("description").and_then(clip_hint),
+        "Grep" | "Glob" => s("pattern").and_then(clip_hint),
+        "WebSearch" => s("query").and_then(clip_hint),
+        "WebFetch" => s("url").and_then(url_host).and_then(|h| clip_hint(&h)),
+        "Task" | "Agent" => s("description").and_then(clip_hint),
+        _ => None,
+    }
+}
+
+/// 주소 → 호스트 이름만(순수) — `scheme://[user[:pw]@]host[:port]/…` · 사용자·비밀번호·포트 버림 · 꼴이 아니거나 호스트 글자가 이상하면 None(원문 안 넘김).
+fn url_host(u: &str) -> Option<String> {
+    let rest = u.split_once("://")?.1;
+    let auth = rest.split(['/', '?', '#']).next()?;
+    let hostport = auth.rsplit('@').next()?;
+    let host = if let Some(v6) = hostport.strip_prefix('[') { v6.split(']').next()? } else { hostport.split(':').next()? };
+    (!host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))).then(|| host.to_ascii_lowercase())
+}
+
+/// assistant 레코드 content → (도구 단계들, 생각 조각 있음)(순수). 단계 = `{name, hint}` · 도구 이름도 60자 상한.
+fn tool_steps(content: &Value) -> (Value, bool) {
+    let Some(arr) = content.as_array() else { return (Value::Null, false) };
+    let think = arr.iter().any(|b| matches!(b["type"].as_str(), Some("thinking") | Some("redacted_thinking")));
+    let tools: Vec<Value> = arr
+        .iter()
+        .filter(|b| b["type"].as_str() == Some("tool_use"))
+        .filter_map(|b| {
+            let name: String = b["name"].as_str()?.chars().take(TOOL_HINT_MAX).collect();
+            let hint = tool_hint(&name, &b["input"]);
+            Some(json!({"name": name, "hint": hint}))
+        })
+        .collect();
+    (if tools.is_empty() { Value::Null } else { Value::Array(tools) }, think)
+}
+
 /// 세션 기록 덩이(순수) → (레코드들, 소비한 바이트). 줄 끝(`\n`)까지 온전한 줄만 읽고 마지막 미완 줄은 남긴다(다음 호출이 잇는다).
 /// 레코드 = `{uuid, parent, role:"user"|"assistant", text(없으면 null), parts, ts, sidechain, at}` — user/assistant 전부(글 없는 고리 포함). 줄 파싱 실패는 건너뛴다(세기만).
 /// (조각 3 고침 · 검증 지적 B) 그 밖 종류(attachment·system 등)도 uuid 가 있으면 **글 없는 고리** `{uuid, parent, role:"link", text:null, …}` 로 넘긴다 —
@@ -319,6 +374,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             }
         };
         let (text, parts) = content_text(&v["message"]["content"]);
+        // (TICKET=cysr-1118-ui ①) 마스터 쪽 레코드만 도구 단계·생각 표지(진행 줄 재료 · 메모리만 · 화면 저장소 0 = NFR-S3)
+        let (tools, thinking) = if role == "assistant" { tool_steps(&v["message"]["content"]) } else { (Value::Null, false) };
         out.push(json!({
             "uuid": v["uuid"].as_str(),
             "parent": v["parentUuid"].as_str(),
@@ -328,6 +385,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             "ts": v["timestamp"].as_str(),
             "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
             "at": at,
+            "tools": tools,
+            "thinking": thinking,
         }));
     }
     (out, consumed, bad)
@@ -427,16 +486,32 @@ pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> R
     Ok(f)
 }
 
-/// 윈도 — 폴더 핸들 기준 상대 열기·reparse point 차단을 아직 만들지 않았다 → **읽지 않는다**(codex 4R major · 경로 재탐색 대조는 바꿔치기를 못 막음).
-/// 화면은 「모름」(전달 확인 중 → 오래 걸려요)으로 남는다. 윈 구현·실측 = 조각 10.
-#[cfg(not(unix))]
+/// 윈도 — ★TICKET=cysr-1118-ui ①-4: **연 핸들 자체를 대조**하는 판(`cys::bound_open::open_file_under` · 경로 재탐색 0 — codex 4R major 「경로 재탐색
+/// 대조는 바꿔치기를 못 막음」에 대한 답): 마지막 요소는 링크를 따르지 않고 열고(reparse point = 거부) · 연 객체의 최종 경로가
+/// 「설정 폴더 최종 경로 + 상대 요소」와 같아야 한다(중간 접합·링크 = 거부). 사유 코드는 유닉스 판과 같은 낱말. 윈 실기 시험 = windows-health `bound_open::`.
+#[cfg(windows)]
+pub(crate) fn open_bound(cfg: &std::path::Path, expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
+    cys::bound_open::open_file_under(cfg, expected)
+}
+
+/// 유닉스·윈도 밖 — 읽지 않는다(화면 = 「모름」).
+#[cfg(not(any(unix, windows)))]
 pub(crate) fn open_bound(_cfg: &std::path::Path, _expected: &std::path::Path) -> Result<std::fs::File, &'static str> {
     Err("unsupported_platform")
 }
 
-/// 이 플랫폼에서 결속 세션 파일을 열 수 있는가(= `open_bound` 가 unix 구현을 가졌는가). 윈 구현(조각 10)이 들어오면 함께 바꾼다.
+/// 이 플랫폼에서 결속 세션 파일을 열 수 있는가(= `open_bound` 가 실제 구현을 가졌는가 · ★cysr-1118-ui ①-4 = 윈도 포함).
+/// false 면 chat_transcript 가 RPC 0 으로 unsupported_platform 을 돌려주고 화면은 transcriptNone 으로 30초마다만 다시 묻는다(cysr-chat-held-win).
 pub(crate) const fn transcript_supported() -> bool {
-    cfg!(unix)
+    cfg!(any(unix, windows))
+}
+
+/// 윈도 확장 길이 접두 걷기(순수) — `\\?\C:\x` → `C:\x` · `\\?\UNC\s\h` → `\\s\h` · 그 밖 그대로.
+pub(crate) fn strip_verbatim(p: &str) -> String {
+    if let Some(r) = p.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{r}");
+    }
+    p.strip_prefix(r"\\?\").unwrap_or(p).to_owned()
 }
 
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
@@ -458,6 +533,8 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
     let sid = row_of(&org, surface_id).and_then(|r| r["registered_session_id"].as_str()).map(str::to_owned);
     // ★1.1.16(S3-2): cwd 를 실제 경로로 푼 값도 후보로(transcript_candidates 머리 주석) — 같은 세션 id 의 다른 프로젝트 폴더는 여전히 뒤지지 않는다.
     let canonical = lrow["cwd"].as_str().and_then(|c| std::fs::canonicalize(c).ok()).and_then(|p| p.to_str().map(str::to_owned));
+    // (TICKET=cysr-1118-ui ①-4) 윈도 canonicalize 는 `\\?\` 접두(확장 길이 경로)를 붙인다 — Claude Code 는 보통 경로로 슬러그를 만드므로 접두를 걷은 값으로 후보를 만든다.
+    let canonical = canonical.map(|c| strip_verbatim(&c));
     let paths = match transcript_candidates(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref(), canonical.as_deref()) {
         Ok(p) => p,
         Err(why) => return Ok(json!({"status": "unknown", "why": why})),
@@ -1364,6 +1441,45 @@ mod tests {
         assert_eq!(consumed, buf.len() - partial.len());
     }
 
+    /// (TICKET=cysr-1118-ui ①) 진행 줄 재료 — 도구 이름 + 짧은 단서만(입력 전문 0) · 생각 표지 · user 레코드엔 없음.
+    #[test]
+    fn assistant_tool_use_becomes_short_steps_without_full_input() {
+        let long_cmd = format!("echo {}\nrm -rf /tmp/x", "가".repeat(100));
+        let a = json!({"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"t","message":{"content":[
+            {"type":"thinking","thinking":""},
+            {"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/Users/x/secret/dir/core.ts","limit":5}},
+            {"type":"tool_use","id":"t2","name":"Bash","input":{"command":"cargo test","description":"시험 돌리기"}},
+            {"type":"tool_use","id":"t3","name":"Bash","input":{"command": long_cmd}},
+            {"type":"tool_use","id":"t4","name":"Grep","input":{"pattern":"open_bound","path":"/a"}},
+            {"type":"tool_use","id":"t5","name":"WebFetch","input":{"url":"https://example.com/p?q=1","prompt":"비밀 질문"}},
+            {"type":"tool_use","id":"t6","name":"mcp__x__y","input":{"token":"zzz"}},
+            {"type":"tool_use","id":"t7","name":"Edit","input":{"file_path":"C:\\Users\\x\\main.rs","old_string":"a","new_string":"b"}}
+        ]}}).to_string();
+        let u = json!({"type":"user","uuid":"u2","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"파일 내용"}]}}).to_string();
+        let (recs, _, _) = parse_transcript_chunk(format!("{a}\n{u}\n").as_bytes());
+        let t = &recs[0]["tools"];
+        assert_eq!(recs[0]["thinking"], true);
+        assert_eq!(t[0], json!({"name":"Read","hint":"core.ts"}), "파일 = 마지막 이름만");
+        assert_eq!(t[1], json!({"name":"Bash","hint":"시험 돌리기"}), "명령 = 설명 우선");
+        assert_eq!(t[2], json!({"name":"Bash","hint":null}), "설명 없는 명령 = 단계 이름만(원문 0 · codex 1R major)");
+        assert_eq!(t[3], json!({"name":"Grep","hint":"open_bound"}));
+        assert_eq!(t[4], json!({"name":"WebFetch","hint":"example.com"}), "웹 = 호스트만");
+        assert_eq!(t[5], json!({"name":"mcp__x__y","hint":null}), "모르는 도구 = 이름만");
+        assert_eq!(t[6], json!({"name":"Edit","hint":"main.rs"}), "윈 경로도 마지막 이름");
+        let all = recs[0].to_string();
+        assert!(!all.contains("secret") && !all.contains("비밀") && !all.contains("zzz") && !all.contains("old_string"), "입력 전문·다른 칸 0");
+        assert!(!all.contains("echo") && !all.contains("rm -rf"), "명령 원문 0");
+        assert!(recs[1]["tools"].is_null() && recs[1]["thinking"] == false, "user 레코드(도구 결과)엔 없음");
+        // 짧은 비밀 명령 · URL 자격증명·포트·경로
+        let w = |name: &str, input: Value| tool_hint(name, &input);
+        assert_eq!(w("Bash", json!({"command":"TOKEN=secret run"})), None);
+        assert_eq!(w("WebFetch", json!({"url":"https://alice:secret@Example.com:8443/p?q=1"})), Some("example.com".into()));
+        assert_eq!(w("WebFetch", json!({"url":"http://[::1]:80/x"})), Some("::1".into()));
+        assert_eq!(w("WebFetch", json!({"url":"not a url secret"})), None, "꼴 아님 = 없음(원문 0)");
+        assert_eq!(w("WebFetch", json!({"url":"https://a b@c/"})), Some("c".into()));
+        assert!(!recs[1].to_string().contains("파일 내용"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn open_bound_rejects_links_below_root_and_accepts_exact_file() {
@@ -1450,8 +1566,18 @@ mod tests {
         assert_eq!(e, "approval_screen_gone: m");
     }
 
+    /// (TICKET=cysr-1118-ui ①-4) 윈 canonicalize 의 확장 길이 접두를 걷어 Claude Code 슬러그와 같은 꼴로.
+    #[test]
+    fn strip_verbatim_drops_extended_length_prefix_only() {
+        assert_eq!(strip_verbatim(r"\\?\C:\Users\x\p"), r"C:\Users\x\p");
+        assert_eq!(strip_verbatim(r"\\?\UNC\srv\share\p"), r"\\srv\share\p");
+        assert_eq!(strip_verbatim("/private/tmp/x"), "/private/tmp/x");
+        assert_eq!(transcript_slug(&strip_verbatim(r"\\?\C:\Users\x\p")), "C--Users-x-p", "윈 슬러그(Claude Code 프로젝트 폴더 꼴)");
+    }
+
     /// (TICKET=cysr-chat-held-win) 빠른 길(`transcript_supported` = false → RPC 0 · unsupported_platform)은 `open_bound` 의 실제 동작과 같아야 한다 —
     /// 열 수 있는 플랫폼에서 빠른 길을 타거나(기록 못 읽음), 못 여는 플랫폼에서 RPC 를 부르면(예전 윈 = 직렬 풀에 조회 2개) 안 된다.
+    /// ★cysr-1118-ui ①-4: 윈도도 이제 true(연 핸들 대조 판) — 없는 설정 폴더 = no_config_dir(unsupported 아님).
     #[test]
     fn transcript_supported_matches_open_bound() {
         let cfg = std::path::Path::new("/nonexistent-cysr-chat-held-win");

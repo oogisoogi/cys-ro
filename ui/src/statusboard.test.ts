@@ -79,3 +79,40 @@ describe("(1f) 계정 경고 · 모양 어휘", () => {
     expect(css).toContain(".pane .pane-role-dot.act-input { border-radius: 1px; transform: rotate(45deg) scale(0.8);");
   });
 });
+
+// (TICKET=cysr-1118-ui ②) 박사님 11-22 19:4x 「이상하다. 계정도 하나밖에 안 보인다.」 — 두 계정 7d 가 다 수집되는데 상황판은 최고 하나만 그렸다(top7d).
+describe("계정별 한도 줄 — 계정 둘 이상이면 계정마다 한 줄", () => {
+  const reset1 = new Date(2026, 10, 27, 6, 0, 0).getTime() / 1000; // 금 06:00
+  const reset2 = new Date(2026, 10, 26, 17, 0, 0).getTime() / 1000; // 목 17:00
+  const now = reset2 - 3600 * 30;
+  // 대역 행 = IPC 꼴 그대로(칸 일부만) — 타입은 계약 밖 값도 받는지 보려고 느슨하게
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const acct = (o: Record<string, unknown>): any => ({ provider: "claude", updated_at: now - 5, source: "oauth", ...o });
+  const two = [
+    acct({ account_id: "a1", label: "one@example.com", profiles: [".claude"], current_profiles: [".claude"], rate: [{ label: "7d", used_pct: 43, resets_at: reset1 }] }),
+    acct({ account_id: "a2", label: "two@example.com", profiles: [".claude-acct2"], current_profiles: [".claude-acct2"], rate: [{ label: "5h", used_pct: 90, resets_at: now + 60 }, { label: "7d", used_pct: 38, resets_at: reset2 }] }),
+  ];
+  test("두 계정 = 두 줄(이름 · % · 초기화 요일·시각) · 이름 = 폴더 라벨/별명(이메일 0) · 차례 = 이름순(값이 바뀌어도 줄이 자리를 바꾸지 않음)", async () => {
+    const { accountLimitRows } = await import("./statusboard");
+    const rows = accountLimitRows(two, now);
+    expect(rows.map((r) => [r.name, r.pct, r.line])).toEqual([
+      ["claude", 43, "43% · 금 06:00"],
+      ["claude-acct2", 38, "38% · 목 17:00"],
+    ]);
+    expect(rows[1].title).toBe("claude-acct2 — 7일 한도 38% 사용 · 목 17:00 초기화(1일 6시간 남음)");
+    expect(JSON.stringify(rows)).not.toContain("@");
+    const aliased = accountLimitRows([{ ...two[1], alias: "계정2" }, two[0]], now);
+    expect(aliased.map((r) => r.name)).toEqual(["claude", "계정2"]);
+  });
+  test("관측 전(updated_at 없음)·7d 없는 계정은 줄 없음 · 하나뿐이면 1줄(종전 한 줄 꼴은 호출자가 그대로)", async () => {
+    const { accountLimitRows } = await import("./statusboard");
+    expect(accountLimitRows([two[0], { ...two[1], updated_at: null }], now).length).toBe(1);
+    expect(accountLimitRows([two[0], { ...two[1], rate: [{ label: "5h", used_pct: 1, resets_at: null }] }], now).length).toBe(1);
+    expect(accountLimitRows([], now)).toEqual([]);
+  });
+  test("같은 이름 두 계정은 뒤에 번호 · 시각 모름 = 퍼센트만", async () => {
+    const { accountLimitRows } = await import("./statusboard");
+    const same = [two[0], { ...two[1], profiles: [".claude"], current_profiles: [".claude"], rate: [{ label: "7d", used_pct: 5, resets_at: null }] }];
+    expect(accountLimitRows(same, now).map((r) => [r.name, r.line])).toEqual([["claude", "43% · 금 06:00"], ["claude 2", "5%"]]);
+  });
+});

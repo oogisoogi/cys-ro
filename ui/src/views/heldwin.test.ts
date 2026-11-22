@@ -1,6 +1,7 @@
 // (TICKET=cysr-chat-held-win) 윈 대화 화면 「붙잡아 둠 · 마스터 상태 확인이 늦어져서」 재현·회귀 시험.
 // 모형(src-tauri/src/main.rs RPC_POOL 그대로): 앱의 데몬 RPC 는 소켓당 **연결 1개를 직렬로** 나눠 쓴다 → invoke 는 앞 호출이 끝난 뒤 시작한다.
 // 윈 = chat_transcript 가 결속 파일을 못 연다(viewcore.rs open_bound = unsupported_platform) → {status:"unknown"} · 고치기 전에는 그 전에 데몬 RPC 2개(surface.list·org.status)를 같은 연결로 불렀다.
+// ★1.1.17(cysr-1118-ui ①-4): 윈도 open_bound 를 구현해 새 판 윈은 맥 꼴(ok)이다 — 이 「win」 모형은 결속 기록을 못 여는 좌석(1.1.16 윈 · 링크 거부·세션 미등록)의 회귀 시험으로 남긴다.
 // 판정 단위 = chat_send 호출 수(원자 제출 1 = 쓰기 1).
 import { describe, it, expect } from "bun:test";
 import { ChatCore, needsClick, OBS_MAX_MS, POLL_MS, STATUS_SLOW, type Deps } from "./core";

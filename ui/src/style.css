@@ -429,6 +429,14 @@ body.no-depts #ws-dept-row:has(> #ws-expert[hidden]) { display: none; } /* 안�
 .ws-board-limit .cc-tbar-track { flex: 1 1 auto; min-width: 1.5em; }
 .ws-board-limit-text { flex: none; white-space: nowrap; } /* (master#fcbc46fb ③) 글자는 줄이지 않는다(중간 잘림 0) — 막대가 줄어든다 */
 .ws-board-caret { flex: none; }
+/* (TICKET=cysr-1118-ui ②) 계정 둘 이상 = 계정마다 한 줄(막대 없음) — 「% · 요일 시각」은 줄이지 않고(중간 잘림 0) 이름만 아주 길 때 말줄임(전문 = 툴팁).
+   높은 값 = 글자 색(막대와 같은 60 · 80 문턱 · 색 = 막대 채움 토큰). */
+.ws-board-limit.multi { align-items: flex-start; }
+.ws-board-accts { display: flex; flex-direction: column; gap: 1px; flex: 1 1 auto; min-width: 0; }
+.ws-board-acct-row { display: flex; align-items: baseline; justify-content: space-between; gap: .5em; min-width: 0; }
+.ws-board-acct-name { flex: 0 1 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-board-acct-row.warn .ws-board-limit-text { color: #f59e0b; }
+.ws-board-acct-row.crit .ws-board-limit-text { color: #ef4444; }
 .ws-board-more[hidden] { display: none; }
 .ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }
 [data-seat-host="board"].bottom { flex: none; margin: 0; border-radius: 0; border-top: 1px solid var(--hairline); }

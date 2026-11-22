@@ -181,3 +181,17 @@
 .cvg-acts { display: flex; gap: 10px; flex-wrap: wrap; }
 .cvg-note { color: var(--cv-sub); font-size: 18px; margin: 8px 0 0; }
 @media (max-width: 600px) { .cv-rail { display: none; } }
+
+/* (TICKET=cysr-1118-ui ①) 진행 줄 — 접힌 한 줄 · 누르면 과정 목록(시각 · 단계 · 단서) */
+.cv-prog { margin-top: 4px; font-size: .86em; color: var(--cv-sub); }
+.cv-prog-head { display: flex; align-items: baseline; gap: .4em; max-width: 100%; padding: 0; background: none; border: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.cv-prog-head:disabled { cursor: default; }
+.cv-prog-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cv-prog.live .cv-prog-caret { animation: cv-prog-pulse 1.4s ease-in-out infinite; }
+@keyframes cv-prog-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .cv-prog.live .cv-prog-caret { animation: none; } }
+.cv-steps { margin: 4px 0 0; padding: 0 0 0 1.1em; list-style: none; max-height: 16em; overflow-y: auto; }
+.cv-stepi { display: flex; gap: .5em; align-items: baseline; min-width: 0; }
+.cv-stepi-at { flex: none; font-variant-numeric: tabular-nums; opacity: .7; }
+.cv-stepi-label { flex: none; }
+.cv-stepi-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: .85; }

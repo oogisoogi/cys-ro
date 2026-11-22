@@ -601,6 +601,12 @@ fn shell_prompt_ends_the_life() {
 
 /// 실 PTY: 좌석 프로세스가 질의 → 보고(받음) 뒤 자식에게 전경을 넘기고(`tcsetpgrp`) 그 자식이 보고 → 받지 않는다.
 /// reader 가 실제로 `foreground_pgid_now` 를 `ingest_fg` 에 넘기는지(배선)를 잰다.
+/// ★TICKET=cysr-1118-debug ①(깜빡이 고침 · 시험만 · 제품 판정·단언 그대로): 종전 파이썬은 첫 보고 0.4초 뒤 **제 시계로** 전경을 넘겼고,
+///   시험은 FIRST 를 본 뒤 200ms 쉬고 첫 단언을 했다 — 그 사이 시험 프로세스가 밀리면(CI 러너 · 시험 수천 개 동시) 자식 보고가 먼저 읽혀
+///   생애가 끝난 뒤 단언해 `(1, 0, false)` 로 붉었다(rc13 macos-rust-pack 원문과 같은 값). 대조군 = 시험 프로세스만 멈췄다 풀기
+///   (450ms 멈춤 · 50ms 돌림 · 파이썬 자식은 안 멈춤): 고치기 전 4/10 붉음(전부 `(1, 0, false)`).
+///   → 넘기기를 시각이 아니라 **순서**에 묶는다: 시험이 첫 단언을 마친 뒤 `go` 파일을 만들고, 파이썬은 그것을 본 뒤에만 넘긴다
+///   (20초 안에 못 보면 넘기지 않고 끝난다 = 둘째 전제 단언이 붉음 · 고아 없음).
 #[cfg(unix)]
 #[test]
 fn live_seat_foreground_handoff_ends_the_life() {
@@ -617,10 +623,16 @@ fn live_seat_foreground_handoff_ends_the_life() {
     daemon.activity.running.store(true, std::sync::atomic::Ordering::SeqCst);
     // 자식은 3초 뒤 스스로 끝난다(좌석 kill 이 다른 그룹의 자식을 못 거두어도 고아가 오래 남지 않게).
     // (Rust 의 `\` 줄 이음은 다음 줄 앞 공백을 지운다 → 들여쓰기가 있는 파이썬은 원시 문자열로.)
-    let py = r#"import os,signal,time
+    let go = dir.join("go");
+    let _ = std::fs::remove_file(&go);
+    let py = r#"import os,signal,sys,time
 w=lambda b: os.write(1,b)
+go=sys.argv[1]
 w(b'\x1b]7501;?\x07'); time.sleep(0.4)
-w(b'\x1b]7501;state=working:app=first\x07FIRST'); time.sleep(0.4)
+w(b'\x1b]7501;state=working:app=first\x07FIRST')
+end=time.time()+20
+while not os.path.exists(go) and time.time()<end: time.sleep(0.02)
+if not os.path.exists(go): os._exit(3)
 signal.signal(signal.SIGTTOU, signal.SIG_IGN)
 r,wp=os.pipe()
 pid=os.fork()
@@ -631,7 +643,7 @@ os.setpgid(pid,pid); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
 "#;
     let script = dir.join("fg.py");
     std::fs::write(&script, py).unwrap();
-    let cmd = format!("python3 {}", script.display());
+    let cmd = format!("python3 {} {}", script.display(), go.display());
     let s = crate::pty_test_support::retry_on_pty_exhaustion("ps7501 fg seat", || {
         daemon.create_surface(None, Some(cmd.clone()), None, Some("worker".into()), 24, 80)
     })
@@ -650,6 +662,7 @@ os.setpgid(pid,pid); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
         let st = s.program_status.lock().unwrap();
         assert_eq!((st.answered, st.len(), st.life_pgid.is_some()), (1, 1, true), "같은 전경 그룹의 보고를 받지 않았다");
     }
+    std::fs::write(&go, b"1").unwrap(); // 첫 단언 뒤에만 전경을 넘긴다(순서 고정 · 위 문서)
     assert!(wait_for("HANDED"), "자식 보고 출력이 나오지 않았다(전제)");
     let st = s.program_status.lock().unwrap();
     assert_eq!((st.len(), st.unsolicited, st.life_answered), (0, 1, false), "전경을 넘겨받은 다른 그룹의 보고를 받았다");

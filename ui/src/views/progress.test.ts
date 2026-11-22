@@ -107,6 +107,16 @@ describe("진행 줄 순수부", () => {
     expect(kept.length).toBe(PROG_MAX);
     expect(kept[0].hint).toBe("5");
   });
+  it("(codex 1R major) 새 말이 답함이면 옛 미응답 말은 다시 살아나지 않는다 · 새 말이 보내는 중이어도 옛 말은 살지 않음", () => {
+    const base = { createdAt: 0, thread: [] as string[], replies: [] as Msg["replies"] };
+    const old: Msg = { ...base, id: "a", text: "앞", sentAt: 1_000, step: "delivered", steps: [{ kind: "tool", label: "명령 실행 중", hint: "x", at: null }] };
+    const fresh: Msg = { ...base, id: "b", text: "뒤", sentAt: 2_000, step: "replied" };
+    expect(liveMsg([old, fresh])).toBeNull();
+    expect(liveMsg([old, { ...fresh, step: "sending" }])).toBeNull();
+    expect(liveMsg([old, { ...fresh, step: "replying" }])?.id).toBe("b");
+    expect(liveMsg([old])?.id).toBe("a");
+    expect(liveMsg([old, { ...fresh, sentAt: null, step: "held" }])?.id).toBe("a"); // 아직 안 보낸(붙잡힌) 말은 덮지 않음
+  });
   it("applyRecords = 그 말의 사슬 위 마스터 레코드만 단계로(다른 사슬·사람 글은 안 붙음)", () => {
     const m: Msg = { id: "m1", text: "안녕", createdAt: 0, sentAt: 0, step: "injected", thread: [], replies: [] };
     const recs: Rec[] = [

@@ -289,19 +289,29 @@ fn clip_hint(s: &str) -> Option<String> {
 }
 
 /// (TICKET=cysr-1118-ui ①) 도구 호출 한 건 → 사람이 읽을 짧은 단서(순수) — 진행 줄 「과정 보기」 재료. **입력 전문은 넘기지 않는다**:
-/// 파일 = 마지막 이름만 · 명령 = 설명(description) 우선 · 없으면 첫 줄 60자 · 찾기 = 찾는 말 · 웹 = 검색어/주소의 호스트 · 도우미 = 설명. 그 밖 = 없음(이름만).
+/// 파일 = 마지막 이름만 · 명령 = 설명(description)만(★codex 1R major — 명령 원문은 짧아도 비밀이 들 수 있어 **안 넘김** · 설명 없으면 단계 이름만) ·
+/// 찾기 = 찾는 말 · 웹 = 검색어 / 주소의 호스트 이름만(사용자·비밀번호·포트·경로 0 · 못 풀면 없음) · 도우미 = 설명. 그 밖 = 없음(이름만).
 pub(crate) fn tool_hint(name: &str, input: &Value) -> Option<String> {
     let s = |k: &str| input[k].as_str().filter(|v| !v.trim().is_empty());
     let base = |p: &str| p.rsplit(['/', '\\']).find(|x| !x.is_empty()).map(str::to_owned);
     match name {
         "Read" | "Edit" | "MultiEdit" | "Write" | "NotebookEdit" => s("file_path").or(s("notebook_path")).and_then(base).and_then(|b| clip_hint(&b)),
-        "Bash" | "PowerShell" => s("description").or(s("command")).and_then(clip_hint),
+        "Bash" | "PowerShell" => s("description").and_then(clip_hint),
         "Grep" | "Glob" => s("pattern").and_then(clip_hint),
         "WebSearch" => s("query").and_then(clip_hint),
-        "WebFetch" => s("url").map(|u| u.split("://").nth(1).unwrap_or(u).split(['/', '?', '#']).next().unwrap_or("").to_owned()).and_then(|h| clip_hint(&h)),
+        "WebFetch" => s("url").and_then(url_host).and_then(|h| clip_hint(&h)),
         "Task" | "Agent" => s("description").and_then(clip_hint),
         _ => None,
     }
+}
+
+/// 주소 → 호스트 이름만(순수) — `scheme://[user[:pw]@]host[:port]/…` · 사용자·비밀번호·포트 버림 · 꼴이 아니거나 호스트 글자가 이상하면 None(원문 안 넘김).
+fn url_host(u: &str) -> Option<String> {
+    let rest = u.split_once("://")?.1;
+    let auth = rest.split(['/', '?', '#']).next()?;
+    let hostport = auth.rsplit('@').next()?;
+    let host = if let Some(v6) = hostport.strip_prefix('[') { v6.split(']').next()? } else { hostport.split(':').next()? };
+    (!host.is_empty() && host.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':'))).then(|| host.to_ascii_lowercase())
 }
 
 /// assistant 레코드 content → (도구 단계들, 생각 조각 있음)(순수). 단계 = `{name, hint}` · 도구 이름도 60자 상한.
@@ -1451,15 +1461,22 @@ mod tests {
         assert_eq!(recs[0]["thinking"], true);
         assert_eq!(t[0], json!({"name":"Read","hint":"core.ts"}), "파일 = 마지막 이름만");
         assert_eq!(t[1], json!({"name":"Bash","hint":"시험 돌리기"}), "명령 = 설명 우선");
-        let h2 = t[2]["hint"].as_str().unwrap();
-        assert!(h2.chars().count() == TOOL_HINT_MAX + 1 && h2.ends_with('…') && !h2.contains("rm -rf"), "설명 없는 명령 = 첫 줄 60자");
+        assert_eq!(t[2], json!({"name":"Bash","hint":null}), "설명 없는 명령 = 단계 이름만(원문 0 · codex 1R major)");
         assert_eq!(t[3], json!({"name":"Grep","hint":"open_bound"}));
         assert_eq!(t[4], json!({"name":"WebFetch","hint":"example.com"}), "웹 = 호스트만");
         assert_eq!(t[5], json!({"name":"mcp__x__y","hint":null}), "모르는 도구 = 이름만");
         assert_eq!(t[6], json!({"name":"Edit","hint":"main.rs"}), "윈 경로도 마지막 이름");
         let all = recs[0].to_string();
         assert!(!all.contains("secret") && !all.contains("비밀") && !all.contains("zzz") && !all.contains("old_string"), "입력 전문·다른 칸 0");
+        assert!(!all.contains("echo") && !all.contains("rm -rf"), "명령 원문 0");
         assert!(recs[1]["tools"].is_null() && recs[1]["thinking"] == false, "user 레코드(도구 결과)엔 없음");
+        // 짧은 비밀 명령 · URL 자격증명·포트·경로
+        let w = |name: &str, input: Value| tool_hint(name, &input);
+        assert_eq!(w("Bash", json!({"command":"TOKEN=secret run"})), None);
+        assert_eq!(w("WebFetch", json!({"url":"https://alice:secret@Example.com:8443/p?q=1"})), Some("example.com".into()));
+        assert_eq!(w("WebFetch", json!({"url":"http://[::1]:80/x"})), Some("::1".into()));
+        assert_eq!(w("WebFetch", json!({"url":"not a url secret"})), None, "꼴 아님 = 없음(원문 0)");
+        assert_eq!(w("WebFetch", json!({"url":"https://a b@c/"})), Some("c".into()));
         assert!(!recs[1].to_string().contains("파일 내용"));
     }
 

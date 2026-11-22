@@ -83,11 +83,12 @@ export function appendSteps(prev: readonly ProgStep[] | undefined, add: readonly
 /** 진행 줄을 다는 단계(아직 답을 기다리는 말). */
 const LIVE: ReadonlySet<Step> = new Set<Step>(["injected", "checking", "slow", "delivered", "replying"]);
 
-/** 진행 줄을 달 말 = 보낸 시각이 있고 아직 답을 기다리는 말 가운데 가장 최근 하나(앞 말들은 뒤 말이 덮음 — settleSteps 와 같은 규칙). */
+/** 진행 줄을 달 말 = **보낸 시각이 가장 늦은 말**이 아직 답을 기다리면 그 말 · 아니면 없음(앞 말들은 뒤 말이 덮음).
+ *  ★codex 1R major: 기다리는 말만 먼저 걸러 고르면, 새 말이 「답함」이 된 뒤 옛 미응답 말이 다시 살아나 옛 단계·시계가 재개됐다 — 최신성 경계를 먼저 잡는다. */
 export function liveMsg(msgs: readonly Msg[]): Msg | null {
-  let best: Msg | null = null;
-  for (const m of msgs) if (LIVE.has(m.step) && m.sentAt !== null && (best === null || (best.sentAt as number) <= m.sentAt)) best = m;
-  return best;
+  let newest: Msg | null = null;
+  for (const m of msgs) if (m.sentAt !== null && (newest === null || (newest.sentAt as number) <= m.sentAt)) newest = m;
+  return newest && LIVE.has(newest.step) ? newest : null;
 }
 
 /** 경과(ms) → 「12초」 · 「1분 5초」 · 「1시간 2분」(음수 = 0초). */

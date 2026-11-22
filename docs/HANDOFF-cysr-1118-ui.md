@@ -65,18 +65,21 @@
   (codex 4R major 「경로 재탐색 대조는 바꿔치기를 못 막음」 때문에 미뤄 둔 조각 10). 그래서 윈 대화 화면은 「전달 확인 중 → 오래 걸려요」에 머물고 답도 안 보였다.
 - 진행 줄만 윈에서 따로 만드는 길(데몬 화면 글 훑기 등)은 재료가 부정확해 버림 → 기록을 안전하게 여는 것이 유일한 길.
 
-### 판정 = 구현 포함 · 설계(src/bound_open.rs · 본체 leaf)
-- 방법 = **연 핸들 자체를 대조**(경로 재탐색 0 → 확인·열기 사이 틈 0): ① 뿌리(설정 폴더 · 데몬 값 · 따라감 = 유닉스 판과 같음) 최종 경로
-  ② 대상 파일을 `FILE_FLAG_OPEN_REPARSE_POINT` 로 열기(마지막 요소 링크·접합 안 따름) ③ 연 핸들 속성: reparse point = `symlinked_path` · 폴더 = `not_a_file`
-  ④ 연 핸들 `GetFinalPathNameByHandleW` = 「뿌리 최종 경로 + 상대 요소」(ASCII 대소문자 무시) 아니면 `symlinked_path`(중간 접합·링크). 공유 모드 = 읽기·쓰기·삭제(Claude Code 쓰기 안 막음).
-  상대 요소 검사 = 보통 이름만 · `:`(대체 스트림)·구분자·끝 점·공백 거부. 사유 코드 = 유닉스 판과 같은 낱말.
-- 같은 방식 선례 = `src/update/win_install.rs`(최종 경로 대조). 본체에 둔 이유 = 윈 실기 레인(windows-health)은 본체 크레이트 시험만 돈다(cys-app 시험 0) → 윈도우 전용 검체를 실기로 돌리려면 본체여야 함.
+### 판정 = 구현 포함 · 설계(src/bound_open.rs · 본체 leaf) — ★codex 1R 뒤 판(아래 대조표)
+- 방법 = **유닉스 판과 같은 결속(핸들 기준 상대 열기)**: ① 뿌리(설정 폴더 · 데몬 값 · 따라감 = 유닉스 판과 같음)를 폴더 핸들로 열어 끝까지 쥔다
+  ② 상대 요소마다 `NtCreateFile(OBJECT_ATTRIBUTES.RootDirectory = 앞 핸들 · ObjectName = 그 요소 하나)` + `FILE_OPEN_REPARSE_POINT`(링크·접합 안 따름) ·
+  중간 = `FILE_DIRECTORY_FILE` · 마지막 = `FILE_NON_DIRECTORY_FILE` ③ 연 요소마다 핸들 속성: reparse point = `symlinked_path`. 최종 경로 문자열 비교는 쓰지 않는다.
+  공유 모드 = 읽기·쓰기·삭제(Claude Code 쓰기 안 막음). 상대 요소 검사 = 보통 이름만 · `:`·구분자·끝 점·공백 거부. NTSTATUS → 사유 = 유닉스 errno 대응과 같은 낱말
+  (없음 = no_file · 중간이 파일 = symlinked_path(ENOTDIR) · 마지막이 폴더 = not_a_file).
+- windows-sys 기능 2개 추가(`Wdk_Foundation` · `Wdk_Storage_FileSystem` · 같은 0.59 · Cargo.lock 무변). 본체에 둔 이유 = 윈 실기 레인(windows-health)은 본체 크레이트 시험만 돈다(cys-app 시험 0) → 윈도우 전용 검체를 실기로 돌리려면 본체여야 함.
 - 배선: `viewcore.rs` `#[cfg(windows)] open_bound → cys::bound_open::open_file_under` · `transcript_supported() = cfg!(any(unix, windows))`(빠른 길 unsupported 는 그 밖 플랫폼만) ·
   윈 canonicalize 의 `\\?\` 접두를 걷어 두 번째 슬러그 후보를 만든다(`strip_verbatim`).
 - transcriptNone 정합: 뜻 = 「이 좌석 기록을 못 연다는 사실」 그대로(30초 재조회) — 1.1.17 윈은 보통 ok(맥 꼴)라 거의 안 쓰이고, 세션 미등록·파일 없음·링크 거부 좌석과 1.1.16 윈에만 쓰인다(주석 갱신).
   heldwin.test 「win」 모형 = 기록 못 여는 좌석 회귀 시험으로 유지(초록).
 - 윈 실기 시험 단계: `windows-health.yml` 에 `cargo_filter_count --lib bound_open::` + 실행(0건 = 적색 규율 그대로).
-  윈도우 전용 검체 = 정상 파일 읽기 · 쓰는 중 열기(상대 쓰기 허용) · 중간 접합(mklink /J) 거부(경로로는 읽힘 = 대조군) · 파일 심볼릭 링크 거부(권한 있을 때 · 없으면 판정 불가 표시).
+  윈도우 전용 검체 4 = 정상 파일 읽기·대소문자 다른 철자·사유 코드·쓰는 중 열기 · 중간 접합(mklink /J) 거부(경로로는 읽힘 = 대조군) · 파일 심볼릭 링크 거부(못 만들면 적색) ·
+  **뿌리 바꿔치기**(뿌리 핸들을 쥔 뒤 이름 바꾸고 다른 폴더를 그 이름에 → 쥔 핸들로 연 파일 = 옛 뿌리 것). `win_tests::` 개수를 따로 세고(순수 시험이 0건을 가리지 않게)
+  ci-branch FILTERED_CARGO_REQUIRED 에 `--lib bound_open::` 등재(실행 줄을 지우면 적색) · 로컬 레인 대조 스텝 재현 rc 0(필수 필터 13/13).
 
 ### 시험(맥)
 - `cargo test --lib bound_open::` 2 passed(순수부 — 상대 요소·최종 경로 대조) · `cargo test -p cys-app --bin cys-app viewcore` 28 passed(strip_verbatim·transcript_supported 정합 포함)
@@ -87,4 +90,22 @@
 - 가정(확신 중상): 윈 Claude Code 프로젝트 폴더 이름 = 우리 슬러그(`C:\Users\x\p` → `C--Users-x-p`). 읽기 전용 측정(윈 마스터에게):
   `Get-ChildItem "$env:USERPROFILE\.claude\projects" -Directory | Select-Object -First 5 Name` → 이름이 `C--Users-…` 꼴이면 확정.
 - 윈에서 기록 읽기가 살아나면 맥처럼 읽기마다 데몬 RPC 2개(surface.list·org.status)가 직렬 풀에 선다 — 상한은 chat-held-win ⓐ(관측 기반 500~2000ms)가 흡수 · 윈 실기 대화 화면 왕복 10회 전달률은 통합 빌드 시험 몫.
-- 하드 링크는 유닉스 판과 같이 막지 않는다(최종 경로가 다른 이름으로 나오면 거부 = 안전 쪽).
+- 하드 링크는 유닉스 판과 같이 막지 않는다(유닉스 O_NOFOLLOW 도 못 막는 같은 축 · 같은 볼륨·그 파일 쓰기 권한 필요) — 📌 수용 여부 = master 판정(codex missing ④).
+
+## codex 1R(갈래 끝 1회 · d93c0b3cc 대상) — verdict BLOCK · 대조표
+원문 = `~/axdev/workers/cysr-1118-ui/evidence/codex-1r-verdict.json`.
+
+| # | 등급 | 지적 | 처리 | 근거·시험 |
+|---|---|---|---|---|
+| 1 | blocking | bound_open:87 뿌리 핸들을 닫고 경로로 다시 열어 뿌리 이름 바꿔치기 틈 | **고침** — 뿌리 핸들을 쥐고 요소마다 NtCreateFile(RootDirectory) | 윈 검체 `root_swapped_after_open_still_reads_old_root`(쥔 뒤 바꿔치기 → 옛 뿌리 파일) |
+| 2 | blocking | bound_open:43 ASCII 대소문자 무시 최종 경로 비교가 대소문자 구분 형제 뿌리를 같다고 봄 | **고침** — 문자열 비교 제거(핸들 결속 · 찾기는 쥔 폴더 안에서만) | final_path_is 삭제 · 윈 검체 대소문자 다른 철자 = 같은 파일(쥔 뿌리 안) |
+| 3 | major | 대상이 폴더면 BACKUP_SEMANTICS 없어 no_file(시험 기대 not_a_file 와 충돌) · 중간 파일 사유 불일치 | **고침** — NtCreateFile 상태 → 사유(FILE_IS_A_DIRECTORY = not_a_file · NOT_A_DIRECTORY = symlinked_path) | `status_reasons_match_unix_words`(맥) · 윈 검체 폴더·중간 파일 |
+| 4 | major | viewcore:298 설명 없는 명령 원문 60자 노출 | **고침** — 설명만 · 없으면 단계 이름만 | Rust 시험 `TOKEN=secret run` → None · 명령 원문 0 |
+| 5 | major | viewcore:301 URL 사용자·비밀번호 노출 | **고침** — url_host = 호스트 이름만(사용자·비번·포트·경로 0 · 꼴 아님 = 없음) | Rust 시험 `alice:secret@Example.com:8443` → example.com |
+| 6 | major | progress:89 새 말 답함 뒤 옛 미응답 말이 다시 live | **고침** — 보낸 시각 가장 늦은 말이 기다릴 때만 live | progress.test 새 1건 — 고치기 전 판 1 fail → 고친 뒤 7/7 |
+| 7 | major | bound_open:212 파일 링크 못 만들면 조용한 초록 · 순수 시험이 개수 채움 | **고침** — 못 만들면 적색 · `win_tests::` 개수 따로 · REQUIRED 등재 | windows-health 2줄 · 레인 대조 로컬 rc 0 |
+| 8 | minor | chat/index:121 펼침 상태 집합 무한 증가 | **고침** — paint 때 없는 말 id 제거 | — |
+| m1 | missing | 윈 실기 증거 | 이 커밋 push 의 windows-health 런 | 【확인요청】에 run·결과 |
+| m2 | missing | accountShortLabel·acctKey 범위 밖 | 렌더 하네스 캡처·이메일 0 단언으로 대신(범위 밖 함수 무변) | evidence/statusboard |
+| m3 | missing | 216px 렌더·타이머 해제 실측 | 216px = 헤드리스 6/6 · 타이머 = ctx.timers(화면 해제 때 함께 해제 = 기존 계약) | — |
+| m4 | missing | 하드 링크 허용 근거 | 유닉스 판과 같은 축 · 📌 master 판정 | 위 한계 절 |

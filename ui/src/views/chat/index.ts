@@ -228,6 +228,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       const order = logOrder(s.msgs, s.stray);
       const lastItem = order[order.length - 1];
       const liveM = liveMsg(s.msgs); // (TICKET=cysr-1118-ui ①) 진행 줄을 살아 있게 다는 말(가장 최근 · 답 기다림)
+      for (const id of [...openProg]) if (!s.msgs.some((m) => m.id === id)) openProg.delete(id); // (codex 1R minor) 밀려난 말의 펼침 상태는 버린다(보관량 = 지금 말 수 이하)
       for (const it of order) {
         if (it.kind === "stray") {
           log.append(masterBubble(it.r.text, it.r.uuid, it === lastItem));

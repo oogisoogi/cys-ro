@@ -6,6 +6,7 @@
 |---|---|---|---|
 | `deny_self_approve` | 승인 요청을 낸 좌석·pane 밖 미귀속 프로세스의 `allow` 를 막는다 | `true` | §3.2 자기승인 차단 |
 | `rc_allowed_roles` | Remote Control(폰 노출)을 켜도 되는 좌석 역할명 목록. 목록 **밖** 역할(과 부서 데몬 좌석 전부)은 기동 인자 `--settings` 로 `remoteControlAtStartup:false` + `disableRemoteControl:true` 가 붙고, 기동 뒤 대화 기록에서 RC 켜짐이 보이면 데몬이 끈다 | `["master"]` | BACKLOG D25 · master 결정 [master#99924a73] |
+| `rc_master_autostart` | 본부 master 좌석이 시작할 때 Remote Control 을 **켠다**(기동 인자 `--settings` 에 `remoteControlAtStartup:true` · 사용자 설정의 false 보다 위). `false` 일 때만 끈다(종전 = 손으로 켬). cso·worker·부서 데몬 좌석은 이 키와 무관하게 꺼짐 강제 · `rc_allowed_roles` 에서 `master` 를 빼면 master 도 꺼짐 | `true` | 박사님 11-23 「rc는 기본이다 … 단, 마스터만이다」 · TICKET=cysr-1118-seat ④ |
 | `seat_permissions_allow` | claude 좌석 기동 인자 `--settings` 의 `permissions.allow` 로 싣는 목록(분류기 오탐 완화 장치) | 없음(빈 목록) | BACKLOG D24ⓒ · 효과 미검증 → 기본 0 |
 
 - **워커에서 RC 를 켜려면** `rc_allowed_roles` 에 그 좌석의 역할명(`cysr list` 의 `role=`)을 넣고 좌석을 재기동한다. 역할명은 `worker-N` 처럼 번호가 붙을 수 있다 — 재기동 뒤 번호가 바뀌면 목록도 고쳐야 한다.

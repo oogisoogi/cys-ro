@@ -17606,6 +17606,7 @@ fn apply_seat_settings_arg(cmd: &mut String, role: &str, agent: &str) {
         cys::is_dept_socket(&cys::socket_path()),
         &cys::seat_policy_permissions_allow(),
         &cys::rc_allowed_roles(),
+        cys::rc_master_autostart(),
     );
     if settings.as_object().is_some_and(|o| o.is_empty()) {
         return;

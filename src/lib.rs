@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 pub mod action_catalog;
+/// agy(Antigravity CLI) 좌석 문 — 구글 개인 요금제 약관 때문에 기본 닫힘 · 사람이 앱 화면에서만 연다(TICKET=cysr-agy-policy-exposure).
+pub mod agy_door;
 /// agy(Antigravity CLI) 상태줄 자동 연결(0.14.42 · 오너 승인 2026-09-24) — 설정 칸이 비었거나 없을 때만 넣고,
 /// 사용자 설정은 덮지 않으며, 표지 달린 cys 연결만 뺀다. 윈도우는 자동 연결 끔(안내만).
 pub mod agy_statusline;
@@ -52,6 +54,8 @@ pub mod paste_fence;
 /// 하나(`profile_gate::classify`)가 소유하고, `auth_class` 8값 중 `unknown` 은 **통과가 아니다**.
 pub mod profile_gate;
 pub mod process_observation;
+/// 대화 소유 임대(TICKET=cysr-seatkeep-t1) — 한 대화에 작성자 하나 · 시간으로 풀지 않음 · 판정 불가 = 안 띄움.
+pub mod session_lease;
 /// ready 술어 단일화(U-13) — `ready = 입력활성 증거 ∧ 관문 문면 부재`. 판정은 순수함수 하나가
 /// 소유하고(`readiness::judge`), 부트 폴링과 `adapter_ready` 두 소비처가 같은 술어를 경유한다.
 /// 종전엔 네 자리가 각자 ready 를 선언해 "마커 축만 고치면 아무것도 안 바뀌는" 상태였다.
@@ -80,6 +84,47 @@ pub mod launchd;
 
 pub const ENV_SOCKET: &str = "CYS_SOCKET";
 pub const ENV_SURFACE_ID: &str = "CYS_SURFACE_ID";
+
+// ★(1.1.16 · TICKET=cysr-1116-borrow23-1119 · 차용 ③ · 독립 검증 V-4) 가벼운 시작 손잡이 `boot_fleet` — **진실원 = 데몬 한 곳**.
+//   데몬이 기동 때 자기 env `CYS_BOOT_FLEET`(full|light) > `~/.cys/policy.json` `boot_fleet`(**full 만** — 좌석도 쓰는 파일) > 기본값으로
+//   한 번 정하고, RPC `system.boot_fleet` 로 내보낸다(좌석·부트 감독자 자식 env 도장 [`ENV_BOOT_FLEET_DAEMON`] 은 진단 표지 — 판정 재료 아님).
+//   `cys boot`·팩 python(`cys daemon boot-fleet`)은 **RPC 값만** 쓰고 묻지 못하면 기본 full — 어떤 환경값(`CYS_BOOT_FLEET` · 도장)도
+//   판정에 쓰지 않는다(codex 2R 1번 · 명령 앞 export 로 반쪽 light 를 못 만든다). 내 env 의 `CYS_BOOT_FLEET` 가 다르면 경고 1줄.
+//   ★python 정본 `javis_orchestra.boot_fleet_decide`·`boot_fleet_resolve` 와 같은 규칙·같은 기본값(cys.rs 시험이 문자열 대조).
+pub const BOOT_FLEET_DEFAULT: &str = "full";
+pub const ENV_BOOT_FLEET: &str = "CYS_BOOT_FLEET";
+pub const ENV_BOOT_FLEET_DAEMON: &str = "CYS_BOOT_FLEET_DAEMON";
+
+fn boot_fleet_norm(v: &str) -> Option<&'static str> {
+    // python `_norm` 과 바이트 동치: ASCII 공백·탭·줄바꿈만 벗기고 ASCII 만 소문자로.
+    match v.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\n')).to_ascii_lowercase().as_str() {
+        "full" => Some("full"),
+        "light" => Some("light"),
+        _ => None,
+    }
+}
+
+/// 데몬 쪽 결정(순수) — (데몬 env 값, policy.json) → (fleet, 출처 "env"|"policy"|"default"). policy 는 full 만 받는다.
+pub fn boot_fleet_decide(env: Option<&str>, policy: Option<&Value>) -> (&'static str, &'static str) {
+    if let Some(f) = env.and_then(boot_fleet_norm) {
+        return (f, "env");
+    }
+    if policy.and_then(|p| p.get("boot_fleet")).and_then(Value::as_str).and_then(boot_fleet_norm) == Some("full") {
+        return ("full", "policy");
+    }
+    (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "default")
+}
+
+/// 소비자 쪽 해소(순수) — (데몬이 준 값, 내 프로세스 env 의 `CYS_BOOT_FLEET`) → (fleet, 출처 "daemon"|"no-daemon", 경고?).
+/// 데몬 값이 없으면 기본(full) — 내 env 는 **어느 경우에도 쓰지 않는다**(반쪽 light 차단 · 다르면 경고만).
+pub fn boot_fleet_resolve(daemon: Option<&str>, seat_env: Option<&str>) -> (&'static str, &'static str, bool) {
+    let (fleet, src) = match daemon.and_then(boot_fleet_norm) {
+        Some(f) => (f, "daemon"),
+        None => (if BOOT_FLEET_DEFAULT == "light" { "light" } else { "full" }, "no-daemon"),
+    };
+    let warn = seat_env.is_some_and(|e| !e.trim().is_empty() && boot_fleet_norm(e) != Some(fleet));
+    (fleet, src, warn)
+}
 /// ★(P1) 좌석 토큰 env 키 — 데몬이 pane 스폰 시 PTY env 로**만** 배달하는 세대 각인 비밀
 /// (`"{daemon.started_at:x}-{pid:x}.{128bit hex}"` — 발급·대조·수명은 데몬 소유: cysd/state.rs
 /// `mint_seat_token` · cysd/handlers.rs claim_role/hook.decide). CLI 는 값을 해석하지 않고
@@ -503,6 +548,45 @@ impl_spawn_policy!(tokio::process::Command);
 /// ⚠대상이 아닌 것: 사용자 콘솔을 물려받아야 하는 전경 자식(`cys run` = `ConsoleScoped`)·
 /// 분리 자식(`Survivor`·`GroupScoped`)은 이 헬퍼가 아니라 `spawn_policy` 로 등급을 직접 적는다.
 /// 이 헬퍼 밖의 `Command::new` 는 `spawn_policy_tests::raw_command_new_census_is_frozen` 이 센다.
+/// ★1.1.16(TICKET=cysr-1116-debt-d-1119 · [master#1a7e7b90] ②): 이 프로세스 토큰이 상승(UAC 관리자)인가 — 윈 `TokenElevation`.
+/// 데몬이 `system.identify` 에 싣고 `cys doctor` 가 작업 스케줄러 cysd 작업 RunLevel 과 대조한다. 윈 밖·판독 실패 = None.
+pub fn process_token_elevated() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows_sys::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+        let mut tok: HANDLE = std::ptr::null_mut();
+        // SAFETY: 의사 핸들 · tok 은 성공 시 닫아야 하는 토큰 핸들.
+        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) } == 0 {
+            return None;
+        }
+        let mut e = TOKEN_ELEVATION { TokenIsElevated: 0 };
+        let mut need = 0u32;
+        // SAFETY: e 는 TOKEN_ELEVATION 크기의 쓰기 가능한 버퍼.
+        let ok = unsafe {
+            GetTokenInformation(
+                tok,
+                TokenElevation,
+                &mut e as *mut TOKEN_ELEVATION as _,
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut need,
+            )
+        };
+        // SAFETY: OpenProcessToken 이 준 핸들.
+        unsafe { CloseHandle(tok) };
+        if ok == 0 {
+            None
+        } else {
+            Some(e.TokenIsElevated != 0)
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> std::process::Command {
     let mut cmd = std::process::Command::new(program);
     cmd.spawn_policy(ChildLifetime::Attached);
@@ -523,6 +607,16 @@ pub fn env_compat(primary: &str) -> Option<String> {
     [primary, javis.as_str(), aiterm.as_str()]
         .iter()
         .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()))
+}
+
+/// cysd 시작 잠금 파일(`cys.lock`)의 홀더 pid — **첫 칸**(공백 앞)만 읽는다. 빈 파일·0·파싱 실패 = None(구 락파일과 같은 보수 해석).
+/// 형식 = `"{pid}"`(기본) 또는 `"{pid} {출생 시각 µs}"`(seatkeep 노브 켬 · T3). 독자(cysd deadman · cys doctor · factory_reset 격리 관문 ·
+/// GUI 로그)가 모두 이것 하나를 쓴다.
+pub fn startup_lock_holder_pid(text: &str) -> Option<u32> {
+    match text.split_whitespace().next()?.parse::<u32>().ok()? {
+        0 => None,
+        pid => Some(pid),
+    }
 }
 
 /// 선두 UTF-8 BOM(U+FEFF) **1개**를 벗긴다 — JSON 파일 판독기의 공용 전처리(C3-c · 2026-09-17 3라운드).
@@ -6987,10 +7081,69 @@ mod spawn_policy_tests {
         /// `#[cfg(test)]` 항목 머리를 몇 줄까지 따라갈 것인가(다중 줄 시그니처 대비).
         const HEAD_SCAN_LIMIT: usize = 40;
         let lines: Vec<&str> = src.lines().collect();
+        // ★(codex 5R major 2) 파일 전체를 한 번 어휘 분석 — 줄이 코드에서 시작하는가(블록 주석·문자열·raw 문자열 안이 아님)와 코드 중괄호의
+        //   줄 위치. 들여쓴 시험 모듈 판정은 이 상태로만 한다(주석 속 가짜 `#[cfg(test)]`·`mod` 머리를 모듈로 보지 않는다).
+        let lexed = lex_rust_lines(&lines);
         let mut out = String::with_capacity(src.len());
         let mut i = 0usize;
         while i < lines.len() {
-            if lines[i] != "#[cfg(test)]" {
+            // ★(1.1.16 · TICKET=cysr-1116-backlog · HANDOFF 1115-r2 §12-2 B) **들여쓴** `#[cfg(test)]` 시험 **모듈**도 걷어 낸다 —
+            //   `#[cfg(unix)] mod imp { … #[cfg(test)] mod tests { … } }` 꼴(cys-seatkeep)의 시험 모듈이 운영 코드로 세어져
+            //   census 동결표가 시험 자료를 운영 스폰으로 들고 있었다(1.1.15 = 동결표 2 → 10 으로 버팀). 모듈(`mod x {`) 머리만
+            //   받는다: 들여쓴 `#[cfg(test)]` 은 구조체 칸·식 문장·match 갈래에도 붙고(realops.rs·update_hold.rs), 그 머리는
+            //   `{`·`;` 로 끝나지 않아 아래 일반 규칙으로 따라가면 뒤 운영 코드를 **조용히** 삼킨다(실측 realops.rs 111줄).
+            //   닫는 줄 = 같은 들여쓰기의 `}`(rustfmt 관례) — 없으면 열 0 규칙과 같이 실패다.
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            if indent > 0 && lines[i].trim() == "#[cfg(test)]" && lexed.code_start[i] {
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let t = lines[j].trim_start();
+                    // ★(codex 6R major) 속성 줄은 **속성만으로 이뤄진 줄**만 건너뛴다 — `#[allow(..)] mod tests {}` 처럼 같은 줄에 항목이 있으면
+                    //   그 항목이 cfg(test) 의 대상이다(건너뛰면 다음 운영 모듈을 머리로 잡아 걷는다). 그런 꼴은 머리 판정에서 모듈 아님 = 걷지 않음
+                    //   (운영으로 세는 보수 쪽 · census 가 붉어질 뿐 조용히 삼키지 않음).
+                    if t.is_empty() || is_pure_attr_line(t) || t.starts_with("//") {
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                let head = lines.get(j).map(|l| l.trim()).unwrap_or("");
+                if is_test_mod_head(head) && lexed.code_start.get(j).copied().unwrap_or(false) {
+                    // ★(codex 1R·2R major) 모듈 끝 = 머리의 `{` 와 짝인 `}` — 들여쓰기가 아니라 **중괄호 짝**으로 찾는다(문자열·문자·주석·
+                    //   raw 문자열 안의 중괄호는 세지 않음 · rustfmt 를 CI 가 강제하지 않으므로 들여쓰기는 경계 근거가 못 된다). 그 짝이
+                    //   같은 들여쓰기의 `}` 한 줄이 아니면(`    };`·`        };`·`} // x` 등) 모르는 꼴 = 실패(뒤 운영 코드를 삼키지 않는다).
+                    let close = format!("{}}}", &lines[i][..indent]);
+                    let k = match lexed.block_end_line(j) {
+                        Some(k) => k,
+                        None => {
+                            return Err(format!(
+                                "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 짝 `}}` 가 없다 — 파일 끝까지 삼켰다"
+                            ))
+                        }
+                    };
+                    if lines[k] != close {
+                        return Err(format!(
+                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`)의 닫힘 꼴(`{}`)을 모른다 — 같은 들여쓰기 `}}` 한 줄만 받는다",
+                            lines[k].trim()
+                        ));
+                    }
+                    // ★(codex 4R 뒤 이중 장치) 머리와 짝 사이의 비지 않은 줄은 모두 모듈보다 **깊이** 들여써야 한다 — 어휘 오인으로 짝이 진짜 끝을
+                    //   지나치면 그 사이에 모듈과 같은 들여쓰기의 형제 줄(운영 코드)이 끼므로 조용히 삼키지 않고 실패한다(실물 모듈 = 예외 0 실측).
+                    if let Some(off) = lines[j + 1..k].iter().position(|l| {
+                        !l.trim().is_empty() && l.len() - l.trim_start().len() <= indent
+                    }) {
+                        return Err(format!(
+                            "들여쓴 `#[cfg(test)]` 모듈(`{head}`) 안에 모듈보다 얕은 줄(`{}`)이 있다 — 짝을 잘못 찾았을 수 있어 실패",
+                            lines[j + 1 + off].trim()
+                        ));
+                    }
+                    i = k + 1;
+                    continue;
+                }
+            }
+            // ★(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2) 열 0 머리도 줄 시작이 코드일 때만 받는다 — 블록 주석·문자열·raw 문자열 속
+            //   `#[cfg(test)]` 줄을 머리로 읽으면 그 뒤 운영 코드를 걷는다(들여쓴 규칙과 같은 판정).
+            if lines[i] != "#[cfg(test)]" || !lexed.code_start[i] {
                 out.push_str(lines[i]);
                 out.push('\n');
                 i += 1;
@@ -7017,17 +7170,29 @@ mod spawn_policy_tests {
                 let t = lines[h].trim_end();
                 if t.ends_with('{') {
                     // 블록 항목 — 이 저장소 관례상 열 0 의 `}` 가 닫는다.
-                    let mut k = h + 1;
-                    while k < lines.len() && lines[k] != "}" {
-                        k += 1;
-                    }
-                    if k >= lines.len() {
+                    // ★(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2 · codex 5R major 1) 끝 = 머리 `{` 와 **중괄호 짝**인 줄(들여쓴 규칙과 같은
+                    //   어휘 분석). 종전 「다음 열 0 `}`」 는 비정형 꼴에서 틀렸다: 짝이 `});`·`};` 면 그 줄을 지나 뒤 운영 항목의 `}` 까지
+                    //   걷었고(조용한 소실), 시험 블록 안 raw 문자열의 열 0 `}` 에서 일찍 멈췄다. 짝이 열 0 `}` 한 줄이 아니면 모르는 꼴 = 실패.
+                    let k = match lexed.block_end_line(h) {
+                        Some(k) => k,
+                        None => {
+                            return Err(format!(
+                                "`#[cfg(test)]` 블록(`{}`)을 닫는 짝 `}}` 가 없다 — \
+                                 파일 끝까지 삼켰다",
+                                lines[j].trim()
+                            ))
+                        }
+                    };
+                    if lines[k] != "}" {
                         return Err(format!(
-                            "`#[cfg(test)]` 블록(`{}`)을 닫는 열 0 의 `}}` 가 없다 — \
-                             파일 끝까지 삼켰다",
-                            lines[j].trim()
+                            "`#[cfg(test)]` 블록(`{}`)의 닫힘 꼴(`{}`)을 모른다 — 열 0 `}}` 한 줄만 받는다",
+                            lines[j].trim(),
+                            lines[k]
                         ));
                     }
+                    //   (들여쓴 규칙의 「사이 줄은 더 깊이」 이중 장치는 열 0 에 두지 않는다 — 원작자 파일 pending_requests.rs 의 열 0 시험
+                    //   모듈은 안의 항목도 열 0 이다(`fn protocol_row_data()` · 실측). 종전 규칙은 그 fn 의 `}` 에서 끝을 잡아 뒤 시험 코드를
+                    //   운영으로 셌다.)
                     j = k + 1;
                     break;
                 }
@@ -7049,6 +7214,214 @@ mod spawn_policy_tests {
             i = j;
         }
         Ok(out)
+    }
+
+    /// 줄 전체가 **단순 속성**(`#[이름(인자)]` — 글자·숫자·`_`·`:`·`(`·`)`·`,`·`=`·공백만) 하나 이상인가. 따옴표·대괄호 중첩·주석·문자 리터럴이
+    /// 섞이면 거짓(★codex 6R·7R — 대괄호 짝을 어휘 없이 믿을 수 없다 · 거짓 = 시험 모듈로 보지 않음 = 운영으로 세는 보수 쪽).
+    fn is_pure_attr_line(t: &str) -> bool {
+        let mut rest = t.trim();
+        if rest.is_empty() {
+            return false;
+        }
+        while !rest.is_empty() {
+            let Some(body) = rest.strip_prefix("#[") else { return false };
+            let Some(end) = body.find(']') else { return false };
+            let inner = &body[..end];
+            if inner.is_empty()
+                || !inner.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | '(' | ')' | ',' | '=' | ' '))
+            {
+                return false;
+            }
+            rest = body[end + 1..].trim_start();
+        }
+        true
+    }
+
+    /// 들여쓴 시험 모듈 머리의 **정형**인가 — `mod 이름 {` · `pub mod 이름 {` · `pub(가시성) mod 이름 {`(가시성 = 글자·`:`·공백) 한 줄 그대로.
+    /// 그 밖(주석·속성이 섞인 줄 · 한 줄 모듈 `mod t {}`)은 거짓 = 걷지 않음(보수 쪽).
+    fn is_test_mod_head(head: &str) -> bool {
+        let rest = if let Some(r) = head.strip_prefix("pub(") {
+            let Some(p) = r.find(')') else { return false };
+            if !r[..p].chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | ':' | ' ')) {
+                return false;
+            }
+            r[p + 1..].strip_prefix(' ').unwrap_or("")
+        } else if let Some(r) = head.strip_prefix("pub ") {
+            r
+        } else {
+            head
+        };
+        let Some(r) = rest.strip_prefix("mod ") else { return false };
+        let Some(name) = r.strip_suffix(" {") else { return false };
+        !name.is_empty()
+            && name.chars().next().is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
+            && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    }
+
+    /// 어휘 분석 결과 — `code_start[l]` = l 번째 줄의 시작이 코드인가(블록 주석·문자열·raw 문자열 안이 아님) · `braces` = 코드 중괄호의
+    /// (줄, 여는가). 줄 주석(`//`)·블록 주석(`/* */` 중첩)·문자열(`"…"` 이스케이프 · `b"…"`·`c"…"`)·raw 문자열(`r"…"`·`r#"…"#`·`br…`·`cr…`)·
+    /// 문자 리터럴(`'{'`·`'\''`·`'\u{7b}'`·`b'{'`) 안의 중괄호는 세지 않는다 · 수명(`'a`)은 문자 리터럴이 아니다.
+    struct Lexed {
+        code_start: Vec<bool>,
+        braces: Vec<(usize, bool)>,
+    }
+
+    impl Lexed {
+        /// `head` 줄 이후 첫 코드 `{` 와 짝인 `}` 의 줄(없으면 None).
+        fn block_end_line(&self, head: usize) -> Option<usize> {
+            let mut depth = 0i64;
+            let mut opened = false;
+            for &(line, open) in self.braces.iter().filter(|(l, _)| *l >= head) {
+                if open {
+                    depth += 1;
+                    opened = true;
+                } else if opened {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(line);
+                    }
+                }
+            }
+            None
+        }
+    }
+
+    fn lex_rust_lines(lines: &[&str]) -> Lexed {
+        let text = lines.join("\n");
+        let c: Vec<char> = text.chars().collect();
+        let mut code_start = vec![true; lines.len().max(1)];
+        let mut braces: Vec<(usize, bool)> = Vec::new();
+        let (mut i, mut line) = (0usize, 0usize);
+        // ★(codex 9R major) 식별자 글자 = ASCII 글자·숫자·`_` ∪ **공백 아닌 비ASCII 전부**(XID_Continue 의 상위 집합 — 결합 문자 `U+0301` 등).
+        //   접미사를 끝까지 소비하고, raw 문자열 시작 판정(앞 글자가 식별자 아님)도 같은 규칙. 넓게 잡는 쪽이 안전: 코드 위치의 비ASCII 는 식별자뿐.
+        let ident = |ch: char| ch.is_ascii_alphanumeric() || ch == '_' || (!ch.is_ascii() && !ch.is_whitespace());
+        // 코드 밖(주석·문자열) 구간에서 줄이 바뀌면 그 줄의 시작은 코드가 아니다.
+        let mut newline_in = |line: &mut usize| {
+            *line += 1;
+            if let Some(slot) = code_start.get_mut(*line) {
+                *slot = false;
+            }
+        };
+        while i < c.len() {
+            let ch = c[i];
+            if ch == '\n' {
+                line += 1;
+                i += 1;
+                continue;
+            }
+            if ch == '/' && c.get(i + 1) == Some(&'/') {
+                while i < c.len() && c[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if ch == '/' && c.get(i + 1) == Some(&'*') {
+                let mut nest = 1;
+                i += 2;
+                while i < c.len() && nest > 0 {
+                    if c[i] == '\n' {
+                        newline_in(&mut line);
+                        i += 1;
+                    } else if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                        nest += 1;
+                        i += 2;
+                    } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                        nest -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            // raw 문자열: (b|c)r#*" … "#* — 앞 글자가 식별자의 일부가 아닐 때만(★codex 4R major: C raw 문자열 `cr#"…"#` 포함).
+            // ★(codex 10R major) raw 식별자 `r#이름` 은 한 토큰 — 통째로 소비(안의 `r` 에서 raw 문자열을 다시 열지 않는다).
+            if ch == 'r' && c.get(i + 1) == Some(&'#') && c.get(i + 2).is_some_and(|&n| ident(n)) && (i == 0 || !ident(c[i - 1])) {
+                i += 2;
+                while i < c.len() && ident(c[i]) {
+                    i += 1;
+                }
+                continue;
+            }
+            if (ch == 'r' || ((ch == 'b' || ch == 'c') && c.get(i + 1) == Some(&'r')))
+                && (i == 0 || (!ident(c[i - 1]) && c[i - 1] != '#'))
+            {
+                let mut k = i + if ch == 'r' { 1 } else { 2 };
+                let mut hashes = 0;
+                while c.get(k) == Some(&'#') {
+                    hashes += 1;
+                    k += 1;
+                }
+                if c.get(k) == Some(&'"') {
+                    k += 1;
+                    loop {
+                        if k >= c.len() {
+                            break;
+                        }
+                        if c[k] == '\n' {
+                            newline_in(&mut line);
+                        }
+                        if c[k] == '"' && (1..=hashes).all(|h| c.get(k + h) == Some(&'#')) {
+                            k += 1 + hashes;
+                            break;
+                        }
+                        k += 1;
+                    }
+                    i = k;
+                    // ★(codex 8R major) 리터럴 접미사(`""r`·`r"x"suf`)는 리터럴의 일부 — 접미사 안에서 raw 문자열을 다시 열지 않는다.
+                    while i < c.len() && ident(c[i]) {
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+            if ch == '"' {
+                i += 1;
+                while i < c.len() && c[i] != '"' {
+                    if c[i] == '\\' {
+                        i += 1;
+                    }
+                    if c.get(i) == Some(&'\n') {
+                        newline_in(&mut line);
+                    }
+                    i += 1;
+                }
+                i += 1;
+                while i < c.len() && ident(c[i]) {
+                    i += 1; // 접미사(codex 8R)
+                }
+                continue;
+            }
+            if ch == '\'' {
+                if c.get(i + 1) == Some(&'\\') {
+                    // ★(codex 3R major) 이스케이프된 글자(`\'`·`\\`·`\u{…}` 의 `u`)는 닫는 따옴표가 아니다 — 여는 `'`·`\`·그 글자를
+                    //   건너뛴 뒤 진짜 닫는 `'` 까지.
+                    i += 3;
+                    while i < c.len() && c[i] != '\'' {
+                        i += 1;
+                    }
+                    i += 1;
+                    while i < c.len() && ident(c[i]) {
+                        i += 1; // 접미사(codex 8R)
+                    }
+                    continue;
+                }
+                if c.get(i + 2) == Some(&'\'') {
+                    i += 3;
+                    while i < c.len() && ident(c[i]) {
+                        i += 1; // 접미사(codex 8R)
+                    }
+                    continue;
+                }
+                i += 1; // 수명
+                continue;
+            }
+            if ch == '{' || ch == '}' {
+                braces.push((line, ch == '{'));
+            }
+            i += 1;
+        }
+        Lexed { code_start, braces }
     }
 
     /// production_slice 자기 검증(계측 타당성 ①) — 이 도구가 실제로 테스트만 걷어내고
@@ -7077,6 +7450,121 @@ mod spawn_policy_tests {
         );
         assert!(np.contains("fn inner"), "절단이 다음 블록까지 삼켰다: {np}");
         assert!(np.contains("keep_last"), "절단이 파일 끝까지 번졌다: {np}");
+        // ★(1.1.16 · §12-2 B) 들여쓴 `#[cfg(test)]` 시험 모듈은 걷어 내고(닫는 줄 = 같은 들여쓰기 `}`), 들여쓴 `#[cfg(test)]` 이
+        //   붙은 구조체 칸·식 문장은 **모듈이 아니므로** 손대지 않는다 — 그 뒤 운영 코드를 삼키면 안 된다(realops.rs 꼴).
+        let nested = "mod imp {\n    fn keep_imp() { Command::new(\"a\"); }\n    #[cfg(test)]\n    // 주석\n    mod tests {\n        \
+                      fn drop_t() { Command::new(\"b\"); }\n        mod deeper {\n        }\n    }\n    fn keep_imp2() {}\n}\n\
+                      struct S {\n    #[cfg(test)]\n    pub knob: Option<bool>,\n    pub keep_field: u8,\n}\n\
+                      fn keep_tail() {\n    #[cfg(test)]\n    hook();\n    keep_stmt();\n}\n\
+                      mod v {\n    #[cfg(test)]\n    pub(crate) mod t2 {\n        fn drop_v() {}\n    }\n}\n";
+        let ns = production_slice(nested);
+        assert!(ns.contains("keep_imp") && ns.contains("keep_imp2"), "들여쓴 시험 모듈 앞뒤 운영 코드가 빠졌다: {ns}");
+        assert!(!ns.contains("drop_t") && !ns.contains("deeper") && ns.matches("Command::new").count() == 1,
+                "들여쓴 시험 모듈이 운영으로 남았다: {ns}");
+        assert!(!ns.contains("drop_v"), "가시성 붙은 들여쓴 시험 모듈(`pub(crate) mod`)이 남았다: {ns}");
+        assert!(ns.contains("keep_field") && ns.contains("pub knob") && ns.contains("keep_stmt") && ns.contains("keep_tail"),
+                "모듈이 아닌 들여쓴 `#[cfg(test)]` 항목이 뒤 운영 코드를 삼켰다: {ns}");
+        assert!(
+            production_slice_checked("mod imp {\n    #[cfg(test)]\n    mod tests {\n        fn t() {}\n}\n").is_err(),
+            "같은 들여쓰기로 닫히지 않은 시험 모듈을 조용히 통과시켰다"
+        );
+        // codex 1R 반례: 모듈 뒤 빈 문장(`    };`)으로 닫힌 꼴 — 뒤 `if` 블록의 `    }` 까지 삼켜 운영 Command::new 가 사라지면 안 된다.
+        assert!(
+            production_slice_checked(
+                "fn f() {\n    #[cfg(test)]\n    mod t {\n    };\n    if true {\n        std::process::Command::new(\"prod\");\n    }\n}\n"
+            )
+            .is_err(),
+            "모르는 닫힘 꼴(`    }};`)에서 뒤 운영 블록까지 삼켰다"
+        );
+        // codex 2R 반례: 더 깊이 들여쓴 `        };` 로 닫힌 꼴 — 들여쓰기 경계로는 뒤 `if` 의 `    }` 를 끝으로 잡는다. 중괄호 짝으로 실패해야 한다.
+        assert!(
+            production_slice_checked(
+                "fn f() {\n    #[cfg(test)]\n    mod t {\n        };\n    if true {\n        std::process::Command::new(\"prod\");\n    }\n}\n"
+            )
+            .is_err(),
+            "더 깊은 닫힘 꼴(`        }};`)에서 뒤 운영 블록까지 삼켰다"
+        );
+        // 중괄호 짝은 문자열·문자·주석·raw 문자열 안의 중괄호를 세지 않는다 · 수명은 문자가 아니다(정상 꼴은 그대로 걷힌다).
+        let tricky = "mod imp {\n    #[cfg(test)]\n    mod tests {\n        fn t<'a>(x: &'a str) {\n            let _ = \"}}\";\n            \
+                      let _ = '}';\n            let _ = '\\'';\n            // }}\n            /* } /* } */ } */\n            let _ = r#\"}\"#;\n            \
+                      let _ = br\"}\";\n            Command::new(\"t\");\n        }\n    }\n    fn keep_after() { Command::new(\"p\"); }\n}\n";
+        let tp = production_slice(tricky);
+        // codex 3R 반례: 공백 없이 이어진 `'\''<'{'` — 이스케이프된 따옴표 뒤의 진짜 닫는 따옴표를 새 문자 리터럴로 읽으면 `'{'` 의 중괄호를
+        //   코드로 세어 감싼 모듈 닫힘까지 삼킨다(운영 keep 소실).
+        let esc = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() { let _ = '\\''<'{'; }\n    }\n    \
+             fn keep() { std::process::Command::new(\"prod\"); }\n    }\n",
+        );
+        assert!(esc.contains("fn keep") && !esc.contains("fn t()"), "이스케이프 문자 리터럴 뒤 운영 코드를 삼켰다: {esc}");
+        // codex 4R 반례: C raw 문자열(`cr#""{"}"#` · 끝이 역슬래시인 `cr"\"`)을 일반 문자열로 읽으면 짝이 밀려 감싼 모듈 닫힘까지 삼킨다.
+        for body in ["let _ = cr#\"\"{\"}\"#;", "let _ = cr\"\\\"; let _ = \"{\";"] {
+            let src = format!(
+                "mod outer {{\n    #[cfg(test)]\n    mod tests {{\n        fn t() {{ {body} }}\n    }}\n    \
+                 fn keep() {{ std::process::Command::new(\"prod\"); }}\n    }}\n"
+            );
+            let out = production_slice(&src);
+            assert!(out.contains("fn keep") && !out.contains("fn t()"), "C raw 문자열 뒤 운영 코드를 삼켰다({body}): {out}");
+        }
+        // 이중 장치: 짝이 같은 들여쓰기 `}` 한 줄에 정확히 떨어져도(어휘가 짝을 밀어낸 꼴을 흉내 — 중괄호 짝 자체는 맞게 세어지는 입력)
+        //   그 사이에 모듈 들여쓰기의 줄이 끼면 실패한다(오인이 형제 운영 줄을 지나친 모양과 구별할 수 없다 — 보수 쪽).
+        assert!(
+            production_slice_checked(
+                "mod outer {\n    #[cfg(test)]\n    mod tests {\n        fn t() {\n    }\n    fn keep() { Command::new(\"p\"); }\n    }\n}\n"
+            )
+            .is_err(),
+            "짝 사이에 모듈 들여쓰기의 줄이 끼었는데 실패하지 않았다(이중 장치 무력)"
+        );
+        // codex 5R 반례: 블록 주석 속 `#[cfg(test)]`·`mod tests {` 는 모듈이 아니다 — 그 뒤 outer 의 운영 함수가 남아야 한다.
+        let commented = production_slice(
+            "mod outer {\n    /*\n    #[cfg(test)]\n    mod tests {\n        */\n        pub fn keep() {\n            \
+             std::process::Command::new(\"prod\");\n        }\n    }\n",
+        );
+        assert!(commented.contains("pub fn keep") && commented.contains("Command::new"), "주석 속 가짜 시험 모듈로 운영 코드를 걷었다: {commented}");
+        // 문자열 속 가짜도 마찬가지(줄 시작이 문자열 안).
+        let in_str = production_slice(
+            "mod outer {\n    const S: &str = \"\n    #[cfg(test)]\n    mod tests {\n    \";\n    fn keep() { Command::new(\"p\"); }\n}\n",
+        );
+        assert!(in_str.contains("fn keep"), "문자열 속 가짜 시험 모듈로 운영 코드를 걷었다: {in_str}");
+        // codex 6R 반례: cfg(test) 의 대상이 같은 줄 항목(`#[allow(dead_code)] mod tests {}`)이면 다음 운영 모듈을 머리로 잡지 않는다.
+        let same_line = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code)] mod tests {}\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
+        );
+        assert!(same_line.contains("mod production") && same_line.contains("pub fn keep"), "같은 줄 항목 뒤 운영 모듈을 걷었다: {same_line}");
+        // 단순 속성 줄(여러 개)은 건너뛴다 · 따옴표가 든 속성 줄은 정형 밖 = 걷지 않는다(보수 쪽 — 운영으로 셈).
+        let attrs = production_slice(
+            "mod imp {\n    #[cfg(test)]\n    #[allow(dead_code)] #[cfg_attr(test, allow(unused))]\n    pub(crate) mod tests {\n        fn drop_me() {}\n    }\n    fn keep() {}\n}\n",
+        );
+        assert!(!attrs.contains("drop_me") && attrs.contains("fn keep"), "단순 속성 줄을 건너뛰지 못했다: {attrs}");
+        let quoted = production_slice(
+            "mod imp {\n    #[cfg(test)]\n    #[doc = \"a]b\"]\n    mod tests {\n        fn kept_t() {}\n    }\n    fn keep() {}\n}\n",
+        );
+        assert!(quoted.contains("kept_t") && quoted.contains("fn keep"), "정형 밖 속성 줄인데 걷었다: {quoted}");
+        // codex 7R 반례: 주석 속 대괄호(`/* [ */` … `// ]`)로 같은 줄 항목까지 속성으로 읽으면 다음 운영 모듈을 걷는다.
+        let cm = production_slice(
+            "mod outer {\n    #[cfg(test)]\n    #[allow(dead_code /* [ */)] mod tests {} // ]\n    mod production {\n        pub fn keep() {}\n    }\n}\n",
+        );
+        assert!(cm.contains("mod production") && cm.contains("pub fn keep"), "주석 속 대괄호로 운영 모듈을 걷었다: {cm}");
+        // codex 8R 반례: 리터럴 접미사(`""r`) 를 raw 문자열 시작으로 읽으면 가짜 문자열이 시험 모듈 닫힘·운영 모듈 열림을 숨긴다.
+        let sfx = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(\"\"r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        //   접미사를 소비하면 짝이 진짜 끝(여덟 칸 `}`)에 떨어져 정형 밖 닫힘 = Err(조용히 삼키지 않음).
+        assert!(sfx.is_err(), "리터럴 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx:?}");
+        // codex 9R 반례: 결합 문자가 든 접미사(`a` + U+0301 + `r`).
+        let sfx2 = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(\"\"a\u{301}r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        assert!(sfx2.is_err(), "결합 문자 접미사 뒤 운영 모듈을 조용히 걷었다: {sfx2:?}");
+        // codex 10R 반례: raw 식별자 `r#r` 뒤 문자열.
+        let rid = production_slice_checked(
+            "mod outer {\n    #[cfg(test)]\n    mod tests {\n        const _: &str = stringify!(r#r\"\\\"\");\n        }\n        \
+             mod production {\n            pub fn keep() {}\n            // \"\n    }\n}\n",
+        );
+        assert!(rid.is_err(), "raw 식별자 뒤 운영 모듈을 조용히 걷었다: {rid:?}");
+        assert!(tp.contains("keep_after") && tp.matches("Command::new").count() == 1 && !tp.contains("fn t<"),
+                "문자열·문자·주석·raw 문자열 속 중괄호에 짝이 흔들렸다: {tp}");
         // 실물에도 걸어 둔다 — 이 파일들의 프로덕션 앵커가 사라지면 핀이 헛도는 것이다.
         let cys = production_slice(include_str!("bin/cys.rs"));
         assert!(
@@ -7290,11 +7778,20 @@ mod spawn_policy_tests {
         // 1.1.8 U4(설계 §5-2 · 앱 updater 경로 삭제) −4 = same_version_rebuild_check `curl`(latest.json) · check_pack_update `curl`(pack-manifest) ·
         //   install_pack_update 사이드카 `cys pack-update` · smart_app_control_state `reg.exe` — 지점째 지웠다(옮긴 것 0 · 새 스폰 0).
         ("src-tauri/src/main.rs", 34),
+        // 1.1.16 통합(cysr-1116-integ-1120 · s79 f51261ee0): 결과 카드 열기 launch_command 1곳 — 실행기 = 절대 경로(맥 /usr/bin/open ·
+        //   윈 explorer.exe · 그 밖 xdg-open). ⓐ윈에서 돈다 → ⓑ호출 자리 result_open_in 체인에 `spawn_policy(ChildLifetime::Attached)`
+        //   (= main.rs no_console 과 같은 등급) — 갈래 머리에서 이 칸과 등급이 둘 다 빠져 있었다(통합에서 채움).
+        ("src-tauri/src/viewcore.rs", 1),
         // 1.1.10 편입(원작자 0.14.45 · agy 윈 자동 연결): 쓰기 전 실연 검사 자식 + 상한 초과 시 taskkill 트리 종료 = +2 — 둘 다 체인에
         //   `spawn_policy(ChildLifetime::Attached)` 등급(원작자 b9151464 · 3a728d10).
         ("src/agy_statusline.rs", 2),
         ("src/app_bundle.rs", 4),
-        ("src/bin/cys.rs", 15),
+        // src/bin/cys-seatkeep/main.rs = 0(칸 없음) — 1.1.15 의 10 은 전부 `#[cfg(unix)] mod imp` 안 **들여쓴** `#[cfg(test)] mod tests`
+        //   (1662~2697행)의 시험 자식이었다(제품 스폰 0). 1.1.16(cysr-1116-backlog · §12-2 B) production_slice 가 들여쓴 시험 모듈을
+        //   걷어 내 운영 코드만 센다 — 이 파일에 새 칸이 생기면 그것은 운영 스폰이다.
+        // seatkeep T6a(2b741e0c6 · cysr-1116-seatkeep-1119): takeover 폴백 후보 `takeover_fallback_candidates` 의 `pgrep -f MacOS/cysd` +1 — launchd 경로 = 맥 전용 · 윈 도달 0.
+        //   (통합 cysr-1116-integ-1120 bfb52cbd2 가 갈래 머리 9b591371b 기준으로 같은 값 16 을 먼저 넣었다 — 이 병합으로 주석만 갈래 정본으로 합침 · 값 무변경)
+        ("src/bin/cys.rs", 16),
         ("src/bin/cysd/accounts.rs", 2),
         // 1.1.11 편입(원작자 0.14.52 시험 파일 3개 · 전부 #[cfg(test)] 격리 고정물 — 제품 스폰 0): F-01 U4-3 계측 하네스 2 ·
         //   native publication 격리 감독자 2 · PTY 할당 입장 검체 1. 새 제품 스폰이 아니라 원작자 시험의 자식 프로세스다.
@@ -7311,11 +7808,27 @@ mod spawn_policy_tests {
         ("src/bin/cysd/native_publication_transition_tests.rs", 2),
         ("src/bin/cysd/pty_admission_tests.rs", 1),
         ("src/bin/cysd/schedule.rs", 3),
+        // seatkeep T3(cysr-seatkeep-piece-fixes): 노브 켬 좌석의 보유 장치 기동 `Command::new(&self.exe)` 1 — ⓐ윈에서 안 돈다
+        //   (`#[cfg(target_os = "macos")] mod seatkeep_mac` · 윈 = T7) · ⓑ등급 미부착이 의도: 맥에서 `hidden_command`(Attached)는 아무것도
+        //   얹지 않아 행동은 같지만, 이 자식의 생사 등급(조종자 종속 ↔ T4 입양 = 데몬보다 오래 삶)은 T4·T7 이 정한다 — 지금 Attached 를 적으면
+        //   그 결정을 앞당겨 적는 셈이라 계수로만 묶는다(좌석 프로세스 생성 = 고위험 경로 · 동작 변경 0).
+        ("src/bin/cysd/seat_proc.rs", 1),
+        // seatkeep T3 시험 파일 4개(cysd main.rs·seat_proc.rs 에서 `#[cfg(test)] mod` 로만 붙음 · 제품 스폰 0): `ps` 상태·RSS 확인 3 ·
+        //   꼬리 시험 `/bin/cat` 검체 1 · 복사본 seatkeep 기동 1.
+        ("src/bin/cysd/seat_d7_tests.rs", 1),
+        ("src/bin/cysd/seat_flood_tests.rs", 1),
+        ("src/bin/cysd/seat_proc_tests.rs", 1),
+        ("src/bin/cysd/seat_tail_tests.rs", 2),
+        // 1.1.16 통합(cysr-1116-integ-1120 · s6 조각 6b): codex 반례 시험 파일(main.rs `#[cfg(test)] mod team6b_codex_tests`) — ps·kill 고정물 2 · 제품 스폰 0.
+        ("src/bin/cysd/team6b_codex_tests.rs", 2),
         ("src/bin/cysd/state.rs", 3),
         ("src/bin/cysd/usage.rs", 3),
         ("src/factory_reset.rs", 7),
         ("src/launchd.rs", 4),
         ("src/lib.rs", 6),
+        // 1.1.16 통합(cysr-1116-integ-1120 · skt1 b03d1cd70): 좌석 에이전트 rollout 찾기 `lsof -p` 1곳 — ⓐ윈에서 안 돈다
+        //   (seat_agent_open_rollout 머리 `cfg!(windows)` → Err 조기 반환) — 갈래 머리에서 이 칸이 빠져 있었다.
+        ("src/session_lease_cli.rs", 1),
         // 1.1.8 U2(AUTO-UPDATE-118 §3-1): 러너 분리 기동 1곳 — 체인에 `spawn_policy(ChildLifetime::Survivor)` 등급을 단다(cys→cysd 와 같은 꼴).
         ("src/update/launch.rs", 1),
     ];
@@ -7382,7 +7895,11 @@ mod spawn_policy_tests {
         for (needle, n) in [
             ("cys::hidden_command(\"whoami\")", 1),
             ("cys::hidden_command(\"tasklist\")", 1),
-            ("cys::hidden_command(\"schtasks\")", 4),
+            // 1.1.16(TICKET=cysr-1116-debt-d-1119 · 추가2 fa789ffde) 4 → 7: 작업 RunLevel 조회(daemon install 보존) · 기본 소켓 작업 경유
+            //   기동(schtasks /Run) · 등록자 상승 판정 — 셋 다 숨김 헬퍼 경유. → 6(0461f82aa · codex 1R): daemon install 의 작업 질의는
+            //   lib `update::win_task::query_task_xml`(crate::hidden_command 경유) 로 옮겼다. → 5(debt-d3 ②): 작업 경유 기동(schtasks /Run)은
+            //   앱과 같이 쓰려고 lib `update::win_task::run_cysd_task`(crate::hidden_command 경유) 로 옮겼다.
+            ("cys::hidden_command(\"schtasks\")", 5),
             ("cys::hidden_command(prog)", 1),
         ] {
             assert_eq!(cli.matches(needle).count(), n, "cys.rs `{needle}` 편입 계수");
@@ -7594,6 +8111,24 @@ mod spawn_policy_tests {
                 .is_err(),
             "닫히지 않은 테스트 블록이 파일 끝까지 삼켜도 통과한다"
         );
+        // ④(1.1.16 · TICKET=cysr-1116-debt-d-1119 · B2) 열 0 블록 끝 = 중괄호 짝 · 머리 = 줄 시작이 코드일 때만.
+        //   (가) 짝이 `});` 인 비정형 꼴 — 다음 열 0 `}`(뒤 운영 fn 의 끝)까지 걷으면 안 된다 = 실패.
+        assert!(
+            production_slice_checked(
+                "#[cfg(test)]\nstatic X: Lazy<u8> = Lazy::new(|| {\n    1\n});\nfn keep() {\n    std::process::Command::new(\"p\");\n}\n"
+            )
+            .is_err(),
+            "B2: 짝이 `}});` 인 시험 항목에서 뒤 운영 fn 까지 삼켰다"
+        );
+        //   (나) 시험 모듈 안 raw 문자열의 열 0 `}` 에서 멈추지 않는다(시험 코드가 운영으로 새지 않음 · 뒤 운영은 남음).
+        let raw = production_slice("#[cfg(test)]\nmod t {\n    const S: &str = r#\"\n}\n\"#;\n    fn drop_me() {}\n}\nfn keep() {}\n");
+        assert!(!raw.contains("drop_me") && raw.contains("fn keep"), "B2: raw 문자열 속 열 0 `}}` 에서 블록 끝을 잡았다: {raw}");
+        //   (다) 블록 주석 속 열 0 `#[cfg(test)]` 는 머리가 아니다 — 그 뒤 운영 fn 이 남아야 한다.
+        let cmt = production_slice("/*\n#[cfg(test)]\nmod t {\n*/\nfn keep() {\n    std::process::Command::new(\"p\");\n}\n");
+        assert!(cmt.contains("fn keep") && cmt.contains("Command::new"), "B2: 주석 속 열 0 가짜 머리로 운영 fn 을 걷었다: {cmt}");
+        //   (라) 안의 항목도 열 0 인 시험 모듈(pending_requests.rs 꼴) — 안쪽 fn 의 `}` 가 아니라 모듈의 짝에서 끝난다.
+        let flat = production_slice("#[cfg(test)]\nmod t {\nfn row() -> u8 {\n    1\n}\nfn drop_me() { Command::new(\"t\"); }\n}\nfn keep() {}\n");
+        assert!(!flat.contains("drop_me") && !flat.contains("Command::new") && flat.contains("fn keep"), "B2: 열 0 항목을 품은 시험 모듈의 끝을 잘못 잡았다: {flat}");
     }
 
     /// ★등급을 선언한 자식에 콘솔 은폐 별칭을 **이어 붙이지 않는다**(병용 금지).

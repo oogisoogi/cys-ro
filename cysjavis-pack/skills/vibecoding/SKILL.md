@@ -1,9 +1,11 @@
 ---
 name: vibecoding
-description: 자연어 코딩(NLC)을 헌법·복잡도 라우팅·결정론 게이트로 굴리는 대표 오케스트레이터 스킬. 요청을 Level 판정(javis_viberoute)→Level별 문서 세트(vibecoding-docs 위임)→계획 리뷰 게이트(ACE-FCA)→구현 위임(구현자≠검증자)→vibecheck 증거로 완료 판정(javis_task 단일 게이트)→에러·리뷰 증류(javis_distill)까지 순서대로 굴린다. "바이브코딩 / 자연어 코딩 / vibecoding / 스펙 기반으로 만들어 / 이 요청 Level 판정해줘 / 코드부터 짜지 말고 헌법부터", 또는 워커가 신규 웹/앱·기능 구현을 시작할 때 발동(신규 웹/앱 구축의 단일 진입점 — appbuild는 이 안에서 호출).
+description: 자연어 코딩을 Level 판정→문서 세트→구현 위임→검증 게이트로 굴린다. 「바이브코딩 / Level 판정 / 상태관리·TDD·외부연동 경계 설계 / 변경 런북」 요청 때.
 ---
 
 # vibecoding
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 NLC(자연어 코딩)의 **헌법·문서 파이프라인(무엇을)** 을, 자비스의 **멀티에이전트·결정론
 게이트(어떻게)** 위에, **Level 라우팅(언제 얼마나)** 으로 얹고, 매 작업이 규칙을 증류하는
@@ -77,7 +79,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 집중**한다.
 
 - **계획 리뷰 게이트는 필수 통과 관문이다.** 문서 세트(특히 spec·plan)가 완성되면 구현 위임 **전**에
-  이종모델(agy·codex) 리뷰 라운드를 돌린다(§6 오케스트레이션). 리뷰 프롬프트에 엄격 제약(지정 파일만·
+  이종모델(codex·Claude 대체 · agy 는 좌석 문이 열렸을 때만) 리뷰 라운드를 돌린다(§6 오케스트레이션). 리뷰 프롬프트에 엄격 제약(지정 파일만·
   무관 파일 배회 금지)을 강제한다.
 - 리뷰 verdict는 `$CYS_PACK_DIR/round/REVIEWER_VERDICT_CONTRACT.md` 타입(ACCEPT|REVISE|BLOCK|ESCALATE +
   evidence:file:line)으로 받는다. score(0-100) 금지.
@@ -88,7 +90,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 
 - 구현 노동은 워커(Agent 도구 model=opus, 또는 cys 워커)에게 위임한다. master는 직접 구현하지 않는다
   (사소한 마무리 제외).
-- **검증은 만든 에이전트가 아닌 다른 페인·다른 모델**이 한다(자기채점 금지). 이종모델 검증(agy·codex),
+- **검증은 만든 에이전트가 아닌 다른 페인·다른 모델**이 한다(자기채점 금지). 이종모델 검증(codex·Claude 대체 · agy 는 문 열림 때만),
   벤더 장애 시 failover는 §C10.3.
 - 위임 브리프에 Level·필수 문서·완료 기준(통과해야 할 vibecheck 게이트)·"완료 시 master surface로 결과
   한 줄 push"를 동봉한다.
@@ -123,7 +125,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
   doc-sync)은 `[[vibecoding-runbook]]`이 라우팅한다.
 - **Phase 순서 불변**: 측정 계약(pilot·A/B eval)이 전면 배포에 선행한다 — 규율 먼저 구축 후 효과
   확인의 순서 역전 금지.
-- **엔진 재사용**: 리뷰=§6 agy·codex 라운드, 구현=master 위임+autopilot, 검증=eval-driven·
+- **엔진 재사용**: 리뷰=§6 codex·Claude 대체 라운드(agy 는 문 열림 때만), 구현=master 위임+autopilot, 검증=eval-driven·
   producer≠evaluator. 재구현이 아니라 배선이다.
 
 ## 출력 계약
@@ -131,3 +133,7 @@ orchestrate)는 vibecoding 파이프라인 **안에서 호출**된다. 트리거
 Level 판정 기록(route-log) + 인스턴스화된 문서 세트 + 계획 리뷰 verdict + 구현 산출물 +
 vibecheck 증거 + `javis_task done` 전이 + (에러·리뷰 시) 증류 rule_id. 종료 보고: Level·통과한
 게이트 증거·미해결 0. 게이트 미통과면 종료하지 말고 루프를 유지한다.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+자연어 코딩(NLC)을 헌법·복잡도 라우팅·결정론 게이트로 굴리는 대표 오케스트레이터 스킬. 요청을 Level 판정(javis_viberoute)→Level별 문서 세트(vibecoding-docs 위임)→계획 리뷰 게이트(ACE-FCA)→구현 위임(구현자≠검증자)→vibecheck 증거로 완료 판정(javis_task 단일 게이트)→에러·리뷰 증류(javis_distill)까지 순서대로 굴린다. "바이브코딩 / 자연어 코딩 / vibecoding / 스펙 기반으로 만들어 / 이 요청 Level 판정해줘 / 코드부터 짜지 말고 헌법부터", 또는 워커가 신규 웹/앱·기능 구현을 시작할 때 발동(신규 웹/앱 구축의 단일 진입점 — appbuild는 이 안에서 호출).

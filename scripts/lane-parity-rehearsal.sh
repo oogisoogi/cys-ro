@@ -178,6 +178,13 @@ UNREGISTERED_OK["test_agora_known_authentic"] = (
     "cysr-119 ⑨ 제작 맥 전용 — 게시 아고라 zip 15개(≈7.4MB) 필요(CYS_AGORA_ZIP_DIR · 없으면 FAIL) · 저장소·공개 미러 "
     "적재 부적합 · CI 몫 manifest 정합은 test_javis_counsel test_known_file_rows 가 잰다")
 
+# ★cysr 1.1.16 — 생성기 소비 지점 = 로컬 게이트뿐. gen_released_directive_hashes.py 는 어느 워크플로에서도 돌지 않는다
+#   (--check 를 부르는 곳 = 로컬 발행 전 게이트의 gen-hashes 단계 · 그 게이트가 scripts/tests/test_*.py 전량을 돈다).
+#   CI 레인에 실으면 CI 가 쓰지 않는 도구를 CI 가 재는 근거 없는 목록이 된다(test_check_no_ioreport_link 와 같은 계급의 비대칭).
+UNREGISTERED_OK["test_gen_released_hashes_extra_ref"] = (
+    "cysr 1.1.16 — 해시표 생성기 --extra-ref 계약 · 생성기 소비 지점이 로컬 발행 전 게이트뿐(어느 워크플로도 안 부름) · "
+    "그 게이트가 scripts/tests 전량으로 돈다 · 워크플로가 생성기를 부르기 시작하면 그 커밋이 3레인 등재와 함께 이 항목을 지운다")
+
 SB, SE = "LANE-GATE-SELF-BEGIN", "LANE-GATE-SELF-END"
 
 def names(path):

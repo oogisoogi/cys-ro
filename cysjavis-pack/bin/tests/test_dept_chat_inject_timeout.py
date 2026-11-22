@@ -74,6 +74,13 @@ class TestDeptChatInjectTimeout(unittest.TestCase):
         self.assertEqual((p.returncode, p.stdout), (0, ""))
         self.assertIn("dept-chat-inject role=master surface=7 rc=124", errs, errs)
         self.assertLess(el, cap + 4, "안쪽 상한이 걸리지 않았다(%.1fs)" % el)
+        # ★실패 기록의 took 칸: 실제 훅 경로에서 took 이 「상한만큼 멈춤」을 보여 준다(상한 ≤ took < 상한+4).
+        #   SECONDS 없는 sh(dash)면 「took=-」 로 강등이 정상이다.
+        m = re.search(r" rc=124 took=(\d+s|-) ", errs)
+        self.assertIsNotNone(m, errs)
+        if m.group(1) != "-":
+            took = int(m.group(1)[:-1])
+            self.assertTrue(cap <= took < cap + 4, "took=%s cap=%s" % (took, cap))
 
     def test_c_inner_cap_below_declared_harness_timeout(self):
         sys.path.insert(0, os.path.join(PACK, "bin"))

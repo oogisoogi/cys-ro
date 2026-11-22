@@ -1,6 +1,6 @@
 ---
 name: eval-driven-self-improvement
-description: Use when iteratively improving any artifact (site, codebase, doc, model output) over multiple rounds and you must keep ONLY genuine verified gains — especially recursive self-improvement (RSI) where the same agent both makes the changes and judges them, where self-scoring risks fooling yourself, metric gaming, reward-hacking, content-deletion-for-score, or never knowing when to stop.
+description: 여러 라운드 개선에서 검증된 이득만 남기는 eval 주도 자기개선 — 자기채점·지표 게이밍·멈출 때를 다룬다. 산출물을 반복 개선하거나 RSI 이득을 판정할 때.
 ---
 
 # Eval-Driven Self-Improvement (RSI loop)
@@ -81,3 +81,7 @@ On a static site RSI run: a single reviewer rubber-stamped the locked eval ("YES
 1. **Worktree 토너먼트**: 개선 시도가 N개 접근으로 갈릴 때, 각 producer는 **각자 git worktree**에서 병렬 실행한다(approach family를 서로 다르게 강제 — 같은 계열 N개는 토너먼트가 아니다). 채점은 전원 동일 LOCKED eval로.
 2. **승자 merge 후 재benchmark 회귀검증**: 승자 병합 직후 **같은 eval을 한 번 더** 실행한다 — 병합 자체가 회귀를 만들 수 있다. 회귀 검출 시 즉시 롤백(reset --hard 급 원복)하고 병합을 무효로 한다. "병합 전 점수"를 결과로 보고하는 것은 금지.
 3. **종료조건 구분 — plateau vs circuit-breaker**: plateau 카운터는 **정체된 승리**(개선폭 < ε인 PASS)만 세고, circuit-breaker는 **실패**만 센다(공통상수 3 — 3연속 실패=변형 반복 금지·아키텍처 의심·에스컬레이션). 두 카운터를 섞으면 "실패 연속"이 plateau로 위장되어 낭비 루프가 은폐된다. 종료 사유는 반드시 둘 중 무엇인지 명시 보고한다.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+Use when iteratively improving any artifact (site, codebase, doc, model output) over multiple rounds and you must keep ONLY genuine verified gains — especially recursive self-improvement (RSI) where the same agent both makes the changes and judges them, where self-scoring risks fooling yourself, metric gaming, reward-hacking, content-deletion-for-score, or never knowing when to stop.

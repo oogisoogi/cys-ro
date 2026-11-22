@@ -230,6 +230,10 @@ pub(crate) enum Effective {
     Working,
     Waiting,
     WaitingForInput,
+    /// ★(1.1.16 · 차용 ②) 끝났지만 사람이 아직 안 봤다 — 프로그램 자신의 7501 보고(`done`·`error`)에서만 나온다
+    /// (화면 판정기는 끝남과 쉼을 가르지 못한다). 사람이 그 뒤에 입력하면 `waiting` 으로 내려간다.
+    Done,
+    /// 분류하지 못했다 — **일이 성공했다는 뜻이 아니다**(관측 없음 · 무효화 · 문법 불일치 · 종료).
     Unknown,
 }
 
@@ -239,7 +243,18 @@ impl Effective {
             Effective::Working => "working",
             Effective::Waiting => "waiting",
             Effective::WaitingForInput => "waiting_for_input",
+            Effective::Done => "done",
             Effective::Unknown => "unknown",
+        }
+    }
+    /// ★(1.1.16 · 차용 ② ⒝) 상태 이름의 뜻 — 출력(`display_activity.meaning`)에 그대로 싣는다.
+    pub(crate) fn meaning(self) -> &'static str {
+        match self {
+            Effective::Working => "working = 지금 일하는 중",
+            Effective::Waiting => "waiting = 쉬는 중 · 다음 지시를 기다림",
+            Effective::WaitingForInput => "waiting_for_input = 사람 답(승인·질문·로그인)이 있어야 진행",
+            Effective::Done => "done = 끝났지만 아직 안 봄(error 포함 · 사람이 입력하면 waiting)",
+            Effective::Unknown => "unknown = 분류 못 함 · 일이 성공했다는 뜻이 아님",
         }
     }
 }
@@ -249,6 +264,11 @@ pub(crate) enum Raw {
     Active,
     Idle,
     Decision(DecisionKind),
+    /// ★(1.1.16 · 차용 ②) 7501 보고에서만: blocked·kind=auth(로그인) · blocked(kind 없음) · done · error.
+    Auth,
+    Blocked,
+    Done,
+    Error,
     Unknown,
 }
 
@@ -259,6 +279,10 @@ impl Raw {
             Raw::Idle => "idle",
             Raw::Decision(DecisionKind::Permission) => "permission",
             Raw::Decision(DecisionKind::Question) => "question",
+            Raw::Auth => "auth",
+            Raw::Blocked => "blocked",
+            Raw::Done => "done",
+            Raw::Error => "error",
             Raw::Unknown => "unknown",
         }
     }
@@ -1353,8 +1377,14 @@ pub(crate) fn observe_seat(
 
 /// Spawns the observer on its own OS thread. Failure leaves every seat Unknown; there is NO fallback
 /// to a shared/blocking pool (R3-1).
+/// 화면 관측기 켬/끔 손잡이(`CYS_DISPLAY_ACTIVITY=0` = 끔). ★(1.1.16 · 차용 ②) 7501 응답도 이 값을 따른다 — 관측기가 없으면
+/// 덧씌울 세대·순번이 없어 7501 보고를 보일 수 없는데, 답하는 순간 Claude 는 제목 표지를 그리지 않는다(codex 1R MAJOR ①).
+pub(crate) fn observer_enabled() -> bool {
+    std::env::var("CYS_DISPLAY_ACTIVITY").as_deref() != Ok("0")
+}
+
 pub(crate) fn spawn_observer(daemon: Arc<Daemon>) {
-    if std::env::var("CYS_DISPLAY_ACTIVITY").as_deref() == Ok("0") {
+    if !observer_enabled() {
         return;
     }
     let spawned = std::thread::Builder::new()
@@ -1366,7 +1396,15 @@ pub(crate) fn spawn_observer(daemon: Arc<Daemon>) {
 }
 
 fn observer_loop(daemon: &Arc<Daemon>) {
+    // ★(1.1.16 · 차용 ② · codex 2R MAJOR) 관측기가 죽으면(패닉 등) `running` 을 내린다 — 7501 응답 관문이 이 값을 매번 본다.
+    struct Down<'a>(&'a AtomicBool);
+    impl Drop for Down<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
     daemon.activity.running.store(true, Ordering::SeqCst);
+    let _down = Down(&daemon.activity.running);
     let mut frame = Frame::new();
     let mut next = Instant::now();
     loop {
@@ -1446,7 +1484,91 @@ pub(crate) fn wire(daemon: &Daemon, s: &Surface) -> Value {
         return unknown_wire(Invalid::Exited.as_str());
     }
     let now = daemon.started_instant.elapsed().as_secs_f64();
-    wire_at(store, s, now, &Params::LOCKED)
+    // ★(1.1.16 · 차용 ②) 프로그램이 스스로 알린 상태(OSC 7501)가 있으면 화면 판정 대신 그것을 싣는다.
+    let (ver, ps) = program_overlay(s);
+    wire_with(store, s, now, &Params::LOCKED, ver, ps.as_ref())
+}
+
+/// 좌석의 7501 (판 계수, 덧씌움). 사람 마지막 입력 = done → waiting 내림 판정 재료.
+pub(crate) fn program_overlay(s: &Surface) -> (u64, Option<crate::program_status::Overlay>) {
+    let human = *s.last_human_input.lock().unwrap_or_else(|e| e.into_inner());
+    let store = s.program_status.lock().unwrap_or_else(|e| e.into_inner());
+    let o = crate::program_status::overlay(&store, human, std::time::Instant::now());
+    (store.version, o)
+}
+
+/// 7501 덧씌움 → (state, raw, reason). 순수.
+pub(crate) fn overlay_state(o: &crate::program_status::Overlay) -> (Effective, Raw, &'static str) {
+    use crate::program_status::{Kind, PState};
+    match o.state {
+        PState::Working => (Effective::Working, Raw::Active, "program status: working"),
+        PState::Idle => (Effective::Waiting, Raw::Idle, "program status: idle"),
+        PState::Blocked => match o.kind {
+            Some(Kind::Permission) => (Effective::WaitingForInput, Raw::Decision(DecisionKind::Permission), "program status: blocked (permission)"),
+            Some(Kind::Question) => (Effective::WaitingForInput, Raw::Decision(DecisionKind::Question), "program status: blocked (question)"),
+            Some(Kind::Auth) => (Effective::WaitingForInput, Raw::Auth, "program status: blocked (auth)"),
+            None => (Effective::WaitingForInput, Raw::Blocked, "program status: blocked"),
+        },
+        PState::Done if o.seen => (Effective::Waiting, Raw::Done, "program status: done (seen)"),
+        PState::Done => (Effective::Done, Raw::Done, "program status: done (not seen yet)"),
+        PState::Error if o.seen => (Effective::Waiting, Raw::Error, "program status: error (seen)"),
+        PState::Error => (Effective::Done, Raw::Error, "program status: error (not seen yet)"),
+    }
+}
+
+/// 순수 — 출력 순번 = 관측기 순번 + 7501 판 × 2 + 봄(0/1). [`wire_with`] 주석의 단조성 논증 그대로.
+pub(crate) fn overlay_seq(seq: u64, ps_ver: u64, seen: bool) -> u64 {
+    seq.saturating_add(ps_ver.saturating_mul(2)).saturating_add(u64::from(seen))
+}
+
+/// 덧씌움 근거(진단 · `display_activity.program_status`). 보고 원문의 msg/title 은 해독된 평문(제어 문자 0 · 검사 통과분).
+fn overlay_wire(o: &crate::program_status::Overlay) -> Value {
+    json!({
+        "state": o.state.as_str(),
+        "kind": o.kind.map(crate::program_status::Kind::as_str),
+        "app": o.app,
+        "msg": o.msg,
+        "title": o.title,
+        "progress": o.progress,
+        "id": o.id,
+        "age_secs": o.age_secs,
+        "seen": o.seen,
+        "records": o.records,
+    })
+}
+
+/// [`wire_at`] + 7501 덧씌움. 신원·화면 재검증은 그대로 거친 뒤(같은 세대 — UI 의 세대 되돌림 거부와 충돌하지 않게)
+/// 상태·사유·안정 나이만 프로그램 보고로 바꾼다.
+/// ★순번(codex 1R MAJOR ②): UI 는 같은 세대에서 같은 순번의 비-Unknown 응답을 거부한다 — 7501 변화가 관측기 틱 사이에 오면
+///   막힌다. 그래서 **모든** 출력의 순번 = 관측기 순번 + 7501 판 계수 × 2 + (봄 ? 1 : 0) 이다. **같은 세대 안에서** 세 항 모두 줄지
+///   않고(판 계수는 적용·지움마다 +1 · 봄은 새 보고(판 +1 = 순번 +2) 없이는 false 로 돌아가지 않는다), 어느 하나가 바뀌면 순번이 는다.
+///   세대가 바뀌면 관측기 순번이 0 부터 다시 시작한다 — 종전 계약 그대로다(UI 순번 대조는 세대 안에서만 · codex 2R 판정 = 설계대로).
+pub(crate) fn wire_with(store: &ActivityStore, s: &Surface, now: f64, p: &Params, ps_ver: u64, ps: Option<&crate::program_status::Overlay>) -> Value {
+    let mut v = wire_at(store, s, now, p);
+    // 퇴화형(신원 없는 Unknown — 관측 없음·무효화)은 그대로 둔다: 세대·순번이 없으면 UI 가 받을 근거가 없다.
+    if v.get("display_epoch").is_none() {
+        return v;
+    }
+    let seen = ps.is_some_and(|o| o.seen);
+    if let Some(seq) = v.get("observation_seq").and_then(Value::as_u64) {
+        let bumped = overlay_seq(seq, ps_ver, seen);
+        if let Some(m) = v.as_object_mut() {
+            m.insert("observation_seq".into(), json!(bumped));
+        }
+    }
+    let Some(o) = ps else { return v };
+    let (state, raw, reason) = overlay_state(o);
+    if let Some(m) = v.as_object_mut() {
+        m.insert("state".into(), json!(state.as_str()));
+        m.insert("raw".into(), json!(raw.as_str()));
+        m.insert("reason".into(), json!(reason));
+        m.insert("meaning".into(), json!(state.meaning()));
+        m.insert("source".into(), json!("program_status"));
+        m.insert("stable_age_secs".into(), json!(o.age_secs));
+        m.insert("retained".into(), json!(false));
+        m.insert("program_status".into(), overlay_wire(o));
+    }
+    v
 }
 
 pub(crate) fn wire_at(store: &ActivityStore, s: &Surface, now: f64, p: &Params) -> Value {
@@ -1480,6 +1602,9 @@ pub(crate) fn wire_at(store: &ActivityStore, s: &Surface, now: f64, p: &Params) 
         "display_epoch": rec.epoch,
         "retained": retained,
         "consecutive_rejections": rec.reducer.rejections,
+        "meaning": state.meaning(),
+        "source": "screen",
+        "program_status": Value::Null,
     })
 }
 

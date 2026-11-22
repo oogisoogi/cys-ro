@@ -947,6 +947,46 @@ def h_secret_2():
     return " · ".join(notes)
 
 
+@specimen("H-ASSET-1", "W0",
+          "우리 자산 빠짐 방지 — 본부 스킬·자산 원천에 있는데 판정표(docs/ASSET-LEDGER.md)에 없는 항목 = 적색"
+          " · 판정 값 오타·「넣음」 스킬 팩 부재 = 적색 · 원천 없는 기계는 「원천 없음」(초록 아님)",
+          ["cysr-1116-asset-skills-1120", "판 누락(feat/asset-skills 미병합 실증)", "CI-only-게이트"])
+def h_asset_1():
+    """1.1.13 묶음 대상으로 수용된 가지(feat/asset-skills)가 어느 판에도 병합되지 않고 두 판이 지나갔다(11-20 실측).
+    새 스킬이 판에서 조용히 빠지는 일을 판정표 대조로 막는다.
+
+      ⓐ 산 판정 — 이 기계 HOME 원천으로 `scripts/asset_ledger_check.py` rc 0(본부 기계는 「초록」 · CI 는 「원천 없음」).
+      ⓑ 양성 대조 — 격리 HOME 에 판정표에 없는 스킬 하나를 두면 rc 1 이고 그 이름이 나온다(게이트가 대상을 때린다).
+      ⓒ 측정 불능 대조 — 원천 없는 HOME 에서 「초록」 문구를 내지 않는다(못 본 것 ≠ 깨끗하다)."""
+    chk = os.path.join(REPO_DIR, "scripts", "asset_ledger_check.py")
+    if not os.path.isfile(chk):
+        if _is_git_checkout():
+            raise Fail("레포 체크아웃인데 자산 판정표 검사기가 없다: %s" % chk)
+        raise Skip("레포 체크아웃이 아니다(배포 팩 실행) — 자산 판정표 검사기 부재")
+    notes = []
+    r = _run([sys.executable, chk], timeout=120)
+    need(r.returncode == 0, "ⓐ 산 판정 적색(exit=%d)\n%s%s" % (r.returncode, r.stdout[-2500:], r.stderr[-800:]))
+    notes.append("ⓐ " + (r.stdout.strip().splitlines() or [""])[-1][:120])
+    tmp = tempfile.mkdtemp(prefix="cys-asset-ledger-")
+    try:
+        empty = os.path.join(tmp, "empty-home")
+        os.makedirs(empty)
+        r = _run([sys.executable, chk, "--home", empty], timeout=120)
+        need(r.returncode == 0 and "원천 없음" in r.stdout and "초록" not in r.stdout,
+             "ⓒ 원천 없는 HOME 판정이 계약과 다르다(exit=%d): %s" % (r.returncode, r.stdout[-400:]))
+        notes.append("ⓒ 원천 없음 OK")
+        home = os.path.join(tmp, "home")
+        _w(os.path.join(home, ".claude", "skills", "zz-unledgered-probe", "SKILL.md"),
+           "---\nname: zz-unledgered-probe\n---\n", 0o644)
+        r = _run([sys.executable, chk, "--home", home], timeout=120)
+        need(r.returncode == 1 and "skill:zz-unledgered-probe" in r.stdout,
+             "ⓑ 판정표에 없는 새 스킬을 못 잡았다(exit=%d): %s" % (r.returncode, r.stdout[-400:]))
+        notes.append("ⓑ 새 스킬 적발 OK")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return " · ".join(notes)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # 0. 베이스라인 (결정론 회귀 — 재감사 부채 V3)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -2941,6 +2981,13 @@ def h_conc_2():
     need(bi > 0, "run_boot 를 못 찾았다")
     body = src[bi:src.find("\n}\n", bi)]
     li = body.find("for (role, agent, mandatory) in BOOT_PLAN")
+    if li < 0:
+        # ★(borrow23 · boot_fleet · integ-1120) 루프 대상 = `plan`(= effective_boot_plan(fleet) — full = BOOT_PLAN · light = 빈 목록).
+        #   PLAN 출처가 BOOT_PLAN 그대로인지까지 본다(다른 목록으로 바뀌면 여전히 적색).
+        li = body.find("for (role, agent, mandatory) in plan {")
+        need(li < 0 or "let plan = effective_boot_plan(" in body[:li], "run_boot 의 plan 이 effective_boot_plan 출처가 아니다")
+        ei = src.find("fn effective_boot_plan(")
+        need(li < 0 or (ei > 0 and "BOOT_PLAN" in src[ei:src.find("\n}\n", ei)]), "effective_boot_plan 이 BOOT_PLAN 을 내지 않는다")
     need(li > 0, "run_boot 의 PLAN 루프를 못 찾았다")
     need("fetch_surfaces()" in body[li:],
          "루프 안 role 생존 재조회가 없다(G12: 락 밖 변화에 stale 판정 → 중복 스폰)")
@@ -6362,6 +6409,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_hud_bridge.py":              1,   # NOWIN 원조 처방(0.12.44~)
     "javis_idempotency.py":             1,
     "javis_idle_audit.py":              1,
+    "javis_idle_gate.py":               1,   # 1.1.16(cysr-no-hands-gui-1118) — 캡처 스폰 1곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_intake.py":                  1,   # 0.14.52 편입 r2(3e7ae36c) — 원작자 새/변경 캡처 스폰 4곳에 우리 NOWIN 정본 정의(정의 1)
     "javis_learn.py":                   1,
     "javis_lock.py":                    1,
@@ -6370,6 +6418,7 @@ _U5_PACK_CREATIONFLAGS = {
     "javis_orchestra.py":               1,
     "javis_org.py":                     1,
     "javis_orient_log.py":              1,
+    "javis_owner.py":                   1,   # 1.1.16(cysr-owner-memory-todo-1118) — 캡처 스폰 2곳은 `**NOWIN` 전개라 토큰이 없고 NOWIN 정의 1곳만 센다
     "javis_phoenix.py":                 1,
     "javis_phoenix_encoding_smoke.py":  1,
     "javis_phoenix_harness.py":         1,
@@ -6761,6 +6810,11 @@ def _u15_sandbox(tmp, *, ostype="darwin24", clt_present=False, cys_role=None, pa
                     drop=("CYS_PY", "CYS_PY_ORIGIN", "DEVELOPER_DIR", "CYS_BIN"))
     if pack:
         env["CYS_PACK_DIR"] = pack
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · master#6f7634b4 ③) 프리루드의 고정 설치 위치(`/Applications/cys(r).app` · 2순위)도 가짜 뿌리로 —
+    #   종전엔 이 값이 없어 그 기계에 앱이 실제로 깔려 있으면 실설치 python 을 집어 H-CLT-1·2 가 붉었다(CI 러너엔 앱이 없어 초록). 빈 뿌리 =
+    #   2순위 후보 0 · 셔임 판정의 `/usr/bin` 도 이 뿌리 밑으로 옮겨지지만 이 샌드박스 PATH 에는 `/usr/bin` 이 없다(셔임 = CYS_DEVTOOLS_SHIM_DIR).
+    env["CYS_TEST_SYSROOT"] = os.path.join(tmp, "sysroot")
+    os.makedirs(env["CYS_TEST_SYSROOT"], exist_ok=True)
     env["PATH"] = os.pathsep.join(bins + [pydir])
     return {"env": env, "marker": marker, "shim": os.path.join(shimd, "python3"),
             "bundled": bundled, "pydir": pydir, "binp": binp, "home": home, "tmp": tmp}
@@ -6783,6 +6837,10 @@ def _u15_resolve(lib, env, preset=None):
     need(r.returncode == 0, "프리루드 source 실패 rc=%d: %r" % (r.returncode, r.stderr[-300:]))
     m = re.search(r"^CYS_PY=(.*)$", r.stderr, re.M)
     need(m, "해소값 회수 실패: %r" % r.stderr[-300:])
+    # ★(master#6f7634b4 ③) 이 기계 실설치(샌드박스 밖 고정 위치)를 집었으면 격리 실패 — 결함 판정과 섞지 않고 그 사유로 실패한다.
+    sr = e.get("CYS_TEST_SYSROOT", "")
+    need(not (m.group(1).startswith(("/Applications/", os.path.expanduser("~/Applications/"))) and not (sr and m.group(1).startswith(sr))),
+         "격리 실패: 샌드박스 밖 실설치 python(%r)을 집었다 — CYS_TEST_SYSROOT 가 고정 설치 위치를 가리지 못했다" % m.group(1))
     return m.group(1)
 
 
@@ -6943,6 +7001,10 @@ def h_clt_2():
     libp = lib.replace("\\", "/")
     # ⓐ 실기
     env = _base_env(drop=("CYS_PY", "CYS_PY_ORIGIN", "CYS_DEVTOOLS_ROOTS", "CYS_DEVTOOLS_SHIM_DIR"))
+    # ★1.1.16(TICKET=cysr-1116-debt-d-1119 · master#6f7634b4 ③) 실기 축도 고정 설치 위치(2순위 `/Applications/cys(r).app`)는 빈 뿌리로 가린다 —
+    #   그 기계에 앱이 깔려 있으면 실설치 python 을 집어 「종전 규칙과 다르다」 로 붉었다(CI 러너엔 앱이 없어 초록).
+    _clt2_root = tempfile.mkdtemp(prefix="clt2-sysroot-")
+    env["CYS_TEST_SYSROOT"] = _clt2_root
     r = _run(["sh", "-c",
               '. "$1" || exit 4; printf "NEW=%s\\n" "${CYS_PY:-}"; '
               'printf "OLD=%s\\n" "$(command -v python3 2>/dev/null || command -v python 2>/dev/null '
@@ -6961,8 +7023,17 @@ def h_clt_2():
              "비-darwin 호스트(OSTYPE=%s)에서 셔임 분류(%s)·폴백 제거 조건(%s)이 켜졌다 — 윈도우 훅 후보·"
              "폴백이 바뀐다" % (kv.get("OS"), kv.get("SHIM"), kv.get("RISK")))
         notes.append("실기 셔임 분류·폴백 제거 조건 = 거짓")
+    shutil.rmtree(_clt2_root, ignore_errors=True)
+    cys_cli = shutil.which("cys", path=env.get("PATH"))
+    cys_cli = os.path.realpath(cys_cli) if cys_cli else ""
+    bundle_by_cli = bool(cys_cli) and kv.get("NEW") in (
+        os.path.join(os.path.dirname(cys_cli), "..", "Resources", "runtime", "python", "bin", "python3"),
+        os.path.join(os.path.dirname(cys_cli), "runtime", "python", "bin", "python3"))
     if host_darwin and kv.get("CLT") == "0" and kv.get("OLD") in ("/usr/bin/python3", "/usr/bin/python"):
         notes.append("실기=적용 불가(이 mac 호스트는 CLT 가 없어 셔임을 피하는 것이 기대 동작)")
+    elif host_darwin and bundle_by_cli:
+        # 우리 판(1.0.x~) 맥 = 동봉 python 우선(1순위 = PATH 의 cys 실체가 든 번들 · `_cys_bundle_py`) — 원작자 「CLT 있으면 PATH 첫 python3」 와 다른 것이 의도.
+        notes.append("실기=적용 불가(PATH 의 cys 가 앱 번들 %s — 동봉 우선이 우리 기대 동작)" % cys_cli)
     else:
         need(kv.get("NEW") == kv.get("OLD"),
              "호스트(OSTYPE=%s)에서 해소값이 종전 규칙과 다르다: NEW=%r OLD=%r — 공유 훅의 새 논리가 "
@@ -7813,14 +7884,21 @@ def h_seat_4axis():
     # ③ launch 호출부: 보류에서 close 에 **도달할 수 없다**(치명위험 ④ 차단의 본체).
     li2 = src.find("fn run_launch_agent_opts(")
     need(li2 > 0, "run_launch_agent_opts 를 못 찾았다")
-    lbody2 = src[li2:src.find("\n/// 온보딩③", li2) if src.find("\n/// 온보딩③", li2) > 0
-                 else li2 + 12000]
+    # ★(TICKET=cysr-agy-policy-exposure) 창 끝 = 다음 최상위 `fn`(실제 함수 경계). 종전 끝 표지 「/// 온보딩③」 은
+    #   이미 사라져 고정 12,000자 창으로 떨어졌고, 실패 분기 롤백 close 가 그 창 끝(11,965자)에 걸려 있어 함수 머리에
+    #   한 줄만 늘어도 이 검사가 「close 가 사라졌다」 로 거짓 적색이 됐다(검사 대상은 그대로 · 경계만 정확히).
+    _le2 = src.find("\nfn ", li2 + 1)
+    lbody2 = src[li2:_le2 if _le2 > 0 else li2 + 12000]
     gi2 = lbody2.find("Ok(BootVerdict::GatePending")
     # 실패 합류 지점 = `LaunchFailed | Err` or-패턴(롤백 close 를 한 벌로 유지하는 구조).
     ei2 = lbody2.find("Ok(BootVerdict::LaunchFailed { evidence: e }) | Err(e) => {",
                       gi2 if gi2 > 0 else 0)
     need(0 < gi2 < ei2, "launch 호출부에 보류 분기가 없거나 실패 분기보다 뒤다")
-    need('"surface.close"' not in lbody2[gi2:ei2],
+    # ★(skt1 · integ-1120) 보류 갈래의 끝 = 그 다음 match 갈래 머리(`Err(e) if …` 등)다 — 실패 합류 지점까지 통째로 보면 사이에 든
+    #   다른 갈래(skt1 `Err(e) if e.starts_with("session_lease:")` 의 빈 좌석 회수 close)를 보류 갈래의 close 로 오독한다.
+    _arm = re.search(r"\n {8}(?:Ok\(|Err\()", lbody2[gi2 + 1:ei2])
+    gend2 = gi2 + 1 + _arm.start() if _arm else ei2
+    need('"surface.close"' not in lbody2[gi2:gend2],
          "보류 분기가 좌석을 닫는다 — 살아 있는 에이전트를 파괴(치명위험 ④ 재발)")
     need('"surface.close"' in lbody2[ei2:],
          "실패 분기의 롤백 close 가 사라졌다 — 진짜 실패 좌석이 역할을 쥔 채 쌓인다(완화 금지)")

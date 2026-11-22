@@ -1,9 +1,12 @@
 ---
 name: media-gen-thumbnail
 description: 유튜브 썸네일을 생성하는 하위 스킬 — 영상 주제·톤에서 클릭을 유도하는 이미지를 생성하고 가독성 높은 텍스트 오버레이를 얹는다(이미지 생성 + 편집 조합). media-gen 썸네일 관문. "썸네일 / 유튜브 썸네일 / thumbnail / 클릭 유도 이미지" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # media-gen-thumbnail
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 썸네일은 클릭률을 좌우하는 별도 산출물이다. 영상 주제·톤에서 시선을 끄는 이미지를 만들고
 짧고 굵은 텍스트를 얹는다.

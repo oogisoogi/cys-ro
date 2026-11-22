@@ -1063,6 +1063,11 @@ pub fn spawn_custom_adapters(daemon: Arc<Daemon>) {
         let d = daemon.clone();
         tokio::spawn(async move {
             loop {
+                // ★agy 좌석 문(독립 검증 B4): 주기마다 판정 — 닫혀 있으면 이번 주기는 실행하지 않는다(문을 열면 다음 주기부터).
+                if cys::agy_door::launch_refusal("", Some(&cmd)).is_some() {
+                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+                    continue;
+                }
                 // 플랫폼별 셸 위임 — Windows는 sh 부재(cmd /C). 실패는 무해(다음 주기 재시도).
                 // ★U5(0.14.41): 콘솔 없는 cysd(GUI 서브시스템)가 콘솔 자식(cmd.exe)을 창 정책 없이
                 //   띄우면 **주기마다 새 콘솔 창이 번쩍인다**(interval_secs 하한 60초 · 이 루프는

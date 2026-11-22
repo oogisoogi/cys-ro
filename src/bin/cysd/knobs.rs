@@ -9,6 +9,12 @@
 
 use serde_json::Value;
 
+/// ★(1.1.16 · 차용 ③ · V-4) 가벼운 시작 손잡이 — 데몬이 **처음 물을 때 한 번** 정하고 그 뒤로 고정(main 기동 때 호출).
+pub fn boot_fleet() -> (&'static str, &'static str) {
+    static FLEET: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
+    *FLEET.get_or_init(|| cys::boot_fleet_decide(std::env::var(cys::ENV_BOOT_FLEET).ok().as_deref(), read_policy().as_ref()))
+}
+
 /// 정책 파일을 읽는다 — 없거나 읽지 못하거나 깨졌으면 `None`(손잡이는 기본값으로 둔다 — 되돌리는 값만 읽으므로 모를 때는 기본이 안전한 쪽이다).
 /// 경로는 승인 손잡이(`approval::cwd_neutral_enabled`)와 같다(시험 이음매 포함).
 pub fn read_policy() -> Option<Value> {

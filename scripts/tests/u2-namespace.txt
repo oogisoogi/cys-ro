@@ -3,5 +3,6 @@
 \.cys/update(/|$)                         # 갱신 폴더 전부(저널·잠금·시도 기록·candidate·hold·backup·installers·stage·runner·state.json)
 \.cys/\.pack-auto-hold\.json$             # ★후속 n12 자동 보류 메모(팩 상태 폴더)
 \.cys/\.pack-journal(/|$)                 # 팩 트랜잭션 저널(~/.cys/.pack-journal · pack_dir 형제)(★5판 M8-pro commit.json · U2 PACK_* 가 위임하는 적용)
+\.cys/\.pack-journal\.d(/|$)               # ★1.1.16(U02) 레인마다 팩 트랜잭션 저널(~/.cys/.pack-journal.d/<레인>/{active,kept})
 Library/LaunchAgents/.*cysr-update-recover  # 복구기 plist
 .*/counsel(/|$)                           # 상담소 신호 대기열(notify::signal)

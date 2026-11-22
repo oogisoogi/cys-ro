@@ -112,6 +112,8 @@ ti = data.get("tool_input")
 ti = ti if isinstance(ti, dict) else {}
 command = ti.get("command") if isinstance(ti.get("command"), str) else ""
 file_path = ti.get("file_path") if isinstance(ti.get("file_path"), str) else ""
+if not file_path and isinstance(ti.get("notebook_path"), str):   # NotebookEdit 는 notebook_path(독립 검증 m4)
+    file_path = ti.get("notebook_path")
 
 WRITE_TOOLS = ("Write", "Edit", "NotebookEdit", "MultiEdit")
 
@@ -965,6 +967,210 @@ if PAUSED and not PREFLIGHT:
                      "($PACK/AUTOPILOT_PAUSED · <프로젝트루트>/_round/AUTOPILOT_PAUSED)"
                      % (first or "?"))
 
+# ★agy 좌석 문(TICKET=cysr-agy-policy-exposure · 모드 무관 · 헌법 인가 토큰 무관 · 서명 우회 없음):
+#   에이전트는 문 파일(~/.cys/agy-seat-door.json)을 만들거나 쓸 수 없다. 문은 사람이 앱 화면(명령 팔레트 확인 창 ·
+#   경고 문구)에서만 연다 — 정본 = src/agy_door.rs. 읽기·닫기(rm)는 막지 않는다(안전 쪽).
+#   ★정직한 한계: 낱말을 변수로 조립하는 등 의도적 우회는 이 문자열 검사로 다 잡지 못한다(같은 OS 사용자 =
+#   거버넌스 구분 · src/agy_door.rs 머리). 막는 것은 지침을 따르는 정상 노드의 평시 쓰기다. 문 이름을 담은 스크립트
+#   파일을 먼저 쓰고 그 파일을 실행하는 두 단계 간접(Write 본문은 검사 안 함 — 설계 문서·이 훅 자신이 이름을 담는다)도 이 한계에 든다.
+AGY_DOOR_WORD = "agy-seat-"
+AGY_DOOR_READ_OK = {"cat", "ls", "stat", "test", "[", "head", "tail", "wc", "file", "rm", "unlink",
+                    "shasum", "sha256sum", "jq", "grep", "rg", "echo", "printf"}
+# cys 제외 = `cys send` 로 남의 셸에 쓰는 길 · git 제외 = `git show --output=<문 파일>` 같은 출력 옵션 쓰기(codex 1R major)
+AGY_DOOR_DENY = ("agy 좌석 문 파일(agy-seat-door.json)은 에이전트가 만들거나 쓸 수 없다 — 구글 개인 요금제 약관 때문에 "
+                 "cysr 은 agy 좌석을 기본으로 띄우지 않으며, 여는 것은 사람이 앱 명령 팔레트 확인 창에서만 한다.")
+
+# 읽기 거짓 양성 해소(codex 1R minor): `sed -n 1p <문 파일>` · `python3 -m json.tool <문 파일>` 은 읽기다.
+#   좁게만 연다 — sed = 옵션 -n/-e/-E/-r/--quiet/--silent 만 · 스크립트 = 줄 범위 + p 만(w·e·-i 같은 쓰기 길 불가) ·
+#   json.tool = 위치 인자 1개(문 파일 = 입력)만(두 번째 위치 인자 = 출력 파일이라 거부). 그 밖 모양은 종전대로 거부(안전 쪽).
+AGY_DOOR_SED_OPTS = {"-n", "-r", "--quiet", "--silent"}   # -e 는 아래에서 스크립트 자리로 따로 처리(입력이 소문자라 -E 도 -e 로 읽혀 거부 쪽)
+AGY_DOOR_SED_SCRIPT = re.compile(r"^(\$|[0-9]+)?(,(\$|[0-9]+))?p$")
+AGY_DOOR_JSONTOOL_OPTS = {"--sort-keys", "--compact", "--no-ensure-ascii", "--json-lines", "--tab", "--no-indent"}
+
+def agy_door_read_only(p, args):
+    if p == "git":
+        # 독립 검증 m2: 읽기 하위 명령(log·diff·show·grep·blame·status)은 문 이름을 검색어로 받아도 읽기다 —
+        #   출력 파일·페이저·외부 diff 옵션(--output · -o · -O · --open-files-in-pager · --ext-diff)은 제외.
+        sub, rest = l_git_sub(args)
+        return (sub in ("log", "diff", "show", "grep", "blame", "status")
+                and not any(a.startswith(("--output", "-o", "-O", "--open-files", "--ext-diff")) for a in rest))
+    if p in ("python3", "python") and args[:1] == ["-c"]:
+        # 독립 검증 m2: `python3 -c "json.load(open('<문 파일>'))"` 꼴 읽기만(인자 한 개 open · 쓰기 낱말 없음)
+        code = " ".join(args[1:])
+        return bool(re.fullmatch(r"(import json\s*;?\s*)?(print\()?json\.load\(open\([^,()]+\)\)\)?(\[[^\]]*\])*\)?", code))
+    if p == "rg" and any(a.startswith("--pre") for a in args):   # rg --pre <prog> = 파일마다 프로그램 실행(독립 재검 minor)
+        return False
+    if p in AGY_DOOR_READ_OK:
+        return True
+    if p == "sed":
+        # codex 2R major: 스크립트 자리를 정확히 가른다 — `-e` 다음 낱말 · `-e` 가 없으면 첫 위치 인자. 스크립트는 전부
+        #   줄 범위+p 문법이어야 한다(경로 낱말이 들었다고 파일로 보지 않는다 · `w<문 파일>` 같은 쓰기 스크립트 차단).
+        scripts, pos, i = [], [], 0
+        while i < len(args):
+            a = args[i]
+            if a == "-e":
+                if i + 1 >= len(args):
+                    return False
+                scripts.append(args[i + 1]); i += 2; continue
+            if a.startswith("-"):
+                if a not in AGY_DOOR_SED_OPTS:
+                    return False
+            else:
+                pos.append(a)
+            i += 1
+        if not scripts:
+            if not pos:
+                return False
+            scripts.append(pos.pop(0))
+        return all(AGY_DOOR_SED_SCRIPT.match(x) for x in scripts)
+    if p in ("python3", "python") and args[:2] == ["-m", "json.tool"]:
+        pos = [a for a in args[2:] if not a.startswith("-")]
+        return (len(pos) == 1 and AGY_DOOR_WORD in pos[0]
+                and all(a in AGY_DOOR_JSONTOOL_OPTS for a in args[2:] if a.startswith("-")))
+    return False
+
+# codex 3R minor: 문 낱말 판정 = 문 파일 이름(agy-seat-door.json) 자체가 들었는가 — 확장자 목록으로 「다른 파일」을 고르던
+#   방식(목록 밖 agy-seat-notes.json 과차단 · 붙여 쓴 낱말 회귀)을 버린다. 인용은 정규화가 지우므로 `"agy-seat-"'door.json'` 도 이어진다.
+AGY_DOOR_NAME = "agy-seat-door.json"
+
+def agy_door_subst(cmd):
+    """명령/프로세스 치환 본문 뽑기 — (바깥 문, 본문들) · 짝이 안 맞으면 None. 홑따옴표 안은 치환이 아니다."""
+    out, bodies, i, sq = [], [], 0, False
+    while i < len(cmd):
+        ch = cmd[i]
+        if sq:
+            out.append(ch); sq = ch != "'"; i += 1; continue
+        if ch == "'":
+            sq = True; out.append(ch); i += 1; continue
+        if ch == "\\" and i + 1 < len(cmd):
+            out.append(cmd[i:i + 2]); i += 2; continue
+        if ch in "$<>" and cmd[i + 1:i + 2] == "(":
+            d, j = 1, i + 2
+            while j < len(cmd) and d:
+                d += {"(": 1, ")": -1}.get(cmd[j], 0); j += 1
+            if d:
+                return None
+            bodies.append(cmd[i + 2:j - 1]); out.append(" __subst__ "); i = j; continue
+        if ch == "`":
+            j = cmd.find("`", i + 1)
+            if j < 0:
+                return None
+            bodies.append(cmd[i + 1:j]); out.append(" __subst__ "); i = j + 1; continue
+        out.append(ch); i += 1
+    return "".join(out), bodies
+
+def agy_door_bash_write(cmd, depth=0, forced=False):
+    ns = [norm_loose(cmd).lower(), norm_loose_slash(cmd).lower()]
+    if not forced and not any(AGY_DOOR_NAME in n for n in ns):
+        return False
+    # 치환 본문은 같은 규칙으로 재귀 판정(읽기 전용 `"$(cat <문 파일>)"` 은 통과 · 본문 쓰기는 거부) · 짝 안 맞음·깊음 = 거부(안전 쪽)
+    if any(x in cmd for x in ("$(", "`", "<(", ">(")):
+        sp = agy_door_subst(cmd)
+        if sp is None or depth > 3:
+            return True
+        outer, bodies = sp
+        if any(agy_door_bash_write(bd, depth + 1) for bd in bodies):
+            return True
+        # 본문이 문 이름을 내놓으면(`> "$(echo <문 파일>)"`) 바깥 문은 문 이름이 없어도 문을 다루는 것으로 본다
+        named = forced or any(AGY_DOOR_NAME in norm_loose(bd).lower() for bd in bodies)
+        return agy_door_bash_write(outer, depth + 1, forced=named)
+    # 독립 검증 m2(R8): `python3 -c "import json;print(json.load(open('<문 파일>')))"` — 정규화가 따옴표를 지워 코드 속 `;` 에서
+    #   끊기므로 원문을 shlex 로 읽어 이 읽기 꼴 하나만 따로 통과시킨다(인자 한 개 open · 다른 문 없음).
+    try:
+        import shlex
+        _t = shlex.split(cmd)
+    except Exception:
+        _t = None
+    if (_t and len(_t) == 3 and _t[0].rsplit("/", 1)[-1] in ("python3", "python") and _t[1] == "-c"
+            and re.fullmatch(r"\s*(import json\s*;\s*)?(print\()?json\.load\(open\(['\"][^'\",()]+['\"]\)\)\)?\s*", _t[2])):
+        return False
+    for n in ns:
+        toks = n.split()
+        if ">" in toks or ">>" in toks or any(w.startswith(">") for w in toks):
+            return True
+        for s in l_segments(n):
+            p, a = l_cmd_word(s)
+            if p is not None and not agy_door_read_only(p.lower(), a):
+                return True
+    return False
+
+# ★agy 실행(독립 검증 B2 · 모드 무관): Claude 가 자기 Bash 로 agy 를 실행하거나 `cys send` 로 좌석에 agy 를 쳐 넣는 것을
+#   막는다 — 판정 = Rust 판정기(`cys agy-door-check` · 문 상태 포함 · launch-agent 와 같은 것) · 문이 열려 있으면 통과.
+#   ★한계(실수 경로 차단 · 고의 우회 아님): 이름 바꾼 사본·심링크·변수·eval·글롭은 문자열로 원리상 못 막는다(USER-MANUAL 「알려진 한계」).
+AGY_RUN_DENY = ("Claude 는 agy(Antigravity CLI)를 실행하거나 좌석에 쳐 넣을 수 없다 — 구글 개인 요금제 약관상 다른 프로그램이 "
+                "agy 를 부리면 계정이 정지될 수 있다. agy 는 사람이 새 탭에서 직접 치세요. 기업 요금제 등 허용된 경우에만 사람이 "
+                "앱 명령 팔레트 「Antigravity(agy) 좌석 열기」로 문을 엽니다.")
+AGY_SEND_VAL_OPTS = {"--surface", "--to", "--socket", "--workspace", "--role", "--delay-ms", "--submit-delay-ms"}
+
+def agy_mentioned(c):
+    return re.search(r"agy|antigravity", re.sub(r"[\\'\"^]", "", c).lower()) is not None
+
+def agy_check_cmd(c):
+    """True = 문 닫힘 + agy 실행 · False = 아님 · None = 판정기를 못 부름."""
+    import subprocess
+    try:
+        r = subprocess.run(["cys", "agy-door-check", "--cmd", c], capture_output=True, stdin=subprocess.DEVNULL,
+                           timeout=max(1.0, min(budget_left(), PROBE_CAP_S)))
+    except Exception:
+        return None
+    return True if r.returncode == 76 else (False if r.returncode == 0 else None)
+
+def agy_bare_word(c):
+    try:
+        import shlex
+        toks = shlex.split(c)
+    except Exception:
+        toks = c.split()
+    return any(re.sub(r"[\\^]", "", t).rsplit("/", 1)[-1].lower().split(".")[0] in ("agy", "antigravity") for t in toks)
+
+AGY_SEND_HEADS = {"agy", "antigravity", "env", "sh", "bash", "zsh", "dash", "ksh", "nohup", "timeout", "exec", "sudo",
+                  "doas", "cmd", "cmd.exe", "powershell", "pwsh", "find", "xargs", "command", "nice", "caffeinate", "script"}
+
+def agy_send_head(t):
+    """좌석에 쳐 넣을 글의 첫 낱말이 agy 또는 실행 래퍼·셸인가 — 프롬프트 글(「please review agy docs」)은 대상이 아니다."""
+    try:
+        import shlex
+        ws = shlex.split(t)
+    except Exception:
+        ws = t.split()
+    ws = [w for w in ws if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w)]
+    return bool(ws) and re.sub(r"[\\^]", "", ws[0]).rsplit("/", 1)[-1].lower() in AGY_SEND_HEADS
+
+def agy_bash_runs(cmd):
+    if not agy_mentioned(cmd):
+        return False
+    texts = [cmd]
+    try:
+        import shlex
+        toks = shlex.split(cmd)
+    except Exception:
+        toks = []
+    for i, t in enumerate(toks):
+        if t.rsplit("/", 1)[-1] == "cys" and toks[i + 1:i + 2] in (["send"], ["send-text"]):
+            j = i + 2
+            while j < len(toks) and toks[j] not in (";", "&&", "||", "|"):
+                a = toks[j]
+                if a in AGY_SEND_VAL_OPTS:
+                    j += 2; continue
+                if not a.startswith("-") and agy_send_head(a):
+                    texts.append(a)
+                j += 1
+    for t in texts:
+        if not agy_mentioned(t):
+            continue
+        r = agy_check_cmd(t)
+        if r is True or (r is None and agy_bare_word(t)):
+            return True
+    return False
+
+if tool == "Bash" and command and agy_bash_runs(command):
+    out_deny("[AGY-RUN] " + AGY_RUN_DENY)
+
+if tool == "Bash" and command and agy_door_bash_write(command):
+    out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
+if tool in WRITE_TOOLS and basename(file_path).lower().startswith("agy-seat-door.json"):   # 실제 문 파일·임시본만(codex 1R minor)
+    out_deny("[AGY-DOOR] " + AGY_DOOR_DENY)
+
 if tool == "Bash" and command:
     if ACTIVE:
         r = strict_deny(command)
@@ -1024,6 +1230,14 @@ run_loose_backstop() {
   cmd="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)"
   fp="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null)"
   low="$(printf '%s' "$cmd" | tr 'A-Z' 'a-z' | tr -s ' \t' ' ')"
+  # ★agy 좌석 문(codex 1R major · 파서 부재·크래시 때도): 문 파일을 건드리는 입력은 순수 읽기(첫 낱말 cat/ls/stat/head/tail/wc/grep
+  #   · 리다이렉트 없음)만 통과 — 그 밖(Write/Edit 포함 · jq 부재로 판독 불가 포함)은 fail-closed 거부.
+  #   codex 2R major: 단일 명령만 — `;`·`|`·`&`·명령 치환·줄바꿈이 섞이면(첫 낱말이 cat 이어도) 거부.
+  case "$INPUT" in *agy-seat-*)
+    case "$low" in *";"*|*"|"*|*"&"*|*'$('*|*'`'*|*'<('*|*'>('*|*$'\n'*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac
+    case "${low%% *}" in cat|ls|stat|head|tail|wc|grep) case "$low" in *">"*) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
+      *) emit_deny "백스톱: [AGY-DOOR] agy 좌석 문 파일 쓰기 차단(사람이 앱 화면에서만 연다)" ;; esac ;;
+  esac
   case "$low" in
     *"git push"*|*"git remote set-url"*|*"git remote remove"*|*"gh release create"*|*"gh pr create"*|*"scp "*)
       emit_deny "백스톱: 비가역 명령. 주인님 승인 필요" ;;

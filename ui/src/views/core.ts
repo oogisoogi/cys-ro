@@ -27,6 +27,20 @@ export const LOG_MAX = 200;
 export const POLL_MS = 3_000;
 /** 쓰기 직전 입력줄 관측(org.status 왕복)의 유효 상한(설계 목표값) — 넘으면 그 관측으로 쓰지 않는다(0.5 M12: 데몬 몫 < 1ms). */
 export const OBS_MAX_MS = 500;
+/** (TICKET=cysr-chat-held-win · ⓐ) 관측 기반 상한의 천장 — 상한 = clamp(최근 왕복 최대 × OBS_RTT_FACTOR, OBS_MAX_MS, OBS_CAP_MS).
+ *  OBS_MAX_MS(500)는 0.5 M12 의 **맥 VM 데몬 몫(< 1ms)** 만 재고 정한 값이라 웹뷰→Tauri→파이프 왕복(윈 WebView2 · 연결 1개 직렬 풀)을 담지 못했다.
+ *  바닥은 그대로 500(빠른 기계 = 예전과 같음) · 이 기계에서 **실제로 끝난** 조회 왕복이 길면 그만큼만 늘린다 · 천장 2초를 넘는 관측은 여전히 쓰기 근거가 아니다. */
+export const OBS_CAP_MS = 2_000;
+export const OBS_RTT_FACTOR = 2;
+/** 관측 기반 상한이 보는 최근 왕복 수(끝난 조회만 · 늦게 끝나 버린 결과도 왕복 시간은 센다). */
+export const OBS_RTT_WINDOW = 8;
+/** (ⓑ) 상태 확인 늦음으로 이만큼 연속 붙잡히면 자동 전송을 멈추고 사람 클릭을 기다린다(작업 화면 직접 입력과 겹쳐 두 번 가지 않게). */
+export const SLOW_HOLDS_MAX = 3;
+/** (ⓑ) 상태 확인이 계속 늦어 자동으로 보내지 않는 말의 까닭 코드 — 「이 말 보내기」 클릭으로만 나간다. */
+export const STATUS_SLOW = "status_slow";
+export const STATUS_SLOW_NOTE = "마스터 상태 확인이 계속 늦어 자동으로 보내지 않아요 — 급하면 「작업 화면」에서 마스터 창에 직접 입력하거나, 「이 말 보내기」를 눌러 다시 시도하세요.";
+/** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다(none · 윈 = unsupported_platform)고 확인된 좌석의 시작점 재조회 간격 — 3초 조회 고리마다 다시 묻지 않는다. */
+export const TRANSCRIPT_NONE_RETRY_MS = 30_000;
 /** (조각 3 고침 · 검증 지적 F) 시간 상한을 넘긴 재조회 표지. */
 const TIMED_OUT: unique symbol = Symbol("timed_out");
 /** 재조회가 시간 상한을 넘겨 쓰지 않은 말의 까닭 코드. */
@@ -44,7 +58,11 @@ export const DUP = "dup_pending";
 
 /** 사람이 눌러야만 나가는 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음 · 같은 말 겹침). */
 export function needsClick(m: Msg): boolean {
-  return m.step === "held" && (m.code === RESTORED || m.code === STALE || m.code === DUP);
+  return m.step === "held" && (m.code === RESTORED || m.code === STALE || m.code === DUP || m.code === STATUS_SLOW);
+}
+/** 상태 확인 늦음 계열 붙잡힘(재조회 시간 초과 · 쓰기 직전 관측 낡음). */
+function slowHeld(m: Msg): boolean {
+  return m.step === "held" && (m.code === STATUS_TIMEOUT || m.code === "status_stale");
 }
 
 /** (조각 3) 끝나지 않은 말 — 같은 글을 또 보내면 두 번 갈 수 있는 상태. */
@@ -196,6 +214,10 @@ export class ChatCore {
   private pendingUser: PendingRec[] = [];
   /** (codex 1R major) 세션 시작점 조회 세대 — 늦게 돌아온 옛 조회(시간 상한을 넘겼거나 뒤 조회가 이미 시작된 것)는 offset·세션을 바꾸지 못한다 */
   private initGen = 0;
+  /** (TICKET=cysr-chat-held-win · ⓐ) 최근 끝난 조회 왕복(ms) — 관측 기반 상한의 재료. */
+  private rtts: number[] = [];
+  /** (TICKET=cysr-chat-held-win) 결속 세션 기록이 없다고 확인된 좌석·시각 — 그 좌석은 보내기 길에서 시작점을 다시 묻지 않는다(윈 = 늘 none). */
+  private transcriptNone: { seat: number; at: number } | null = null;
   /** (조각 4) 확인 대기 장부 — 띠·표식·직접 허락. */
   readonly confirm: ConfirmBook;
   /** (조각 4 · 통합 1116) 장부용 사건 구독 해제 — 조각 3 구독(unlisten)과 따로 든다(두 구독 모두 대화 화면 attach~detach 동안만). */
@@ -540,28 +562,53 @@ export class ChatCore {
   /** 승인 대기(feed)를 먼저, **입력줄 상태(org.status)를 마지막에** 받는다 — 마지막 관측 뒤 다른 응답을 기다리지 않게(codex 2R blocking).
    *  org.status 왕복이 OBS_MAX_MS 를 넘으면 그 관측은 낡은 것으로 보고 모름(undefined → 붙잡음). */
   private async fetchFresh(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }> {
-    const feed = await this.d.invoke("feed_list", { status: "pending" }).catch(() => undefined);
+    const feed = await this.timed(this.d.invoke("feed_list", { status: "pending" })).catch(() => undefined);
     const t0 = this.d.now();
-    const org = await this.d.invoke("org_status", { socket: null }).catch(() => undefined);
-    const stale = this.d.now() - t0 > OBS_MAX_MS;
+    const org = await this.timed(this.d.invoke("org_status", { socket: null })).catch(() => undefined);
+    const stale = this.d.now() - t0 > this.obsLimit();
     return { master: org === undefined || stale ? undefined : masterRowOf(org, this.d.working), approvals: feed === undefined ? null : approvalSeatsOf(feed), obsAt: t0, feed, org };
   }
 
-  /** (조각 3 고침 · 검증 지적 F) 재조회 전체에 시간 상한(OBS_MAX_MS · 조각 4 ORG_MAX_MS 와 같은 500ms) — 데몬이 살아 있지만 멈춰도 보내기·조회 고리가 멈추지 않게.
+  /** (TICKET=cysr-chat-held-win · ⓐ) 관측 기반 상한 = clamp(최근 OBS_RTT_WINDOW 회 끝난 왕복의 최대 × OBS_RTT_FACTOR, OBS_MAX_MS, OBS_CAP_MS).
+   *  관측이 없으면 바닥(OBS_MAX_MS) — 빠른 기계·멈춘(끝나지 않는) 조회는 예전과 같다. */
+  obsLimit(): number {
+    return this.limitFor(1);
+  }
+  /** 순차 조회 n 개 전체의 상한 = clamp(n × 최근 왕복 최대 × OBS_RTT_FACTOR, OBS_MAX_MS, n × OBS_CAP_MS) — 빠른 기계는 n 과 무관하게 바닥 500ms(예전 판정 그대로). */
+  private limitFor(n: number): number {
+    if (this.rtts.length === 0) return OBS_MAX_MS;
+    return Math.min(n * OBS_CAP_MS, Math.max(OBS_MAX_MS, Math.ceil(n * Math.max(...this.rtts) * OBS_RTT_FACTOR)));
+  }
+
+  /** 조회 1건의 왕복을 잰다(끝난 것만 · 상한을 넘겨 결과를 버린 조회도 끝난 시각으로 센다 — 그래야 느린 기계에서 상한이 따라 늘어난다). 결과는 그대로 넘긴다. */
+  private timed<T>(p: Promise<T>): Promise<T> {
+    const t0 = this.d.now();
+    p.then(
+      () => {
+        this.rtts.push(this.d.now() - t0);
+        if (this.rtts.length > OBS_RTT_WINDOW) this.rtts.shift();
+      },
+      () => {},
+    );
+    return p;
+  }
+
+  /** (조각 3 고침 · 검증 지적 F) 재조회 전체에 시간 상한 — 데몬이 살아 있지만 멈춰도 보내기·조회 고리가 멈추지 않게.
+   *  상한 = limitFor(2)(순차 조회 2개 · feed_list → org_status) — 빠른 기계 = 예전 500ms 그대로 · org 한 다리의 낡음 검사는 obsLimit().
    *  넘으면 모름(마스터 undefined · 승인 대기 null → 문턱이 붙잡음 · 쓰기 0) + timedOut 표지. 늦게 온 답은 버린다. */
   private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean; feed?: unknown; org?: unknown }> {
-    const r = await this.bounded(this.fetchFresh());
+    const r = await this.bounded(this.fetchFresh(), this.limitFor(2));
     return r === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : r;
   }
 
-  private bounded<T>(p: Promise<T>): Promise<T | typeof TIMED_OUT> {
+  private bounded<T>(p: Promise<T>, ms: number = this.obsLimit()): Promise<T | typeof TIMED_OUT> {
     return new Promise((res) => {
       let done = false;
       const h = this.d.setTimeout(() => {
         if (done) return;
         done = true;
         res(TIMED_OUT);
-      }, OBS_MAX_MS);
+      }, ms);
       p.then(
         (v) => {
           if (done) return;
@@ -701,6 +748,15 @@ export class ChatCore {
     await this.deliver(msg.id);
   }
 
+  /** (TICKET=cysr-chat-held-win · ⓑ) 상태 확인 늦음으로 붙잡는다(바이트 0) — 연속 SLOW_HOLDS_MAX 회째면 자동 전송을 멈추고 사람 클릭 대기(STATUS_SLOW).
+   *  두 번 전달 0: 안내를 보고 사람이 작업 화면에서 직접 치면, 이 말이 나중에 자동으로 또 나가면 안 된다 → 클릭으로만. */
+  private holdSlow(id: string, code: string, note: string): void {
+    const cur = this.s.msgs.find((x) => x.id === id);
+    const n = (cur?.slowHolds ?? 0) + 1;
+    if (n >= SLOW_HOLDS_MAX) this.patchMsg(id, { step: "held", sentAt: null, code: STATUS_SLOW, note: STATUS_SLOW_NOTE, notBefore: undefined, slowHolds: n });
+    else this.patchMsg(id, { step: "held", sentAt: null, code, note, slowHolds: n });
+  }
+
   /** 한 말을 문턱에 걸고, 통과면 원자 제출 1회. */
   private async deliver(id: string): Promise<void> {
     if (this.writing) return;
@@ -708,7 +764,11 @@ export class ChatCore {
     try {
       let fresh = await this.freshBounded(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음 · 시간 상한 = 검증 지적 F)
       this.applyFresh(fresh);
-      if (this.offset === null && fresh.master) {
+      // (TICKET=cysr-chat-held-win) 결속 기록이 없다고 이미 확인된 좌석(윈 = 늘 none)은 보내기 길에서 시작점을 다시 묻지 않는다 —
+      //   예전엔 윈에서 매 보내기가 시간 상한 창 3개(재조회 → 시작점 → 재조회)를 연달아 통과해야 했고, 하나만 늦어도 붙잡혔다(맥 = 창 1개).
+      //   none 이면 묻든 안 묻든 결과가 같다(전달됨 0 · 「오래 걸려요」) — 건너뛸 기록 자체가 없다. 배경 재조회는 poll 이 30초마다.
+      const noneSeat = fresh.master && this.transcriptNone?.seat === fresh.master.surface_id;
+      if (this.offset === null && fresh.master && !noneSeat) {
         // 보낸 user 레코드를 건너뛰지 않게 세션 기록 시작점을 먼저 잡는다 — 이 RPC 가 문턱 판정과 쓰기 사이에 끼지 않게 다시 조회한다.
         // (codex 2R major) 시작점 조회가 상한을 넘겼거나 겹친 조회에 밀려 결과를 버렸으면(「stale」) 시작점이 정해지지 않은 채 쓰지 않는다 — 붙잡음.
         //   조회는 끝났지만 기록이 없다(「none」 · 윈도·파일 없음)면 예전처럼 보낸다(전달됨 0 · 오래 걸려요).
@@ -718,12 +778,12 @@ export class ChatCore {
       }
       if (fresh.timedOut) {
         // 아직 안 썼다(바이트 0) → 「확인 중」이 아니라 붙잡음 · 다시 확인되면 poll 이 문턱에 다시 건다.
-        this.patchMsg(id, { step: "held", sentAt: null, code: STATUS_TIMEOUT, note: "마스터 상태 확인이 늦어져서 아직 쓰지 않았어요 — 다시 확인되면 보낼게요." });
+        this.holdSlow(id, STATUS_TIMEOUT, "마스터 상태 확인이 늦어져서 아직 쓰지 않았어요 — 다시 확인되면 보낼게요.");
         return;
       }
       const g = this.gateOf(fresh);
       if (!g.ok) {
-        this.patchMsg(id, { step: "held", code: g.code, note: g.msg });
+        this.patchMsg(id, { step: "held", code: g.code, note: g.msg, slowHolds: undefined });
         return;
       }
       // (s79 · 독립 검증 V3) 재조회를 기다리는 사이 작업 화면으로 옮겼으면 쓰지 않는다 — 작업 화면에선 사람이 마스터 창에 직접 칠 수 있다(쓰기 0).
@@ -748,10 +808,11 @@ export class ChatCore {
         return;
       }
       // ★쓰기 바로 앞에서 관측 나이를 다시 잰다(codex 3R blocking) — 영속·그리기가 늦어 마지막 입력줄 관측이 낡았으면 쓰지 않는다.
-      if (this.d.now() - fresh.obsAt > OBS_MAX_MS) {
-        this.patchMsg(id, { step: "held", sentAt: null, code: "status_stale", note: "마스터 입력줄 확인이 오래돼서 쓰지 않았어요 — 다시 확인되면 보낼게요." });
+      if (this.d.now() - fresh.obsAt > this.obsLimit()) {
+        this.holdSlow(id, "status_stale", "마스터 입력줄 확인이 오래돼서 쓰지 않았어요 — 다시 확인되면 보낼게요.");
         return;
       }
+      if (this.s.msgs.find((x) => x.id === id)?.slowHolds !== undefined) this.patchMsg(id, { slowHolds: undefined }); // 쓰기 직전까지 왔다 = 연속 끊김
       let res: unknown;
       // (조각 3) 응답 없이 3초 = 「확인 중」(보내는 중이 끝없이 머물지 않게 · 다시 보내기 0). 응답이 오면 그 응답으로 바뀐다.
       const silent = this.d.setTimeout(() => {
@@ -799,6 +860,20 @@ export class ChatCore {
     if (this.s.msgs.find((x) => x.id === id)?.step !== "held") await this.pump();
   }
 
+  /** (TICKET=cysr-chat-held-win) 상태 확인 늦음으로 붙잡힌 가장 오래된 자동 말을 이 조회 결과로 다시 본다(쓰기 0 · 단계 표시만).
+   *  ⑴ 이 조회도 늦었다 → 연속 횟수 +1(SLOW_HOLDS_MAX 회째 = 클릭 대기 · ⓑ) ⑵ 제때 왔는데 문턱이 막힘(답하는 중 등) → 안내를 지금 까닭으로 바꾸고 연속을 끊는다
+   *  (예전엔 옛 「상태 확인이 늦어져서」가 그대로 남아 진짜 까닭 — 예: 마스터가 답하는 중 — 을 가렸다 · 윈 캡처 11-22 23:59). ⑶ 문턱이 열림 → 그대로(곧 deliver 가 판정). */
+  private reviewSlowHeld(fresh: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean }): void {
+    const first = this.s.msgs.find(autoHeld);
+    if (!first || !slowHeld(first)) return;
+    if (fresh.timedOut || fresh.master === undefined) {
+      this.holdSlow(first.id, first.code as string, first.note ?? "");
+      return;
+    }
+    const g = this.gateOf(fresh);
+    if (!g.ok) this.patchMsg(first.id, { code: g.code, note: g.msg, slowHolds: undefined });
+  }
+
   /** 대화 화면이 켜져 있을 때 POLL_MS 마다. 붙잡은 말이 있고 문턱이 열렸으면 오래된 것 1건을 보낸다(그 안에서 다시 재조회). */
   async poll(): Promise<void> {
     // (조각 3 · 하네스 seed 49) 쓰는 중에도 조회·단계 갱신은 한다 — 응답이 걸린 보내기(수 초) 동안 다른 말의 「답함」·「오래 걸려요」가 멈추지 않게.
@@ -810,6 +885,7 @@ export class ChatCore {
       const fresh = await this.freshBounded(); // (조각 3 고침 · 검증 지적 F) 멈춘 데몬에 조회 고리가 묶이지 않게
       const prevWorking = this.lastWorking;
       this.applyFresh(fresh);
+      this.reviewSlowHeld(fresh);
       void this.confirm.scanStep(); // (조각 4) 대화 화면을 연 때보다 앞 기록의 표식을 한 토막씩
       if (!this.watchOnly) void this.results.tick(); // (s79 조각 7) 아직 모르는 결과의 실재 확인(틱당 상한) · 작업 화면 살핌 중 = 0(V4 · 조회 3종만)
       // ★통합(cysr-1116-integ-1120): 작업 화면 살핌 중(watchOnly)은 s79 V4(조회 3종만) — rail 의 list_surfaces·list_depts 를 부르지 않는다.
@@ -857,7 +933,14 @@ export class ChatCore {
     const gen = ++this.initGen; // 새 조회가 시작되면 앞선 조회의 늦은 결과는 버린다
     // (통합 1116 · S3-11 codex 1R major) 조회 **거절**은 시간 초과가 아니다 — 끝난 오류 = none(예전처럼 보냄). bounded 는 거절도 TIMED_OUT 으로
     //   합치므로 여기서 먼저 null 로 받는다(기록 조회만 계속 실패하는 좌석에서 말이 영원히 붙잡히지 않게). 세대가 밀렸으면 아래 stale 그대로.
-    const r = (await this.bounded(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true }).catch(() => null))) as
+    const call = this.timed(this.d.invoke("chat_transcript", { socket: null, surfaceId: m.surface_id, afterOffset: 0, fromEnd: true })).catch(() => null);
+    // (TICKET=cysr-chat-held-win) 「이 좌석엔 결속 기록이 없다」는 시각에 매이지 않는 사실이다 — 상한을 넘겨 늦게 온 답이어도 기억한다(시작점 offset 은 여전히 제때 온 답으로만).
+    //   느린 윈에서 첫 조회가 늘 늦으면 none 을 영영 못 배워 보내기마다 시작점 창을 다시 거치던 길.
+    void call.then((v) => {
+      const st = (v as { status?: unknown } | null)?.status;
+      if (typeof st === "string" && st !== "ok") this.transcriptNone = { seat: m.surface_id, at: this.d.now() };
+    });
+    const r = (await this.bounded(call)) as
       | { status?: unknown; next_offset?: unknown; session_id?: unknown }
       | typeof TIMED_OUT;
     if (r === TIMED_OUT) {
@@ -869,8 +952,10 @@ export class ChatCore {
       this.offset = r.next_offset;
       this.sessionId = typeof r.session_id === "string" ? r.session_id : null;
       this.confirm.startSession(this.sessionId, m.surface_id, r.next_offset);
+      this.transcriptNone = null;
       return "ok";
     }
+    this.transcriptNone = { seat: m.surface_id, at: this.d.now() }; // (TICKET=cysr-chat-held-win) 보내기 길·조회 고리가 매번 다시 묻지 않게
     return "none";
   }
 
@@ -885,6 +970,10 @@ export class ChatCore {
     this.reading = true;
     try {
       if (this.offset === null) {
+        // (TICKET=cysr-chat-held-win) 기록 없음(none)이 확인된 좌석은 TRANSCRIPT_NONE_RETRY_MS 안에 다시 묻지 않는다 — 윈에서 3초마다·보낸 뒤 +1·+3·+7초마다
+        //   같은 연결(직렬 풀)에 조회를 쌓아 보내기 길의 재조회를 늦추던 몫.
+        const tn = this.transcriptNone;
+        if (tn && tn.seat === m.surface_id && this.d.now() - tn.at < TRANSCRIPT_NONE_RETRY_MS) return;
         await this.initOffset();
         return;
       }

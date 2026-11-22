@@ -1,7 +1,7 @@
 // (cysr-ui-slice3-fix-1118) 조각 3 독립 검증(VERIFY.cysr-ui-slice3 · 검증 좌석 2161) 지적 A~H 고침 시험.
 // 재현 장면 V1·V2·V3·V7·V8·V9 는 검증 좌석의 `verify_s3_probe.test.ts` 를 옮겨 와 기대를 「고친 뒤」로 바꾼 것이다(고치기 전 = 붉음 확인).
 import { describe, it, expect } from "bun:test";
-import { DUP, dupPending, logOrder, needsClick, OBS_MAX_MS, sameTextDelivered, STATUS_TIMEOUT } from "./core";
+import { DUP, dupPending, logOrder, needsClick, OBS_MAX_MS, sameTextDelivered, STATUS_SLOW, STATUS_TIMEOUT } from "./core";
 import { applyRecords, canRetry, PASTE_WRAP, rematchPending, settleSteps, userRecordMatches, type Msg, type Rec } from "./judge/msgstep";
 import { composeOutbound } from "./judge/outbound";
 import { Sim, type SendKind } from "./testkit";
@@ -329,7 +329,13 @@ describe("F — 쓰기 직전 재조회 시간 상한(500ms) · 넘거나 실패
     expect(hung).toBeGreaterThan(5); // 조회 고리가 멈추지 않고 계속 돎(3초마다)
     expect(sim.core.state.health).toBe("unknown");
     expect(sim.core.state.msgs.some((x) => x.step === "sending")).toBe(false);
+    // (TICKET=cysr-chat-held-win · ⓑ) 상태 확인이 3회 연속 늦으면 자동 전송을 멈추고 사람 클릭 대기 — 그 사이 사람이 작업 화면에 직접 쳤을 수 있다(두 번 0).
+    expect(sim.core.state.msgs[0].code).toBe(STATUS_SLOW);
+    expect(needsClick(sim.core.state.msgs[0])).toBe(true);
     hang = false;
+    await sim.advance(10_000);
+    expect(sim.sends()).toBe(0); // 풀려도 자동으로 나가지 않음
+    void sim.core.confirmHeld(sim.core.state.msgs[0].id); // 「이 말 보내기」 1회
     await sim.advance(10_000);
     expect(sim.sends()).toBe(1);
     expect(sim.core.state.msgs[0].step).toMatch(/^(injected|delivered|replying|replied)$/);

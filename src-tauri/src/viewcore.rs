@@ -434,10 +434,21 @@ pub(crate) fn open_bound(_cfg: &std::path::Path, _expected: &std::path::Path) ->
     Err("unsupported_platform")
 }
 
+/// 이 플랫폼에서 결속 세션 파일을 열 수 있는가(= `open_bound` 가 unix 구현을 가졌는가). 윈 구현(조각 10)이 들어오면 함께 바꾼다.
+pub(crate) const fn transcript_supported() -> bool {
+    cfg!(unix)
+}
+
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
 /// 꼴: `{status:"ok", session_id, next_offset, size, records[], bad_lines, reset}` · 못 읽으면 `{status:"unknown", why}`(화면 = 「전달 확인 중」).
 #[tauri::command]
 pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offset: u64, from_end: Option<bool>) -> Result<Value, String> {
+    // (TICKET=cysr-chat-held-win) 결속 파일을 열 수 없는 플랫폼(윈 · open_bound = unsupported_platform)은 결과가 이미 정해져 있다 —
+    //   데몬 RPC 2개(surface.list · org.status)를 먼저 부르지 않는다. 앱의 데몬 RPC 는 소켓당 연결 1개를 직렬로 나눠 쓰므로(RPC_POOL)
+    //   이 두 조회가 대화 화면 보내기 길의 재조회(feed.list · org.status) 앞에 줄을 서서 500ms 상한을 먹었다. 꼴은 예전 실패 응답과 같다.
+    if !transcript_supported() {
+        return Ok(json!({"status": "unknown", "why": "unsupported_platform"}));
+    }
     let sock = resolve_socket(&socket);
     let list = rpc_on(&sock, "surface.list", json!({})).await?;
     let org = rpc_on(&sock, "org.status", json!({})).await?;
@@ -1437,6 +1448,15 @@ mod tests {
         assert_eq!(act["actuated"], "return");
         let e = confirm_reply_outcome(&json!({"ok": false, "error": {"code": "approval_screen_gone", "message": "m"}})).unwrap_err();
         assert_eq!(e, "approval_screen_gone: m");
+    }
+
+    /// (TICKET=cysr-chat-held-win) 빠른 길(`transcript_supported` = false → RPC 0 · unsupported_platform)은 `open_bound` 의 실제 동작과 같아야 한다 —
+    /// 열 수 있는 플랫폼에서 빠른 길을 타거나(기록 못 읽음), 못 여는 플랫폼에서 RPC 를 부르면(예전 윈 = 직렬 풀에 조회 2개) 안 된다.
+    #[test]
+    fn transcript_supported_matches_open_bound() {
+        let cfg = std::path::Path::new("/nonexistent-cysr-chat-held-win");
+        let r = open_bound(cfg, &cfg.join("x.jsonl"));
+        assert_eq!(transcript_supported(), r.err() != Some("unsupported_platform"));
     }
 
     #[test]

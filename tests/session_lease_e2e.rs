@@ -476,6 +476,46 @@ fn residual_focus_report_bytes_do_not_break_in_seat_reconnect() {
     assert!(last.contains(&format!("surface={seat} ")), "같은 좌석에서 이어야 한다(surface:{seat}): {last}");
 }
 
+/// TICKET=cysr-1118-seat ③(master#44ce6e4c 처분 A) — pane 밖 호출자의 Return 없는 `cys send` 는 데몬이 본문을 잡아 둔다.
+/// ⑴ master 발신 래퍼와 같은 꼴(한 셸 안 send → send-key Return)은 그대로 제출된다 · stdout `OK` · rc 0 · 경고는 stderr 에만.
+/// ⑵ send 와 Return 이 서로 다른 셸이면 본문은 붙지 않는다 — 대신 send 의 stderr 에 「잡아 뒀다」 경고가 보인다(조용한 유실 0).
+#[test]
+fn held_send_outside_a_pane_warns_and_same_shell_return_still_submits() {
+    let b = Box_::new("hs1");
+    b.up();
+    let first = b.cys(&["restore"]);
+    assert_eq!(b.settle_writers(6).len(), 1, "복원: {}\n{}", out(&first), b.fake_log());
+    let seat = b.role_seats()[0].to_string();
+    let got = || std::fs::read_to_string(b.base.join("home/got.log")).unwrap_or_default();
+    let sh = |script: &str| -> Output {
+        Command::new("/bin/sh").arg("-c").arg(script).arg("sh").arg(CYS).arg(&seat)
+            .env_clear().env("PATH", &b.path).env("HOME", b.base.join("home")).env("TMPDIR", &b.base)
+            .env("CYS_SOCKET", &b.sock).env("CYS_NO_AUTORESTORE", "1").stdin(Stdio::null()).output().unwrap()
+    };
+    let wait_for = |needle: &str| {
+        let t = Instant::now();
+        while t.elapsed() < Duration::from_secs(8) && !got().contains(needle) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        got().contains(needle)
+    };
+    // ⑴ 한 셸(래퍼 꼴) — 끝의 `; true` 는 sh 의 마지막 명령 exec 최적화를 막아 두 cys 의 부모를 같은 sh 로 둔다.
+    let one = sh(r#""$1" send --surface "$2" sameshell-1118; "$1" send-key --surface "$2" Return; true"#);
+    let (o1, e1) = (String::from_utf8_lossy(&one.stdout).into_owned(), String::from_utf8_lossy(&one.stderr).into_owned());
+    assert!(one.status.success(), "rc: {o1}{e1}");
+    assert!(o1.lines().next() == Some("OK"), "stdout 첫 줄은 그대로 OK: {o1:?}");
+    assert!(e1.contains("잡아 뒀다"), "pane 밖 held 경고가 stderr 에 없다: {e1:?}");
+    assert!(!o1.contains("잡아 뒀다"), "경고가 stdout 에 섞였다(래퍼 판독 꼴): {o1:?}");
+    assert!(wait_for("sameshell-1118\r"), "한 셸 send→Return 이 제출되지 않았다: {:?}", got());
+    // ⑵ 서로 다른 셸 — 본문은 붙지 않는다(60초 뒤 폐기 = 데몬 시험) · 경고가 보인다.
+    let a = sh(r#""$1" send --surface "$2" splitshell-1118; true"#);
+    let ea = String::from_utf8_lossy(&a.stderr).into_owned();
+    assert!(a.status.success() && String::from_utf8_lossy(&a.stdout).starts_with("OK"), "rc·stdout 무변경");
+    assert!(ea.contains("잡아 뒀다") && ea.contains("--clear-first") && ea.contains("--queued"), "경고·안내: {ea:?}");
+    let _ = sh(r#""$1" send-key --surface "$2" Return; true"#);
+    assert!(!wait_for("splitshell-1118"), "다른 셸 Return 에 붙었다 — 경고 전제가 틀렸다: {:?}", got());
+}
+
 /// 두 복원 입구 동시 실행 — `cys restore` ∥ `cys launch-agent --resume-saved` 가 같은 대화를 동시에 이으면 작성자는 하나.
 #[test]
 fn two_restore_entries_at_once_leave_one_writer() {

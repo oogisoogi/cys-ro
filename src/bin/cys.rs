@@ -4016,6 +4016,25 @@ fn unverified_sender_label(env_label: Option<&str>, kind: &str) -> String {
 /// ★(0.14.43 · J3) `cys send` 요청의 `from` 값(순수) — pane 안(자기 surface id 있음)이면 **종전 그대로 숫자**, pane 밖이면 표시용 라벨 문자열이다.
 /// 직접 요청·명시 `--queued`·타이핑 가드 큐 전환 폴백이 **같은 값**을 쓴다(호출부가 한 번 계산해 재사용). `send-key` 는 이 함수를 쓰지 않는다
 /// (기존 핀: 큐 요청에 from 없음 · 비큐는 숫자만 — `send_key_request_params`).
+/// `cys send`(직접 · Return 없음) 응답이 「잡아 둠」이면 사람이 볼 경고 2줄(순수 · TICKET=cysr-1118-seat ③ · master#44ce6e4c 처분 A + 보강).
+/// 0.14.52~ 데몬은 Return 없는 에이전트 좌석 본문을 치지 않고 잡아 두고(`held: awaiting_submit` · 창 `window_ms`), **같은 호출자**의
+/// `send-key Return` 이 와야 함께 쓴다. pane 밖 호출자의 「같은 호출자」 = cys 를 부른 부모 프로세스라 다른 셸·다른 ssh 의 Return 은 붙지 않고
+/// 창이 지나면 버려진다(1.1.14·1.1.16 VM 「OK 인데 도달 0」). pane 안(자기 좌석 id 있음)은 좌석이 호출자라 셸이 달라도 붙는다 → 경고 없음.
+/// stdout `OK` · rc 0 은 그대로다(master 발신 래퍼 = 한 셸 send→Return · 성공 stderr 를 버림 — 끊지 않는다).
+fn held_send_warning(r: &Value, sid: u64, in_pane: bool) -> Option<String> {
+    if in_pane || r["held"].as_str() != Some("awaiting_submit") {
+        return None;
+    }
+    let secs = r["window_ms"].as_u64().map_or(60, |ms| ms / 1000);
+    Some(format!(
+        "⚠ cys send: surface:{sid} 에 본문을 아직 치지 않고 잡아 뒀다(held · request_id={}) — {secs}초 안에 **같은 셸에서** \
+         `cys send-key --surface {sid} Return` 이 와야 제출되고, 아니면 버려진다(입력줄에 안 보임).\n\
+         ⚠ 다른 셸·다른 ssh 에서 Return 을 보낼 거면 대신 `cys send --clear-first --surface {sid} '<글>'`(입력줄을 비우고 바로 제출) \
+         또는 `cys send --queued --surface {sid} '<글>'`(좌석이 조용할 때 자동 제출)을 쓴다.",
+        r["request_id"].as_str().unwrap_or("?")
+    ))
+}
+
 fn send_from_param(self_sid: Option<u64>, env_label: Option<&str>) -> serde_json::Value {
     match self_sid {
         Some(n) => json!(n),
@@ -6704,6 +6723,10 @@ fn run(command: Command) -> i32 {
                         println!("QUEUED (depth {}){}{tag}", r["depth"], queue_durable_suffix(&r));
                     } else {
                         println!("OK{tag}");
+                        // ★TICKET=cysr-1118-seat ③(master#44ce6e4c = A + 보강): 잡아 둔 본문을 조용히 잃지 않게 stderr 로 알린다(stdout·rc 무변경).
+                        if let Some(w) = held_send_warning(&r, sid, cys::env_compat(ENV_SURFACE_ID).is_some()) {
+                            eprintln!("{w}");
+                        }
                     }
                 }
                 Ok(())
@@ -9812,6 +9835,46 @@ fn doctor_hook_present(root: &Value, hook_cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// ★TICKET=cysr-1118-seat ③-3(master#44ce6e4c) doctor `held-dropped` — 데몬 증거 파일 `submit-held-undelivered.jsonl`(+ 회전본 `.jsonl.1`)에서
+/// 최근 24시간 안에 버려진 입력(Return 없이 보내 잡아 둔 본문이 창 안에 Return 을 못 받음 · 교체 · 에이전트 바뀜 · 데몬 재시작) 수를 센다. 읽기 전용.
+fn diag_held_dropped(ctx: &DoctorCtx) -> DiagItem {
+    let dir = cys::daemon_state_dir(&ctx.socket_path);
+    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let text = format!("{}\n{}", read("submit-held-undelivered.jsonl.1"), read("submit-held-undelivered.jsonl"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    held_dropped_item(&text, now)
+}
+
+/// [`diag_held_dropped`] 의 순수 판(증거 줄 본문 · 지금 유닉스 초) — 0건 = OK · 1건+ = WARN(마지막 시각·좌석·사유 · 다시 보내는 법).
+fn held_dropped_item(text: &str, now: f64) -> DiagItem {
+    const WINDOW: f64 = 24.0 * 3600.0;
+    let name = "held-dropped";
+    let rows: Vec<Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+        .filter(|v| v["ts"].as_f64().is_some_and(|t| t <= now + 60.0 && now - t <= WINDOW))
+        .collect();
+    let Some(last) = rows.iter().max_by(|a, b| a["ts"].as_f64().partial_cmp(&b["ts"].as_f64()).unwrap_or(std::cmp::Ordering::Equal)) else {
+        return DiagItem { name, status: DiagStatus::Ok, detail: "최근 24시간 버려진 입력 0건".into(), action: String::new() };
+    };
+    let p = &last["payload"];
+    let seat = p["surface_ref"].as_str().map(str::to_string).or_else(|| p["previous_surface_id"].as_u64().map(|n| format!("surface:{n}(옛 데몬)"))).unwrap_or_else(|| "?".into());
+    let when = chrono::DateTime::from_timestamp(last["ts"].as_f64().unwrap_or(0.0) as i64, 0)
+        .map(|t| t.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string())
+        .unwrap_or_else(|| "?".into());
+    DiagItem {
+        name,
+        status: DiagStatus::Warn,
+        detail: format!(
+            "최근 24시간 버려진 입력 {}건 — 마지막 {when} {seat} · 사유 {} · {}자(글은 입력줄에 쳐지지 않았다)",
+            rows.len(),
+            p["reason"].as_str().unwrap_or("?"),
+            p["chars"].as_u64().unwrap_or(0)
+        ),
+        action: "Return 없이 보낸 `cys send` 본문이 같은 셸의 Return 을 못 받아 버려졌다 — 다시 보내려면 `cys send --clear-first …`(바로 제출) 또는 `cys send --queued …`(조용할 때 제출)".into(),
+    }
+}
+
 fn diag_pack_version(ctx: &DoctorCtx) -> DiagItem {
     let vf = ctx.pack_dir.join(".pack-version");
     match std::fs::read_to_string(&vf) {
@@ -12065,6 +12128,8 @@ fn run_doctor_diagnostics_common(ctx: &DoctorCtx, fix: bool) -> Vec<DiagItem> {
         // ★1.1.8 U2 후속 3판(Opus 2R m4 · agy 2R): 팩 자동 보류 중이면 사유와 함께 보인다(읽기 전용).
         diag_pack_auto_hold(ctx),
         diag_channels_db(ctx),
+        // ★TICKET=cysr-1118-seat ③-3: Return 없이 보내 잡혔다가 버려진 입력(조용한 유실 0 · 읽기 전용).
+        diag_held_dropped(ctx),
         diag_legacy_config(ctx),
         // M3: 자기 앱 번들 코드서명 봉인(설치본이 스스로 봉인을 깼는지) — 읽기 전용, --fix 무관.
         diag_app_seal(ctx),
@@ -14030,6 +14095,41 @@ mod seat_latch_negation_tests {
     /// ★(0.14.31 · 리뷰 R2 · codex major) 관문 보류 채택이 복원 연속 지시([RESTORE]/[RECOVER])를 잃지 않는다 —
     /// 지시는 **첫 표식**에 실리고(`mark_gate_pending` 의 `followup`), 채택은 해제 전에 표식에서 읽어 전문 뒤에
     /// **한 제출**로 잇는다. 순수 함수는 직접 실행하고, 배선(세 호출부가 지시를 넘기는가 · 채택이 읽는가)은 소스로 잰다.
+    /// TICKET=cysr-1118-seat ③ — pane 밖 「잡아 둠」 응답만 stderr 경고(stdout·rc 무변경) · 안내 = 실제 있는 두 옵션 이름.
+    #[test]
+    fn held_send_warning_only_outside_a_pane_and_names_real_options() {
+        let held = json!({"surface_id": 3, "sent": true, "request_id": "r-1", "held": "awaiting_submit", "window_ms": 60000});
+        let w = held_send_warning(&held, 3, false).expect("pane 밖 held = 경고");
+        assert_eq!(w.lines().count(), 2, "경고는 2줄: {w}");
+        for needle in ["request_id=r-1", "60초", "같은 셸에서", "cys send-key --surface 3 Return", "cys send --clear-first --surface 3", "cys send --queued --surface 3"] {
+            assert!(w.contains(needle), "{needle} 없음: {w}");
+        }
+        assert_eq!(held_send_warning(&held, 3, true), None, "pane 안 = 좌석이 호출자(셸이 달라도 붙음) — 경고 없음");
+        assert_eq!(held_send_warning(&json!({"surface_id": 3, "sent": true}), 3, false), None, "바로 쓴 본문 = 경고 없음");
+        // 안내에 적은 옵션이 실제 CLI 에 있다(이름이 바뀌면 붉음).
+        use clap::CommandFactory;
+        let send = Cli::command().find_subcommand("send").expect("send").clone();
+        let longs: Vec<String> = send.get_arguments().filter_map(|a| a.get_long().map(str::to_string)).collect();
+        for flag in ["clear-first", "queued"] {
+            assert!(longs.iter().any(|l| l == flag), "--{flag} 가 cys send 에 없다: {longs:?}");
+        }
+    }
+
+    /// TICKET=cysr-1118-seat ③-3 — doctor held-dropped: 24시간 안 증거 줄만 센다 · 0건 OK · 1건+ WARN.
+    #[test]
+    fn held_dropped_counts_recent_evidence_lines_only() {
+        let now = 1_795_400_000.0;
+        let row = |ts: f64, reason: &str| json!({"ts": ts, "event": "surface.submit_undelivered", "payload": {"surface_ref": "surface:3", "reason": reason, "chars": 27}}).to_string();
+        assert_eq!(held_dropped_item("", now).status, DiagStatus::Ok);
+        let old = row(now - 25.0 * 3600.0, "expired");
+        assert_eq!(held_dropped_item(&old, now).status, DiagStatus::Ok, "24시간 밖은 세지 않는다");
+        let text = format!("{old}\n{}\nnot json\n{}", row(now - 3600.0, "expired"), row(now - 60.0, "superseded"));
+        let it = held_dropped_item(&text, now);
+        assert_eq!(it.status, DiagStatus::Warn);
+        assert!(it.detail.contains("2건") && it.detail.contains("surface:3") && it.detail.contains("superseded") && it.detail.contains("27자"), "{}", it.detail);
+        assert!(it.action.contains("--clear-first") && it.action.contains("--queued"));
+    }
+
     /// TICKET=cysr-1118-seat ② — in-seat 재연결은 기동 글 앞에 입력줄을 비운다(잔류 포커스 보고 `[O[I` · 윈 PowerShell rc8 P2).
     /// 순서 = 선정리 키(첫 키 C-u = 사람 초안 관문 · 거부 = `?` 로 0바이트 건너뜀) → 200ms → `boot_agent_on_surface`.
     #[test]

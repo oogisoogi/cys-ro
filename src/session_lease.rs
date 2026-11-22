@@ -1687,11 +1687,18 @@ pub(crate) fn holder_stem(name: &str) -> String {
 /// 셸 감싸기 실행 파일(줄기) — 에이전트 cmd 가 이것으로 시작하면 그 셸 뒤 **모든** 비옵션 낱말도 후보로 넣는다(`cmd /c claude …` · `pwsh -c "& 'X' …"` ·
 /// 남는 것이 많아도 안전 쪽 — 후보가 늘면 판정 불가가 늘 뿐 건너뛰기는 늘지 않는다).
 const WRAP_SHELLS: [&str; 3] = ["cmd", "powershell", "pwsh"];
-/// 실행 파일 앞에 오는 호출 낱말(건너뜀) — PowerShell `&`·`.` · cmd `call` · `start`(뒤 제목 `""`·`/옵션` 도 건너뜀).
-const CALL_WORDS: [&str; 4] = ["&", ".", "call", "start"];
+/// 실행 파일 앞에 오는 호출 낱말(건너뜀) — PowerShell `&`·`.` · cmd `call`. (`start` 는 제목 인자 규칙이 갈려 판독 못 함 = [`split_cmdline`] 이 None · codex 6R ③)
+const CALL_WORDS: [&str; 3] = ["&", ".", "call"];
+/// 이스케이프·변수·복합 명령 표지(codex 6R ③ · master#7fa2b15d · VERIFY-R6 중-1 · master#b1f6f369) — cmd `^`·`%…%` · PowerShell 백틱·`$` ·
+/// 명령 잇기·파이프·묶음 `;` `|` `(` `)` — 이 해석기는 이것들을 풀지 않으므로 낱말에 있으면 판독 못 함.
+/// (비용: `C:\Program Files (x86)\…` 경로의 사용자 에이전트도 판독 못 함 = 좁히기 끔 · 보호 쪽 · `:names-off` 로 드러남)
+const SHELL_META: [char; 8] = ['^', '`', '$', '%', ';', '|', '(', ')'];
+/// 첫 실행 낱말이 이것이면 판독 못 함(VERIFY-R6 중-1 · master#b1f6f369) — 실행 파일이 아니라 다른 명령을 띄우거나 문맥만 바꾸는 명령.
+const NOT_PROGRAM: [&str; 5] = ["start", "start-process", "cd", "set", "set-location"];
 
 /// 명령줄 낱말 나누기(순수 · codex 5R H3) — 공백으로 나누되 `"…"`·`'…'` 안 공백은 지킨다(따옴표는 벗김 · 빈 따옴표 = 빈 낱말).
-/// 닫히지 않은 따옴표 = None(판독 못 함).
+/// 닫히지 않은 따옴표 = None(판독 못 함). ★codex 6R ③(fail-closed · 이스케이프 해석기는 만들지 않는다): 어느 낱말에든 [`SHELL_META`](`^` 백틱 `$` `%`)가 있거나
+/// 낱말 `start`(대소문자 무시)가 있으면 None — 이 해석기가 틀리게 읽을 수 있는 꼴은 「모름」 으로 돌려 좁히기를 끈다.
 pub(crate) fn split_cmdline(cmd: &str) -> Option<Vec<String>> {
     let (mut out, mut cur, mut quote, mut has) = (Vec::new(), String::new(), None::<char>, false);
     for c in cmd.chars() {
@@ -1720,6 +1727,9 @@ pub(crate) fn split_cmdline(cmd: &str) -> Option<Vec<String>> {
     if has || !cur.is_empty() {
         out.push(cur);
     }
+    if out.iter().any(|t| t.contains(SHELL_META) || t.eq_ignore_ascii_case("start")) {
+        return None;
+    }
     Some(out)
 }
 
@@ -1731,15 +1741,10 @@ pub(crate) fn agent_cmd_stems(cmd: &str) -> Option<Vec<String>> {
     let env = |t: &str| t.split_once('=').is_some_and(|(k, _)| !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
     let words = split_cmdline(cmd)?;
     let mut it = words.iter().map(String::as_str).skip_while(|t| env(t)).peekable();
-    let mut after_start = false;
     let first = loop {
         let t = it.next()?;
         let low = t.to_lowercase();
         if CALL_WORDS.contains(&low.as_str()) {
-            after_start = low == "start";
-            continue;
-        }
-        if after_start && (t.is_empty() || t.starts_with('/')) {
             continue;
         }
         if t.trim().is_empty() {
@@ -1748,7 +1753,7 @@ pub(crate) fn agent_cmd_stems(cmd: &str) -> Option<Vec<String>> {
         break t;
     };
     let stem = holder_stem(first);
-    if stem.is_empty() {
+    if stem.is_empty() || NOT_PROGRAM.contains(&stem.as_str()) {
         return None;
     }
     let mut out = vec![stem.clone()];
@@ -1779,6 +1784,8 @@ pub fn holder_name_set(agents: &[serde_json::Value], extra: &[String]) -> Option
             if k.starts_with('_') {
                 continue;
             }
+            // ★codex 6R ④: 항목이 객체가 아님(null·배열·문자열·숫자 · 쓰는 중 · 잘못된 설정) = 판독 실패 → 좁히기 끔. 객체인데 cmd 없음 = 어댑터 아님(건너뜀).
+            spec.as_object()?;
             match spec.get("cmd") {
                 None => {}
                 Some(c) => cmds.push(c.as_str()?),
@@ -3067,7 +3074,9 @@ mod tests {
         let e = |b: u64, n: &str| (1u32, Some(b), Some(n.to_string()));
         let (hok, hden) = (Ok(Some(T0)), Err(5u32));
         assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe")), &hok), Some("a.exe"), "확정(열림 · 핸들 출생 같음)");
-        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe")), &hden), Some("a.exe"), "확정(거부 · 두 표 출생 = 마지막 확인)");
+        // ⚠의도된 한계(codex 6R ① · master#7fa2b15d 수용 · REPORT 8-11): 거부 행은 두 표 출생이 마지막 확인 — SPI2 뒤 수 ms 안에 같은 pid 를 열기 거부되는
+        //   holder 가 받으면 앞 이름을 믿는다(유닉스 ps 1회와 같은 스냅샷 성질).
+        assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "a.exe")), &hden), Some("a.exe"), "확정(거부 · 두 표 출생 = 마지막 확인 · 의도된 한계)");
         assert_eq!(trusted_image_name(Some(&e(T0, "svchost.exe")), Some(&e(T0 + 1, "claude.exe")), &hden), None, "출생 다름 = 모름");
         assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), Some(&e(T0, "b.exe")), &hok), None, "이름 다름 = 모름");
         assert_eq!(trusted_image_name(Some(&e(T0, "a.exe")), None, &hok), None, "SPI2 에 없음 = 모름");
@@ -3093,7 +3102,41 @@ mod tests {
         assert_eq!(st(r#"& "C:\Program Files\Acme\myagent.exe" --resume x"#), Some(vec!["myagent".to_string()]), "H3 PowerShell & 따옴표 공백 경로");
         assert!(has(r#"cmd /c "C:\Program Files\Acme\myagent.exe" --x"#, "myagent"), "H3 cmd /c 뒤 따옴표 공백 경로: {:?}", st(r#"cmd /c "C:\Program Files\Acme\myagent.exe" --x"#));
         assert!(has(r#"powershell -NoProfile -Command "& 'C:\Program Files\Acme\myagent.exe' --x""#, "myagent"), "H3 셸 안 명령의 & 따옴표 경로");
-        assert_eq!(st(r#"start "" "C:\Program Files\x\Claude.exe" --x"#), Some(vec!["claude".to_string()]), "H3 start 제목 건너뜀");
+        // ★codex 6R ③: start · caret · 백틱 · $ · % = 판독 못 함(None → 좁히기 끔)
+        for c in [
+            r#"start "" "C:\Program Files\x\Claude.exe" --x"#,
+            r#"start "Agent Window" "C:\Program Files\Acme\myagent.exe""#,
+            r#"cmd /c start /b claude"#,
+            r#"C:\Program^ Files\Acme\myagent.exe --x"#,
+            r#"& C:\Program` Files\Acme\myagent.exe"#,
+            r#"& $env:AGENT --resume x"#,
+            r#"%LOCALAPPDATA%\Programs\claude\claude.exe --x"#,
+            r#"cmd /c "%LOCALAPPDATA%\x\claude.exe""#,
+        ] {
+            assert_eq!(st(c), None, "6R ③ 판독 못 함: {c}");
+        }
+        assert_eq!(holder_name_set(&[serde_json::json!({"x": {"cmd": r#"& $env:AGENT"#}})], &[]), None, "6R ③ → 집합 None(좁히기 끔)");
+        // ★VERIFY-R6 중-1 탐침 꼴(master#b1f6f369) = 전부 None
+        for c in [
+            r#"$env:FOO='1'; myagent"#,
+            r#"cd C:\x; myagent"#,
+            r#"myagent.exe; claude"#,
+            r#"& $env:MYAGENT"#,
+            r#"%MYAGENT%"#,
+            r#"start "My Agent" X"#,
+            r#"Start-Process X"#,
+            r#"Start-Process.exe X"#,
+            r#"cd C:\x"#,
+            r#"set FOO=1"#,
+            r#"Set-Location C:\x"#,
+            r#"myagent | tee log"#,
+            r#"(myagent)"#,
+            r#"pwsh -c "cd C:\x; myagent""#,
+        ] {
+            assert_eq!(st(c), None, "R6 중-1 판독 못 함: {c}");
+        }
+        // ★VERIFY-R6 하-2(뮤턴트 R6c): 셸 감싸기 안 공백 낱말 재해석이 실패하면 전체 None(일부만 읽고 계속하지 않는다)
+        assert_eq!(st(r#"pwsh -c "& 'C:\a b\x.exe""#), None, "R6 하-2 셸 안 명령 판독 못 함 = None");
         assert_eq!(st("call claude.cmd --x"), Some(vec!["claude".to_string()]), "H3 call");
         assert_eq!(st(r#". .\agent.ps1"#), Some(vec!["agent".to_string()]), "H3 점 호출");
         assert_eq!(st("'C:\\a b\\myagent.exe' -x"), Some(vec!["myagent".to_string()]), "홑따옴표 경로");
@@ -3108,6 +3151,11 @@ mod tests {
         assert_eq!(holder_name_set(&[serde_json::json!({"x": {"cmd": r#"& "C:\a"#}})], &[]), None, "H3 agents.json cmd 판독 못 함 = 끔");
         assert_eq!(holder_name_set(&[serde_json::json!({"x": {"cmd": 7}})], &[]), None, "H4 cmd 문자열 아님 = 끔");
         assert_eq!(holder_name_set(&[serde_json::json!([1])], &[]), None, "H4 agents.json 객체 아님 = 끔");
+        // ★codex 6R ④: 에이전트 항목이 객체 아님(null·배열·문자열·숫자) = 끔 · 객체인데 cmd 없음 = 건너뜀(어댑터 아님)
+        for bad in [serde_json::json!(null), serde_json::json!([]), serde_json::json!("claude"), serde_json::json!(7)] {
+            assert_eq!(holder_name_set(&[serde_json::json!({"claude": {"cmd": "claude"}, "custom": bad.clone()})], &[]), None, "6R ④ 항목 {bad} = 끔");
+        }
+        assert!(holder_name_set(&[serde_json::json!({"claude": {"cmd": "claude"}, "note": {"label": "x"}, "_doc": "메타"})], &[]).is_some(), "6R ④ cmd 없는 객체·_ 메타 = 건너뜀");
         assert_eq!(holder_name_set(&[ok_agents.clone()], &["&".to_string()]), None, "H3 좌석 agent_bin 판독 못 함(같은 규약) = 끔");
         assert_eq!(holder_name_set(&[ok_agents], &[r#""C:\Program"#.to_string()]), None, "H3 좌석 agent_bin 잘린 따옴표 = 끔");
         assert!(parse_agents(None).is_err() && parse_agents(Some("{bad")).is_err() && parse_agents(Some("[]")).is_err() && parse_agents(Some(r#"{"claude":{"cmd":"claude"}"#)).is_err(), "H4 해석 실패(쓰는 중 잘린 파일 포함)");

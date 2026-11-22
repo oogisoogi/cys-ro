@@ -155,7 +155,10 @@ describe("링 200칸 회전 · 크기 상한", () => {
   //   제품이 바이트로 자르지 않는다 — 크기를 묶는 것은 칸 상한(작업공간 64 · 소켓 32 · 좌석 128 · 목록 256 · 오류 16) × 링 200칸이고, 바이트 상한은
   //   실제 크기 장면(아래 검체 + ui/e2e/tickrec_gate.py)에서 잰다. 기록기는 기본 꺼짐(localStorage cys-tickrec = "1" 일 때만)인 진단 도구다.
   //   → 이름을 사실대로 고치고, 「칸 상한이 크기를 묶는다」는 실제 단언은 바로 아래 새 검체가 맡는다.
-  it("좌석 상한을 넘는 목록은 잘리고 trunc 표시 · 최악 장면(200틱 × 소켓 32 × 좌석 128) 덤프 크기 기록(바이트 상한은 실제 크기 장면에서)", () => {
+  // (TICKET=cysr-1118-debug ② · ci-branch ui-check tsc TS2554 「Expected 2 arguments, but got 3」) 타입 선언(src/bun-env.d.ts TestFn)은 2인자뿐 —
+  //   상한 인자는 screensettings.test.ts 선례와 같은 형 변환으로 넘긴다(선언 확장 없이 · 실행 동작 같음).
+  const itSlow = it as unknown as (label: string, body: () => void, timeoutMs: number) => void;
+  itSlow("좌석 상한을 넘는 목록은 잘리고 trunc 표시 · 최악 장면(200틱 × 소켓 32 × 좌석 128) 덤프 크기 기록(바이트 상한은 실제 크기 장면에서)", () => {
     const r = createTickRecorder({ salt: "k" });
     const surfaces = Array.from({ length: 300 }, (_, i) => ({ surface_id: i, role: "worker-" + i, exited: false, title: "x".repeat(40), live_cwd: "/p/".repeat(20), display_no: i, line_count: i, size: { rows: 40, cols: 140 } }));
     for (let t = 0; t < 200; t++) {

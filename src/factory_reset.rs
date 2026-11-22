@@ -115,7 +115,7 @@ fn is_approval_tmp(name: &str) -> bool {
     })
 }
 
-/// agy 좌석 문의 **원자 쓰기 잔재**(`agy-seat-door.json.<pid>.<순번>.tmp` · `agy_door::write_door_at` 규약)를 이름으로 판정한다 —
+/// agy 좌석 문의 **원자 쓰기 잔재**(`agy-seat-door.json.<pid>.<순번>.tmp` · `agy_door.rs` 앱 문 쓰기의 고유 임시본 규약)를 이름으로 판정한다 —
 /// 이름 바꾸기 전에 죽은 쓰기가 남긴 열림 본문이다. 숫자 꼴만(`is_approval_tmp` 와 같은 까닭 · 비슷한 이름의 오너 파일 보존).
 fn is_agy_door_tmp(name: &str) -> bool {
     name.strip_prefix(crate::agy_door::DOOR_FILE)
@@ -4583,7 +4583,9 @@ mod r2f_dm_factory_reset {
         let td = std::env::temp_dir().join(format!("cys-freset-agydoor-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&td);
         let cys = td.join(".cys");
-        crate::agy_door::write_door_at(&crate::agy_door::door_path_under(&td), true).expect("앱 길로 문 열기(전제)");
+        // 열린 문 본문을 직접 둔다(앱 문 쓰기 함수는 부르지 않는다 — agy_door 시험 `only_the_gui_writes_the_door` 가 앱 화면 밖의 호출을 소스로 막는다).
+        touch(&crate::agy_door::door_path_under(&td), &format!(r#"{{"open":true,"ack":"{}"}}"#, crate::agy_door::DOOR_ACK));
+        touch(&cys.join(format!("{}.lock", crate::agy_door::DOOR_FILE)), "");
         assert!(crate::agy_door::door_open_at(&crate::agy_door::door_path_under(&td)), "전제: 문이 열려 있어야 한다");
         let door = crate::agy_door::DOOR_FILE.to_string();
         let lock = format!("{door}.lock");

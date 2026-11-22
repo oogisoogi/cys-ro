@@ -107,3 +107,20 @@ cso·worker·부서 데몬 좌석 = 끄기 두 키 그대로 · 허용 목록의
 · 기존 `d25_claude_seat_settings_table`(노브 끔 인자로 종전 표 유지).
 **실측(master 몫 · 워커 좌석 RC 금지라 이 갈래는 못 켬)** — 이 가지 빌드로 master 좌석 재기동 → footer `/rc` 가 손 0 으로 켜짐 ∧
 `<설정 폴더>/sessions/<master pid>.json` 에 `bridgeSessionId` ∧ `~/.cys/seat-settings/master.json` = `{"remoteControlAtStartup":true}` · 비-master 좌석 footer 에 /rc 없음.
+
+## codex 1R(REVISE · major 6 · minor 1) 처분 — 판정문 정본 `~/.cys/pack/round/_reviews/cysr-1118-seat-r1-codex.json`(revision d97843b7b)
+
+| # | 지적 | 처분 |
+|---|---|---|
+| 1 | ① 조상 claude 를 등록 증거에서 제외(cysr 밖 `claude --continue` 도구 셸에서 `cys restore`) | **수용** — 등록 훑기는 조상 제외 없음(등록은 claude 만 씀 · argv 제외와 이유가 다름) · 시험 `restore_cfg_dir_outside_name_patterns_is_scanned_and_ancestors_count` |
+| 2 | ① 복원 대상 cfg 폴더(`~/accounts/work` 등 이름 꼴 밖)를 안 훑음 | **수용** — `CliWorld::with_cfg(lease_gate 의 검증 cfg)` → 등록 훑기 필수 후보 · 같은 시험(대조 = 후보 없이는 NoneConfirmed) |
+| 3 | ① 빈·공백 sessionId 를 「다른 대화」로 건너뜀 | **수용** — 정규화 실패 = 키 없음과 같음(살아 있음 = `reg:nosid` 판정 불가) · 시험 `blank_session_id_is_unknown_unless_stale` |
+| 4 | ① 후보 열거 실패를 빈 목록으로 숨김 | **수용** — `dir_names` = Result(없음만 빈 목록 · 목록·항목·종류 판독 실패 = Err) → Seen 없으면 `reg:dir:enum-…` 판정 불가 |
+| 5 | ② 윈 Backspace·Escape 가 C-u 뒤 별도 요청 — 그 사이 사람 입력을 지울 수 있음 · 부분 진행 뒤 「주입 0」 오표기 | **부분 수용** — 문구 정확화(「이미 보낸 키 …· 기동 글 0」 · 호출부 「기동 글 0」). 한 작업 직렬화(데몬 원자 선정리)는 **보류**: 형제 경로 node-recover 의 윈 Backspace 와 같은 성질 · 창 = 수 ms(빈 셸 좌석 · 사람이 그 좌석에 막 치는 순간만) · 데몬 새 RPC = 1.1.17 마감 안 회귀 면 큼 → 📌 |
+| 6 | ④ 본부·부서 master 가 `seat-settings/master.json` 한 파일 공유(켬↔끄기 경합 · 부서 좌석이 RC 켬을 집을 수 있음) | **수용** — 경로 = `<역할>-<내용 sha256 앞 8자>.json`(`seat_settings_stem`) · 내용 다르면 파일 다름 · 시험(본부≠부서 · 같은 내용 = 같은 줄기) |
+| 7 | ④ BOM 이 새 노브에만 — 허용 목록 파서는 BOM 실패 → 기본 `["master"]` 로 되돌아가 master 제외 정책을 넘어 켬 | **수용** — `rc_allowed_roles_from` 도 BOM 허용 · 시험(BOM + 빈 목록 = 빈 목록) |
+| 8(minor) | ③ doctor 가 판독 실패·깨진 줄을 0건 OK 로 | **수용** — 없음만 기록 없음 · 못 읽은 파일·깨진 줄 = WARN(0건 확정 안 함) · 시험 2꼴 추가 |
+| missing | sessionId 없는 낡은 등록이 pid 재사용으로 영구 93 | **수용** — 출생 불일치면 건너뜀(3 의 시험에 포함) |
+| missing | pane 판정이 env 존재만 봄 | **수용** — 유효 좌석 번호(`parse_surface_ref`)일 때만 pane 안 |
+| missing | `rc_master_autostart:false` = 강제 끄기 아님 | **수용(문서)** — 정책 안내에 「끔 = 켜는 값을 싣지 않을 뿐 · 사용자 설정을 따름」 |
+| missing | `--continue` 실기 · 윈 ConPTY Escape · RC 실측 · 포커스 보고 꼬리 틈 | **남음** — 실기 측정은 master 몫(위 ①②④ 절) · 꼬리 틈 = 📌 뷰어 1004 끄기 |

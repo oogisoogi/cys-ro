@@ -6724,7 +6724,7 @@ fn run(command: Command) -> i32 {
                     } else {
                         println!("OK{tag}");
                         // ★TICKET=cysr-1118-seat ③(master#44ce6e4c = A + 보강): 잡아 둔 본문을 조용히 잃지 않게 stderr 로 알린다(stdout·rc 무변경).
-                        if let Some(w) = held_send_warning(&r, sid, cys::env_compat(ENV_SURFACE_ID).is_some()) {
+                        if let Some(w) = held_send_warning(&r, sid, cys::env_compat(ENV_SURFACE_ID).and_then(|s| parse_surface_ref(&s)).is_some()) {
                             eprintln!("{w}");
                         }
                     }
@@ -9839,22 +9839,46 @@ fn doctor_hook_present(root: &Value, hook_cmd: &str) -> bool {
 /// 최근 24시간 안에 버려진 입력(Return 없이 보내 잡아 둔 본문이 창 안에 Return 을 못 받음 · 교체 · 에이전트 바뀜 · 데몬 재시작) 수를 센다. 읽기 전용.
 fn diag_held_dropped(ctx: &DoctorCtx) -> DiagItem {
     let dir = cys::daemon_state_dir(&ctx.socket_path);
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap_or_default();
+    let mut unread: Vec<String> = Vec::new();
+    let mut read = |name: &str| match std::fs::read_to_string(dir.join(name)) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            unread.push(format!("{name}({:?})", e.kind()));
+            String::new()
+        }
+    };
     let text = format!("{}\n{}", read("submit-held-undelivered.jsonl.1"), read("submit-held-undelivered.jsonl"));
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
-    held_dropped_item(&text, now)
+    held_dropped_item(&text, now, &unread)
 }
 
 /// [`diag_held_dropped`] 의 순수 판(증거 줄 본문 · 지금 유닉스 초) — 0건 = OK · 1건+ = WARN(마지막 시각·좌석·사유 · 다시 보내는 법).
-fn held_dropped_item(text: &str, now: f64) -> DiagItem {
+/// `unread` = 못 읽은 증거 파일(없음 제외) · 깨진 줄과 함께 「0건」 확정을 막는다(WARN · codex 1R).
+fn held_dropped_item(text: &str, now: f64, unread: &[String]) -> DiagItem {
     const WINDOW: f64 = 24.0 * 3600.0;
     let name = "held-dropped";
-    let rows: Vec<Value> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<Value>(l.trim()).ok())
+    let parsed: Vec<Option<Value>> = text.lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str::<Value>(l.trim()).ok().filter(|v| v.is_object())).collect();
+    let broken = parsed.iter().filter(|v| v.is_none()).count();
+    let rows: Vec<Value> = parsed
+        .into_iter()
+        .flatten()
         .filter(|v| v["ts"].as_f64().is_some_and(|t| t <= now + 60.0 && now - t <= WINDOW))
         .collect();
+    let gap = match (unread.is_empty(), broken) {
+        (true, 0) => String::new(),
+        (true, n) => format!(" · 판독 못 한 줄 {n}"),
+        (false, n) => format!(" · 못 읽은 파일 {}{}", unread.join(", "), if n > 0 { format!(" · 판독 못 한 줄 {n}") } else { String::new() }),
+    };
     let Some(last) = rows.iter().max_by(|a, b| a["ts"].as_f64().partial_cmp(&b["ts"].as_f64()).unwrap_or(std::cmp::Ordering::Equal)) else {
+        if !gap.is_empty() {
+            return DiagItem {
+                name,
+                status: DiagStatus::Warn,
+                detail: format!("최근 24시간 버려진 입력 — 읽은 범위 0건{gap}(전부 읽지 못해 0건으로 확정하지 않음)"),
+                action: "데몬 상태 폴더의 submit-held-undelivered.jsonl 권한·내용을 확인".into(),
+            };
+        }
         return DiagItem { name, status: DiagStatus::Ok, detail: "최근 24시간 버려진 입력 0건".into(), action: String::new() };
     };
     let p = &last["payload"];
@@ -9866,7 +9890,7 @@ fn held_dropped_item(text: &str, now: f64) -> DiagItem {
         name,
         status: DiagStatus::Warn,
         detail: format!(
-            "최근 24시간 버려진 입력 {}건 — 마지막 {when} {seat} · 사유 {} · {}자(글은 입력줄에 쳐지지 않았다)",
+            "최근 24시간 버려진 입력 {}건 — 마지막 {when} {seat} · 사유 {} · {}자(글은 입력줄에 쳐지지 않았다){gap}",
             rows.len(),
             p["reason"].as_str().unwrap_or("?"),
             p["chars"].as_u64().unwrap_or(0)
@@ -14120,13 +14144,16 @@ mod seat_latch_negation_tests {
     fn held_dropped_counts_recent_evidence_lines_only() {
         let now = 1_795_400_000.0;
         let row = |ts: f64, reason: &str| json!({"ts": ts, "event": "surface.submit_undelivered", "payload": {"surface_ref": "surface:3", "reason": reason, "chars": 27}}).to_string();
-        assert_eq!(held_dropped_item("", now).status, DiagStatus::Ok);
+        assert_eq!(held_dropped_item("", now, &[]).status, DiagStatus::Ok);
         let old = row(now - 25.0 * 3600.0, "expired");
-        assert_eq!(held_dropped_item(&old, now).status, DiagStatus::Ok, "24시간 밖은 세지 않는다");
+        assert_eq!(held_dropped_item(&old, now, &[]).status, DiagStatus::Ok, "24시간 밖은 세지 않는다");
+        // codex 1R: 못 읽은 파일 · 깨진 줄 = 0건 확정 금지(WARN).
+        assert_eq!(held_dropped_item("", now, &["submit-held-undelivered.jsonl(PermissionDenied)".into()]).status, DiagStatus::Warn);
+        assert_eq!(held_dropped_item(&format!("{old}\nnot json"), now, &[]).status, DiagStatus::Warn);
         let text = format!("{old}\n{}\nnot json\n{}", row(now - 3600.0, "expired"), row(now - 60.0, "superseded"));
-        let it = held_dropped_item(&text, now);
+        let it = held_dropped_item(&text, now, &[]);
         assert_eq!(it.status, DiagStatus::Warn);
-        assert!(it.detail.contains("2건") && it.detail.contains("surface:3") && it.detail.contains("superseded") && it.detail.contains("27자"), "{}", it.detail);
+        assert!(it.detail.contains("2건") && it.detail.contains("surface:3") && it.detail.contains("superseded") && it.detail.contains("27자") && it.detail.contains("판독 못 한 줄 1"), "{}", it.detail);
         assert!(it.action.contains("--clear-first") && it.action.contains("--queued"));
     }
 
@@ -14142,8 +14169,8 @@ mod seat_latch_negation_tests {
             let rest = &src[i..];
             &rest[..rest.find("\n}\n").expect("함수 끝")]
         };
-        let pre = body.find("for key in in_seat_preclear_keys(cfg!(windows))").expect("선정리 없음");
-        let gate = body[pre..].find("recover_refusal_from_input_guard(e)))?;").map(|i| i + pre).expect("선정리 거부가 전파되지 않는다");
+        let pre = body.find("in in_seat_preclear_keys(cfg!(windows)).iter().enumerate()").expect("선정리 없음");
+        let gate = body[pre..].find("recover_refusal_from_input_guard(e))\n        })?;").map(|i| i + pre).expect("선정리 거부가 전파되지 않는다");
         let lock = body.find("acquire_launch_lock()").expect("boot 락");
         let boot = body.find("boot_agent_on_surface(").expect("기동");
         assert!(lock < pre && pre < gate && gate < boot, "순서 = 락 → 선정리(거부 전파) → 기동");
@@ -17611,7 +17638,9 @@ fn apply_seat_settings_arg(cmd: &mut String, role: &str, agent: &str) {
     if settings.as_object().is_some_and(|o| o.is_empty()) {
         return;
     }
-    let path = cys::seat_settings_path(role);
+    // ★TICKET=cysr-1118-seat ④(codex 1R): 경로 = 역할 + 내용 해시 — 같은 HOME 의 본부 master(RC 켬)와 부서 master(끄기 두 키)가 한 파일을
+    //   번갈아 덮으면 claude 가 읽기 전에 남의 설정을 집을 수 있다(boot 락은 소켓별). 내용이 다르면 파일도 다르다 = 덮어쓰기 경합 0.
+    let path = cys::seat_settings_path(&cys::seat_settings_stem(role, &settings));
     let written = path
         .parent()
         .map_or(Ok(()), std::fs::create_dir_all)
@@ -27190,9 +27219,13 @@ fn restore_in_seat_boot(
     //   맨 셸 입력줄에 쌓인다(데몬은 이것을 자동 응답으로 쳐 초안 계수 0) → C-u 없이 기동 글을 이으면 `[O[Iclaude` 구문 오류(rc8 P2 실측).
     //   C-u 는 사람 초안 관문을 겸한다 — 거부(사람이 입력 중) = 0바이트 · 이 좌석은 건드리지 않고 건너뛴다(바깥 Err = 주입 0 · fresh 폴백 0).
     //   ⚠남는 틈: C-u 와 기동 Return 사이(≈200ms + 왕복)에 새 포커스 보고가 끼면 그 줄은 여전히 오염된다(뷰어 1004 끄기 = 별도 판단).
-    for key in in_seat_preclear_keys(cfg!(windows)) {
-        request("surface.send_key", json!({"surface_id": sid, "key": key, "authoritative": true}))
-            .map_err(|e| format!("입력줄 선정리({key}) 거부 — 기동 글 0: {}", recover_refusal_from_input_guard(e)))?;
+    for (i, key) in in_seat_preclear_keys(cfg!(windows)).iter().enumerate() {
+        // 첫 키 거부 = 0바이트 · 뒤 키 거부 = 앞 키는 이미 보냄(기동 글 0 은 같다 — 정직히 적는다 · codex 1R).
+        let sent = in_seat_preclear_keys(cfg!(windows))[..i].join("·");
+        request("surface.send_key", json!({"surface_id": sid, "key": key, "authoritative": true})).map_err(|e| {
+            let done = if sent.is_empty() { "보낸 키 0".to_string() } else { format!("이미 보낸 키 {sent}") };
+            format!("입력줄 선정리({key}) 거부 — {done} · 기동 글 0: {}", recover_refusal_from_input_guard(e))
+        })?;
     }
     std::thread::sleep(std::time::Duration::from_millis(200));
     let verdict = boot_agent_on_surface(
@@ -27416,7 +27449,7 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                     Ok(v) => v,
                     Err(e) => {
                         // 바깥 Err = 좌석에 아무것도 치지 않음(agent spec 해석 실패 · 입력줄 선정리 거부 — TICKET=cysr-1118-seat ②).
-                        println!("· {role}: 좌석 내 재연결 준비 실패({e}) — 건너뜀(주입 0 · 좌석 보존 · fresh 폴백 0)");
+                        println!("· {role}: 좌석 내 재연결 준비 실패({e}) — 건너뜀(기동 글 0 · 좌석 보존 · fresh 폴백 0)");
                         fail += 1;
                         continue;
                     }

@@ -3045,7 +3045,8 @@ pub fn rc_allowed_roles() -> Vec<String> {
 
 /// [`rc_allowed_roles`] 의 순수 판. 키가 배열이면 그 배열이 정본(빈 배열 = 아무도 허용 안 함).
 pub fn rc_allowed_roles_from(text: &str) -> Vec<String> {
-    match serde_json::from_str::<serde_json::Value>(text).ok().and_then(|v| v.get("rc_allowed_roles").cloned()) {
+    // BOM 허용(TICKET=cysr-1118-seat ④ codex 1R — 윈 메모장 저장본 · `rc_master_autostart` 와 같은 해석이어야 「허용 목록이 노브보다 먼저」가 선다).
+    match serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')).ok().and_then(|v| v.get("rc_allowed_roles").cloned()) {
         Some(serde_json::Value::Array(a)) => a
             .into_iter()
             .filter_map(|x| x.as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from))
@@ -3089,6 +3090,14 @@ pub fn seat_policy_permissions_allow_from(text: &str) -> Vec<String> {
 /// 미실측 · master 결정: 그때는 기동 뒤 검사·끄기만 · 안전 쪽).
 pub fn cmd_has_settings_flag(cmd: &str) -> bool {
     cmd.split_whitespace().any(|w| w == "--settings" || w.starts_with("--settings="))
+}
+
+/// 좌석 기동 설정 파일 이름 줄기(순수 · TICKET=cysr-1118-seat ④ codex 1R) — `<역할>-<내용 sha256 앞 8자>`. 같은 역할이어도 내용(본부 master RC 켬 ·
+/// 부서 master 끄기)이 다르면 다른 파일 → 다른 데몬의 기동이 claude 가 읽기 전 파일을 덮지 못한다. 같은 내용 = 같은 파일(원자 쓰기 · 같은 바이트).
+pub fn seat_settings_stem(role: &str, settings: &serde_json::Value) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(settings.to_string().as_bytes());
+    format!("{role}-{}", h.iter().take(4).map(|b| format!("{b:02x}")).collect::<String>())
 }
 
 /// 좌석 기동 설정 파일 자리 — `~/.cys/seat-settings/<역할>.json`(역할명은 파일 안전 문자만). 파일로 넘기는 이유:
@@ -5800,6 +5809,14 @@ mod tests {
         assert_eq!(seat_settings_arg(Path::new(r"C:\Users\x\my dir\.cys\seat-settings\worker.json"), true), r#" --settings "C:\Users\x\my dir\.cys\seat-settings\worker.json""#);
         assert!(seat_settings_path("worker-2").ends_with("seat-settings/worker-2.json"));
         assert!(seat_settings_path("../x").ends_with("seat-settings/x.json"), "역할명 경로 탈출 차단");
+        // ★cysr-1118-seat ④: 내용별 줄기 — 본부 master(켬)와 부서 master(끄기)는 다른 파일 · 같은 내용은 같은 파일.
+        let hq = claude_seat_settings("master", false, &[], &["master".to_string()], true);
+        let dept = claude_seat_settings("master", true, &[], &["master".to_string()], true);
+        assert_ne!(seat_settings_stem("master", &hq), seat_settings_stem("master", &dept));
+        assert_eq!(seat_settings_stem("master", &hq), seat_settings_stem("master", &hq.clone()));
+        assert!(seat_settings_stem("master", &hq).starts_with("master-") && seat_settings_stem("master", &hq).len() == "master-".len() + 8);
+        // BOM 정책 = 허용 목록도 같은 해석(빈 목록 = master 도 꺼짐).
+        assert!(rc_allowed_roles_from("\u{feff}{\"rc_allowed_roles\": []}").is_empty());
     }
 
     #[test]

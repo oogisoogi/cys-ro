@@ -2298,16 +2298,12 @@ pub(crate) fn classify_registry(
                 }
                 continue;
             }
-            match rec.get("sessionId") {
-                Some(serde_json::Value::String(s)) if norm_id(s).as_deref() != Some(norm) => continue,
-                Some(serde_json::Value::String(_)) => {}
-                // 대화 id 를 아직 적지 않은 살아 있는 프로세스 = 어느 대화를 쓰는지 모름.
-                _ => {
-                    if !dead(f.pid) {
-                        note(format!("reg:nosid:{}", f.pid));
-                    }
-                    continue;
-                }
+            // claude 가 읽는 순서 그대로(procStartFt → procStart).
+            let claimed = ["procStartFt", "procStart"].iter().find_map(|k| rec.get(*k).and_then(|v| v.as_str())).and_then(|v| parse_proc_start(v, win));
+            // 대화 id 정규화 실패(키 없음 · null · 빈 값 · 공백) = 어느 대화를 쓰는지 모름 — 낡은 잔재(죽음 · 출생 불일치)만 건너뛴다(codex 1R).
+            let sid = rec.get("sessionId").and_then(|v| v.as_str()).and_then(norm_id);
+            if sid.as_deref().is_some_and(|s| s != norm) {
+                continue;
             }
             let birth = match probe(f.pid) {
                 Ok(b) => b,
@@ -2317,15 +2313,15 @@ pub(crate) fn classify_registry(
                     continue;
                 }
             };
-            // claude 가 읽는 순서 그대로(procStartFt → procStart).
-            let claimed = ["procStartFt", "procStart"].iter().find_map(|k| rec.get(*k).and_then(|v| v.as_str())).and_then(|v| parse_proc_start(v, win));
-            match claimed {
-                Some((s, us)) if s == birth.0 && us.is_none_or(|u| u == birth.1) => {
+            let same_birth = claimed.map(|(s, us)| s == birth.0 && us.is_none_or(|u| u == birth.1));
+            match (sid.is_some(), same_birth) {
+                // 같은 pid · 다른 출생 = pid 재사용(그 파일의 프로세스는 죽었다).
+                (_, Some(false)) => continue,
+                (true, Some(true)) => {
                     return Evidence::Seen(format!("claude 세션 등록 {} (pid {}) 가 이 대화를 쓰는 중", f.path.display(), f.pid));
                 }
-                // 같은 pid · 다른 출생 = pid 재사용(그 파일의 프로세스는 죽었다).
-                Some(_) => continue,
-                None => note(format!("reg:birth:{}", f.pid)),
+                (true, None) => note(format!("reg:birth:{}", f.pid)),
+                (false, _) => note(format!("reg:nosid:{}", f.pid)),
             }
         }
     }
@@ -2376,20 +2372,47 @@ pub(crate) fn read_registry_dirs(cands: Vec<PathBuf>) -> Vec<RegDir> {
     out
 }
 
-/// 디렉터리 이름 목록(없음·못 읽음 = 빈 목록 — 후보 넓히기용이라 판정을 막지 않는다 · 고정 후보는 따로 늘 본다).
-fn dir_names(p: &Path) -> Vec<String> {
-    std::fs::read_dir(p)
-        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().to_str().map(str::to_string)).collect())
-        .unwrap_or_default()
+/// 디렉터리 이름 목록(후보 넓히기 · 순수 판정 입력) — 폴더 없음 = 빈 목록 · 목록·항목·종류 판독 실패 = Err(= 후보 누락 가능 → 판정 불가 · codex 1R).
+fn dir_names(p: &Path) -> Result<Vec<String>, String> {
+    let rd = match std::fs::read_dir(p) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("{:?}", e.kind())),
+    };
+    let mut out = Vec::new();
+    for e in rd {
+        let e = e.map_err(|e| format!("{:?}", e.kind()))?;
+        let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
+        if !(name.starts_with(".claude") || name.starts_with("claude")) {
+            continue;
+        }
+        match std::fs::metadata(e.path()) {
+            Ok(m) if m.is_dir() => out.push(name),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {} // 끊긴 링크
+            Err(err) => return Err(format!("{:?}", err.kind())),
+        }
+    }
+    Ok(out)
 }
 
-/// 바깥 증거 ⓒ 실제 훑기 — 이 사용자의 claude 설정 폴더 전수의 등록 파일.
-pub fn scan_registry(norm: &str, exclude: &[u32], home: &Path) -> Evidence {
+/// 바깥 증거 ⓒ 실제 훑기 — 이 사용자의 claude 설정 폴더 전수 + `extra`(복원 대상 좌석의 설정 폴더 · 이름 꼴과 무관하게 늘 본다 · codex 1R)의 등록 파일.
+/// ★조상 제외 없음(codex 1R): 등록 파일은 claude 만 쓴다 — 이 복원을 부른 조상 claude 가 같은 대화를 쓰고 있다면 그것이 곧 작성자다
+///   (cysr 밖 `claude --continue` 의 도구 셸에서 `cys restore`). argv 훑기의 제외(복원기 자신의 명령줄에 id 가 있음)와 이유가 다르다.
+pub fn scan_registry(norm: &str, home: &Path, extra: &[PathBuf]) -> Evidence {
     let env_dirs = [std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from), std::env::var_os("CYS_ACCOUNT_DIR").map(PathBuf::from)];
-    let cands = registry_dirs(home, &env_dirs, &dir_names(home), &dir_names(&home.join(".cys")));
-    classify_registry(norm, exclude, &read_registry_dirs(cands), cfg!(windows), |pid| {
+    let names = dir_names(home).and_then(|h| dir_names(&home.join(".cys")).map(|c| (h, c)));
+    let (hn, cn) = names.as_ref().map(|(h, c)| (h.as_slice(), c.as_slice())).unwrap_or((&[], &[]));
+    let mut cands: Vec<PathBuf> = extra.iter().map(|d| d.join("sessions")).collect();
+    cands.extend(registry_dirs(home, &env_dirs, hn, cn));
+    let ev = classify_registry(norm, &[], &read_registry_dirs(cands), cfg!(windows), |pid| {
         crate::process_observation::identity(pid).map(|i| (i.birth_seconds, i.birth_microseconds))
-    })
+    });
+    match (names, ev) {
+        (_, Evidence::Seen(w)) => Evidence::Seen(w),
+        (Err(e), _) => Evidence::Undecided(format!("reg:dir:enum-{e}:{}", home.display())),
+        (Ok(_), ev) => ev,
+    }
 }
 
 /// 증거 둘 합치기(순수) — 하나라도 Seen 이면 Seen · 그다음 판정 불가 · 둘 다 없음 확정일 때만 없음.
@@ -3705,6 +3728,39 @@ mod registry_tests {
         assert!(matches!(classify_registry(SID, &[], &d, false, alive(MAC_BIRTH)), Evidence::Undecided(r) if r.starts_with("reg:dir:PermissionDenied")));
     }
 
+    /// codex 1R: 빈·공백 sessionId = 키 없음과 같다(살아 있고 출생 일치·모름 = 판정 불가) · 출생 불일치·죽음 = 낡은 잔재(건너뜀).
+    #[test]
+    fn blank_session_id_is_unknown_unless_stale() {
+        for sid in ["", "   "] {
+            let f = one(vec![rf("/d", 7, &rec(7, sid, MAC_START))]);
+            assert_eq!(classify_registry(SID, &[], &f, false, alive(MAC_BIRTH)), Evidence::Undecided("reg:nosid:7".into()), "{sid:?}");
+            assert_eq!(classify_registry(SID, &[], &f, false, |_| Err(Failure::Dead)), Evidence::NoneConfirmed, "{sid:?} 죽음");
+            assert_eq!(classify_registry(SID, &[], &f, false, alive((MAC_BIRTH.0 + 5, 0))), Evidence::NoneConfirmed, "{sid:?} 재사용");
+        }
+        // sessionId 없음 · 출생 값도 없음 · 살아 있음 = 판정 불가.
+        let f = one(vec![rf("/d", 7, &serde_json::json!({"pid": 7}).to_string())]);
+        assert_eq!(classify_registry(SID, &[], &f, false, alive(MAC_BIRTH)), Evidence::Undecided("reg:nosid:7".into()));
+    }
+
+    /// codex 1R: 복원 대상 설정 폴더(이름 꼴 밖 · 예 `~/accounts/work`)는 늘 본다 · 조상 제외 없음.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn restore_cfg_dir_outside_name_patterns_is_scanned_and_ancestors_count() {
+        let home = tmp_home("extra");
+        let cfg = home.join("accounts").join("work");
+        std::fs::create_dir_all(cfg.join("sessions")).unwrap();
+        // 이 시험 프로세스 자신 = 「조상 claude」 대역(출생 = ps lstart).
+        let me = std::process::id();
+        let out = std::process::Command::new("/bin/ps").args(["-o", "lstart=", "-p", &me.to_string()]).env("LC_ALL", "C").env("TZ", "UTC").output().unwrap();
+        let lstart = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        std::fs::write(cfg.join("sessions").join(format!("{me}.json")), rec(me, SID, &lstart)).unwrap();
+        let without = scan_registry(SID, &home, &[]);
+        let with = scan_registry(SID, &home, std::slice::from_ref(&cfg));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(without, Evidence::NoneConfirmed, "이름 꼴 밖 폴더는 후보 목록만으로는 안 보인다(대조)");
+        assert!(matches!(with, Evidence::Seen(ref w) if w.contains(&me.to_string())), "복원 대상 폴더 + 나 자신(조상 대역) = Seen: {with:?}");
+    }
+
     /// Seen 은 다른 폴더의 판정 불가보다 앞선다(작성자 확인 = 막을 근거 충분 · rc 92).
     #[test]
     fn seen_beats_undecided_across_dirs() {
@@ -3745,6 +3801,7 @@ mod registry_tests {
         assert_eq!(v, want);
     }
 
+    #[cfg(unix)]
     fn tmp_home(tag: &str) -> PathBuf {
         let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let d = std::env::temp_dir().join(format!("cys-reg-{tag}-{}-{n}", std::process::id()));
@@ -3787,10 +3844,10 @@ mod registry_tests {
         std::fs::write(dir.join(format!("{pid}.json")), rec(pid, &sid, &lstart)).unwrap();
         let norm = norm_id(&sid).unwrap();
         let before = scan_argv(&norm, &[], Some(&[]));
-        let now = scan_registry(&norm, &[], &home);
+        let now = scan_registry(&norm, &home, &[]);
         let _ = child.kill();
         let _ = child.wait();
-        let after = scan_registry(&norm, &[], &home);
+        let after = scan_registry(&norm, &home, &[]);
         let _ = std::fs::remove_dir_all(&home);
         assert_eq!(before, Evidence::NoneConfirmed, "대조군: 종전 증거는 이 작성자를 못 본다(구멍)");
         assert!(matches!(now, Evidence::Seen(ref w) if w.contains(&pid.to_string())), "lstart={lstart:?} {now:?}");

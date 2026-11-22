@@ -1,9 +1,12 @@
 ---
 name: video-verify-visual
 description: 완성 영상의 시각 품질을 프레임 단위 비전 검수로 판정하는 하위 스킬 — 화면 밖 이탈·요소 겹침·아바타 미노출·잘린 텍스트·미적 결함을 프레임에서 잡는다. video-verify 1관문. "시각 검수 / 프레임 QA / 화면 이탈 점검 / 레이아웃 검증" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # video-verify-visual
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 추출된 프레임을 비전으로 읽어 "보기에 결함"을 잡는다. 사람 편집자라면 절대 안 내보낼
 프레임을 골라낸다.

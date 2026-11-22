@@ -1,9 +1,11 @@
 ---
 name: voice-clone-elevenlabs
-description: 검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오디오로 합성하는 대표 스킬 — 음성 클론(voice_id) 확보, 글자수 한도 청킹, request stitching 연속성, 잠금된 settings·seed, 문자 타임스탬프까지. "음성 합성 / 보이스 클론 / 나레이션 / elevenlabs tts" 트리거, 또는 youtube-video-pipeline 2단계로 발동.
+description: 대본을 ElevenLabs 클론 음성으로 일관되게 합성한다(청킹·이어붙임·타임스탬프). 「보이스 클론 / 일레븐랩스 / 나레이션 음성 합성」 요청 때.
 ---
 
 # voice-clone-elevenlabs
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 대본을 멀티분 나레이션으로 합성한다. 핵심 난제는 **여러 청크를 이어붙여도 같은 목소리처럼
 들리게** 하는 것 — ElevenLabs의 검증된 방식(request stitching + 설정 잠금)으로 해결한다.
@@ -20,6 +22,11 @@ description: 검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오
   `setup-api-key`)과 MCP(`elevenlabs/elevenlabs-mcp`)를 제공한다 — **raw API 호출 기계는 공식
   스킬/MCP에 위임**하고, 이 스킬은 그 위에 *파이프라인 정책*(올바른 청킹·stitching·설정 잠금·
   타임스탬프)을 강제한다. preflight C26이 공식 스킬 설치를 검증한다.
+- ⚠ 사용 조건(쓰기 전에 확인):
+  ① 무료 등급 결과물 = 비상업 전용 + 제목에 출처(`elevenlabs.io` 또는 `11.ai`) 표기(ElevenLabs 도움말 「Can I publish the content I generate」) → 비상업 공개는 제목에 출처를 적으면 무료 등급도 된다 · 상업 게시본은 유료 등급에서만. 유료 구독 밖(그 전이나 뒤)에서 만든 결과물은 나중에 유료로 바꿔도 상업 사용 불가 — 유료 기간에 다시 만든다.
+  ② 클론은 **목소리 주인의 동의를 받은 기록**이 있을 때만(ElevenLabs 금지 사용 정책 — 남의 목소리를 동의 없이 복제 금지).
+  ③ 본인 목소리를 복제해 내레이션·더빙을 만드는 것은 유튜브 AI 공개 대상이 아니다(도움말 14328491 공개 불필요 예시
+  「Cloning one's own voice to create voice overs or dubs」). 남의 목소리처럼 들리거나 실존 인물이 하지 않은 말을 하게 하면 공개 대상이다.
 
 ## 하위 스킬 오케스트레이션
 
@@ -46,3 +53,7 @@ description: 검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오
 - `audio/timestamps.json` — 문자 단위 alignment(이후 립싱크·자막 정렬용)
 - `audio/synth-manifest.json` — `[{id, request_id, voice_id, model_id, seed, settings}]`(재현·stitching 추적)
 - 경계 음질 QC 결과. 상위 `[[youtube-video-pipeline]]`로 반환 → `[[heygen-avatar-render]]` 입력.
+
+## 원 설명 (목록 상주 설명 축소 전 원문 · 1.1.12 cysr-1112-skill-fold)
+
+검증된 대본 청크를 ElevenLabs로 일관된 나레이션 오디오로 합성하는 대표 스킬 — 음성 클론(voice_id) 확보, 글자수 한도 청킹, request stitching 연속성, 잠금된 settings·seed, 문자 타임스탬프까지. "음성 합성 / 보이스 클론 / 나레이션 / elevenlabs tts" 트리거, 또는 youtube-video-pipeline 2단계로 발동.

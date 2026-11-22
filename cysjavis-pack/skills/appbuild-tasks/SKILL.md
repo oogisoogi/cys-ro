@@ -1,9 +1,12 @@
 ---
 name: appbuild-tasks
 description: 기획·화면을 AI가 실제 구현할 작업목록(04-tasks)으로 분해하는 대표 스킬 — 엔드투엔드 가치 슬라이스 분해와 의존 순서·크기 산정을 하위 스킬로 만든다(to-issues 배선). appbuild 3단계. "작업 목록 / 태스크 분해 / tasks 생성 / 작업 분할" 트리거, 또는 appbuild 파이프라인 3단계로 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-tasks
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 PRD·화면·아키텍처를 **구현 가능한 작업목록**으로 분해한다. 산출물 `.appbuild/04-tasks.md`.
 각 작업은 **엔드투엔드 가치를 내는 수직 슬라이스**(트레이서 불릿)여야 한다 — cysjavis의

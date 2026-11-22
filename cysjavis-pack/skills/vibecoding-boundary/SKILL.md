@@ -1,9 +1,12 @@
 ---
 name: vibecoding-boundary
 description: 경계의 정의(Boundary Definition) 전담 스킬 — requirement 직후·PRD 전 필수 타이밍(4가지 이유)·SDK/API/Webhook 분류·인증/보안 선설계·/docs/external/서비스.md 산출·공식문서 우선+최근 3개월 블로그 교차검증. 핵심 명제 "requirement는 내가 할 일, external-integration은 내가 하지 않을 일(외부 의존)을 정의한다". "경계 정의 / 외부 연동 / external integration / SDK 연동 / API 경계 / 웹훅 / 인증 설계" 트리거, 또는 바이브코딩 파이프라인 requirement→PRD 사이 단계로 발동.
+disable-model-invocation: true
 ---
 
 # vibecoding-boundary
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 바이브코딩 파이프라인에서 **requirement 확정 직후·PRD 작성 전**에 외부 서비스 연동의 경계를
 못박는 "환경·연동 정의 단계". 산출물 `/docs/external/서비스이름.md`.

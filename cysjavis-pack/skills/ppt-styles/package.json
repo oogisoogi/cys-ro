@@ -1,0 +1,17 @@
+{
+  "name": "ppt-styles",
+  "version": "1.1.0",
+  "private": true,
+  "description": "ppt-styles 스킬의 node 의존(pptxgenjs · react-icons · sharp). 팩 폴더가 아니라 의존 폴더(기본 ~/.cys/deps/ppt-styles)에 복사해 npm ci 한다 — bash run.sh setup",
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "pptxgenjs": "4.0.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-icons": "^5.7.0",
+    "sharp": "^0.35.5"
+  },
+  "overrides": {
+    "image-size": "^2.0.4"
+  }
+}

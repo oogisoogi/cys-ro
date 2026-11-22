@@ -1,9 +1,12 @@
 ---
 name: appbuild-supervisor-gate
 description: 검증된 스펙에서 프로젝트별 완료 게이트(05-gate.md)를 파생하는 하위 스킬 — 기능별 수용(RTM)·전역 DoD·비기능·교차정합을 증거 기반 통과 기준으로 만든다. appbuild-supervisor 게이트 관문·빌드 종료 기준. "완료 게이트 / DoD 파생 / definition of done / 합격 기준" 맥락에서 발동.
+disable-model-invocation: true
 ---
 
 # appbuild-supervisor-gate
+
+> 수동 전용 하위 스킬(아래 `[[…]]` 중 Skill 목록에 없는 것 · disable-model-invocation)은 Skill 도구로 부르지 않는다 — 같은 skills 폴더의 `<이름>/SKILL.md` 를 Read 해 따른다(사용자는 `/<이름>` 으로 직접 부를 수 있다).
 
 "무엇을 충족하면 끝인가"를 스펙에서 **파생**한다 — 사람이 즉흥으로가 아니라. 산출물
 `.appbuild/05-gate.md`. 핵심: **증거 기반 완료** — 게이트 행은 테스트 ID와 PASS 출력이 붙어야

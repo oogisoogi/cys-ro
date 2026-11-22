@@ -58,3 +58,4 @@ pub use attrs::Color;
 pub use cell::Cell;
 pub use parser::Parser;
 pub use screen::{MouseProtocolEncoding, MouseProtocolMode, Screen};
+pub use screen::ScrollbackSnapshot; // cys 패치(1.1.16 · cysr-1116-s2)

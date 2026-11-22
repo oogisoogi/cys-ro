@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>{{제목}}</title>
+<!-- 내레이션 모션 영상 틀 — s2m_cues.py 가 만든 js/cues.js(문장 시각)를 읽고, 화면 전부를 window.seek(t) 하나가 정한다.
+     복사해 쓰는 곳: <프로젝트>/index.html · 글꼴: fonts/ 에 OFL 파일 + 라이선스(예: Pretendard-*.woff2 · github.com/orioncactus/pretendard)
+     ⛔ CSS 애니메이션·transition·setTimeout·requestAnimationFrame 루프·Math.random·Date·performance.now·네트워크 자원 금지
+     ⛔ 슬라이드·카드·상자·글머리표 목록 금지 — 내용 자체를 한 세계 안의 물건·큰 글자로(원작 SKILL.md 「No slides, no boxes」) -->
+<style>
+  @font-face{font-family:"Pretendard";font-weight:700;src:url(fonts/Pretendard-Bold.woff2) format("woff2")}
+  @font-face{font-family:"Pretendard";font-weight:900;src:url(fonts/Pretendard-Black.woff2) format("woff2")}
+  html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#07090f}
+  #stage{position:absolute;inset:0;font-family:"Pretendard",sans-serif;color:#f3efe6}
+  canvas{position:absolute;inset:0}
+  .cap{position:absolute;left:160px;right:160px;bottom:56px;text-align:center;font-weight:700;font-size:40px;line-height:1.3;
+       color:#fff;text-shadow:0 2px 10px #000c}
+</style></head>
+<body><div id="stage">
+  <canvas id="cv" width="1920" height="1080"></canvas>
+  <!-- 큰 글자·물건 DOM 은 여기에 -->
+  <div class="cap" id="cap"></div>
+</div>
+<script src="js/cues.js"></script>
+<script>
+const W = 1920, H = 1080, g = document.getElementById("cv").getContext("2d"), cap = document.getElementById("cap");
+const CUES = window.CUES, C = Object.fromEntries(CUES.map(c => [c.id, c]));
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const expo = x => (x >= 1 ? 1 : 1 - Math.pow(2, -10 * clamp(x)));        // 지수 감속
+const smooth = x => { x = clamp(x); return x * x * (3 - 2 * x); };
+const lerp = (a, b, k) => a + (b - a) * k;
+// 시드 난수 — 불러올 때 한 번만 쓰고(배치·모양) seek 안에서는 쓰지 않는다
+function mulberry32(s) { return () => { s |= 0; s = s + 0x6D2B79F5 | 0; let r = Math.imul(s ^ s >>> 15, 1 | s); r = r + Math.imul(r ^ r >>> 7, 61 | r) ^ r; return ((r ^ r >>> 14) >>> 0) / 4294967296; }; }
+// 큐 도우미: 움직임은 초가 아니라 문장에 묶는다 — 대본이 바뀌면 cues.js 만 다시 만들면 장면이 따라 밀린다
+const cueNow = t => CUES.filter(c => t >= c.start).pop() || null;          // 지금(마지막으로 시작된) 문장
+const inCue = (t, id, from = 0, len = 0.6) => clamp((t - C[id].start - from) / len); // 문장 시작 + from 초부터 len 초 동안 0→1
+const frac = (t, id) => clamp((t - C[id].start) / (C[id].end - C[id].start)); // 문장 안 진행률 0→1
+
+function caption(t) {
+  const c = cueNow(t);
+  cap.textContent = c && t < c.end + 0.6 ? c.text : "";
+}
+window.seek = t => {
+  // 캔버스 상태를 매 프레임 기본값으로 되돌린다(앞 프레임 상태가 새지 않게)
+  g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = "source-over"; g.filter = "none";
+  g.fillStyle = "#07090f"; g.fillRect(0, 0, W, H);
+  // ▼ 장면: 큐마다 「그 문장이 시작될 때 화면이 바뀐다」(싱크 검사가 이 바뀜을 잰다)
+  // 예) const k = expo(inCue(t, "c01")); …
+  caption(t);
+};
+window.seek(0);
+</script></body></html>

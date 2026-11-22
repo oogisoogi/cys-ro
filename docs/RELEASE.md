@@ -34,7 +34,10 @@
 3. **태그 push** → `release.yml` 이 **draft** 릴리스를 만든다(윈 NSIS · 팩 자산 · `latest.json`). 공개가 아니다.
 4. **맥 zip 2종 = 로컬 자체서명 빌드 → draft 에 손 업로드** — 경로 = `prep-mac-runtime.sh <triple>` → `precompile-bundled-python.sh` →
    `tauri build --target <triple> --bundles app` → `dedup-git-core.sh` → `restore-runtime-symlinks.sh` →
-   `codesign --force --deep --sign cys-local` → `ditto -c -k --keepParent`(`scripts/build-macos-signed.sh` 의 비-Apple 단계와 같은 꼴).
+   `codesign --force --deep --sign cys-local` → **번들 아키텍처 게이트** `python3 scripts/check_macho_arch.py --target <triple>`
+   (+ 진입점 넷 `--require Contents/Resources/runtime/{python/bin/python3,node/bin/node,git/bin/git,uv/uv}` · rc 0 만 통과 ·
+   1 = 다른 칩 Mach-O · 2 = 판정 불가, 둘 다 멈춤) → `ditto -c -k --keepParent`(`scripts/build-macos-signed.sh` 의 비-Apple 단계와 같은 꼴).
+   이 순서 전체가 `scripts/build-macos-local.sh <aarch64|x86_64|both>` 에 고정돼 있다 — 손으로 고르지 말고 그 스크립트로 만든다.
 5. **후처리 → 검증 → 발행** — `release-postprocess.py`(`x64-setup.zip`·`SHA256SUMS.txt` · 맥 zip 2종 없으면 적색) →
    `release-publish.yml` `dry_run=true`(기본 · 산출물 표) → 박사님 승인 뒤 master 가 `dry_run=false`(**비가역**).
    발행 한 동작의 표와 **롤백** = `docs/RELEASE-ROLLBACK.md` §1~§3.
@@ -80,6 +83,12 @@
   `min_binary=0.12.48` 로 서명될 뻔했다. 두 값은 **같아야** 한다(다르면 어느 쪽이 옳은지
   아무도 모른다). 오버라이드 사용 시 `::warning::min_binary 정책 오버라이드 사용` 이
   워크플로 로그에 남는 것이 **정상**이다.
+- **★현행 팩 하한 = 1.1.16(두 레인) — 1.1.16 판정 (2026-11-22 · master#0d09ecd3 · TICKET=`cysr-1116-release`)**.
+  1.1.16 팩이 1.1.14 이하 바이너리에 없는 표면을 대체 경로 없이 쓴다 — ⓐ `cys seat-group`(`cysjavis-pack/directives/MASTER_DIRECTIVE.md` 팀 묶기 ·
+  `git grep -c seat-group v1.1.11 -- src src-tauri` = 0 · v1.1.14 = 0) ⓑ `close-surface --reap --if-quiet`(`javis_phoenix.py` `reap_if_quiet_args` 가
+  `created_at` 유무로 신 데몬을 가르는데 1.1.14 데몬도 `created_at` 을 내므로 옛 cys 가 인자를 거부 → 빈 좌석 회수가 매 회차 보류 · 코드 판독).
+  그래서 1.1.11 → 1.1.16 으로 올렸다(`release.yml` `PACK_MIN_BINARY` · `pack-release.yml` `PACK_MIN_BINARY_OVERRIDE` 같은 커밋).
+  귀결: 1.1.15 이하 기기는 팩 단독 갱신을 못 받고 본체 1.1.16 이 먼저 필요하다(의도된 차단) · v1.1.16 태그 전 `pack-v*` 는 멈춘다.
 - **직전 latest.json 동봉 필수**. 누락 시 `releases/latest/download/latest.json`이 404가 되어 전체
   사용자의 바이너리 확인 채널이 파손된다.
 - 팩-온리 적용 후 "디스크 팩 > 바이너리 임베드 팩" 상태가 일상화된다 — 이때 부트 스윕은

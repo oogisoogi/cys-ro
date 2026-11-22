@@ -52,7 +52,7 @@ const CYS_BASE_EXACT: [&str; 31] = [
 
 /// ~/.cys 직하에서 격리하는 정확 이름(2차) — 배열 상수 길이 고정을 피하려 분리하지 않고
 /// 접두로 못 잡는 단건들을 이어 담는다.
-const CYS_BASE_EXACT2: [&str; 12] = [
+const CYS_BASE_EXACT2: [&str; 14] = [
     // ★(0.14.31 · 독립 재유도) TTL 승인 전용 저장소와 두 저장소의 **원자적 쓰기 잔재**.
     //   0.14.31 이 `expires_at` 레코드를 `approvals-ttl.json` 으로 분리했는데 인벤토리는
     //   `approvals.json` 하나였다 → 초기화 뒤에도 미만료 승인이 남는다(시크릿을 env 로 고정한
@@ -81,6 +81,12 @@ const CYS_BASE_EXACT2: [&str; 12] = [
     // ★(0.14.45 · 성찰 2회차 m4) Windows 좌석 classic 렌더러 기록 원장(`claude_tui::LEDGER_FILE` — cys 가 `"tui": "default"` 를 넣은 설정 폴더 목록). 계획 단계가 먼저 읽어
     //   그 항목으로 설정을 되돌리고(`claude_tui_entries`), 원장 자체는 사용 흔적이라 격리한다(남으면 다음 설치의 킬스위치 되돌림이 옛 폴더를 다시 건드린다).
     "claude-tui-written.json",
+    // ★(TICKET=cysr-1118-debug ③ · 1.1.16 감사 「목록 누락」) agy 좌석 문(`agy_door::DOOR_FILE` · 앱 확인 창만 쓰는 「사람이 경고를 읽고 열었다」 표지)과
+    //   그 옆 OS 잠금 파일. 오너가 둔 파일이 아니라 cys 가 쓰는 앱 마커라 미등록 보존 대상이 아니다 — 남으면 완전 초기화(= 새 설치와 같음) 뒤에도
+    //   문이 열린 채라 새 사용자의 개인 요금제 agy 를 cysr 이 바로 띄울 수 있다(기본 닫힘 계약 위반 · 다시 여는 길 = 앱 명령 팔레트 한 번).
+    //   쓰기 임시본(`agy-seat-door.json.<pid>.<순번>.tmp`)은 `is_agy_door_tmp` 가 잡는다.
+    crate::agy_door::DOOR_FILE,
+    "agy-seat-door.json.lock",
 ];
 
 /// ~/.cys 직하에서 격리하는 접두. `pack-dept-<name>`(유령 `pack-dept---help` 포함),
@@ -105,6 +111,18 @@ fn is_approval_tmp(name: &str) -> bool {
             .and_then(|rest| rest.strip_suffix(".tmp"))
             .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()))
     })
+}
+
+/// agy 좌석 문의 **원자 쓰기 잔재**(`agy-seat-door.json.<pid>.<순번>.tmp` · `agy_door::write_door_at` 규약)를 이름으로 판정한다 —
+/// 이름 바꾸기 전에 죽은 쓰기가 남긴 열림 본문이다. 숫자 꼴만(`is_approval_tmp` 와 같은 까닭 · 비슷한 이름의 오너 파일 보존).
+fn is_agy_door_tmp(name: &str) -> bool {
+    name.strip_prefix(crate::agy_door::DOOR_FILE)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+        .and_then(|mid| mid.split_once('.'))
+        .is_some_and(|(pid, seq)| {
+            [pid, seq].iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+        })
 }
 
 /// 기본 보존(오너 구매물) — `purge_license` 로만 격리 대상이 된다. 파일명 지식은 정적 핀
@@ -688,6 +706,7 @@ pub fn build_plan(roots: &ResetRoots, opts: &ResetOptions) -> ResetPlan {
             let known = CYS_BASE_EXACT.contains(&name.as_str())
                 || CYS_BASE_EXACT2.contains(&name.as_str())
                 || (!is_dir && is_approval_tmp(&name))
+                || (!is_dir && is_agy_door_tmp(&name))
                 || CYS_BASE_PREFIX
                     .iter()
                     .any(|p| name.starts_with(p) && (is_dir || !p.ends_with('-')));
@@ -4503,7 +4522,9 @@ mod r2f_dm_factory_reset {
     /// 이름을 더하고도 형을 안 고치면 컴파일이 깨지지만, 형을 고쳐 맞추면서 **내용 단언**을 잊는 일을 이 검체가 막는다(길이 11·24·9).
     #[test]
     fn r2f_dm_factory_reset_inventory_lists_carry_the_new_persistent_files() {
-        assert_eq!(CYS_BASE_EXACT2.len(), 12, "~/.cys 직하 정확 이름 목록(2차)의 길이");
+        assert_eq!(CYS_BASE_EXACT2.len(), 14, "~/.cys 직하 정확 이름 목록(2차)의 길이");
+        assert!(CYS_BASE_EXACT2.contains(&crate::agy_door::DOOR_FILE), "agy 좌석 문이 기본 격리 목록에 없다 — 초기화 뒤에도 문이 열린 채 남는다");
+        assert!(CYS_BASE_EXACT2.contains(&format!("{}.lock", crate::agy_door::DOOR_FILE).as_str()), "agy 좌석 문 잠금 파일 이름이 agy_door 규약(`{{DOOR_FILE}}.lock`)과 어긋난다");
         assert!(CYS_BASE_EXACT.contains(&"pack.swap"), "끊긴 교체의 옛 팩 — 빠지면 초기화 뒤 다음 설치가 되살린다");
         assert!(CYS_BASE_EXACT.contains(&".pack-journal") && CYS_BASE_EXACT.contains(&crate::pack::PACK_JOURNAL_ROOT), "레인 저널 폴더(1.1.16)와 옛 공유 저널이 기본 격리 목록에 없다");
         assert!(CYS_BASE_PREFIX.contains(&"pack.swap-"), "복구의 보존 폴더 — 빠지면 초기화 뒤에도 사용자 상태가 남는다");
@@ -4547,6 +4568,34 @@ mod r2f_dm_factory_reset {
         assert!(q.contains(&".update-attempt.json".to_string()), "시도 기록이 격리 계획에 없다 — 격리: {q:?} · 보존: {k:?}");
         assert!(q.contains(&".pending-restore".to_string()), "전제: 같은 등급 마커는 격리된다: {q:?}");
         for keep in [".update-attempt.json.bak", ".update-attempt-notes.md"] {
+            assert!(!q.contains(&keep.to_string()), "{keep}: 미등록 파일을 격리했다 — 보존 계약 위반: {q:?}");
+        }
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// [행동 핀 · TICKET=cysr-1118-debug ③] agy 좌석 문(`~/.cys/agy-seat-door.json` · 앱이 쓰는 「사람이 경고를 읽고 열었다」 표지)과 그 옆 잠금 파일·
+    /// 쓰기 임시본(`agy-seat-door.json.<pid>.<순번>.tmp`)은 완전 초기화 계획에서 **격리**된다 — 초기화 = 새 설치와 같음 = 문 닫힘(기본값 · 안전 쪽).
+    /// 이름이 비슷한 미등록 파일(`agy-seat-door-notes.md` · `agy-seat-door.json.bak` · 숫자 아닌 임시 꼴)은 **보존**된다(미등록 보존 계약).
+    #[test]
+    fn freset_plan_quarantines_the_agy_seat_door_and_keeps_lookalikes() {
+        let td = std::env::temp_dir().join(format!("cys-freset-agydoor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        let cys = td.join(".cys");
+        crate::agy_door::write_door_at(&crate::agy_door::door_path_under(&td), true).expect("앱 길로 문 열기(전제)");
+        assert!(crate::agy_door::door_open_at(&crate::agy_door::door_path_under(&td)), "전제: 문이 열려 있어야 한다");
+        let door = crate::agy_door::DOOR_FILE.to_string();
+        let lock = format!("{door}.lock");
+        let tmp = format!("{door}.4242.0.tmp"); // 이름 바꾸기 전에 죽은 쓰기의 잔재
+        touch(&cys.join(&tmp), "{}");
+        for keep in ["agy-seat-door-notes.md", "agy-seat-door.json.bak", "agy-seat-door.json.x.0.tmp"] {
+            touch(&cys.join(keep), "owner");
+        }
+        let plan = build_plan(&roots_in(&td, None), &ResetOptions { purge_license: false, purge_local: false, purge_round: false });
+        let (q, k) = names(&plan);
+        for n in [&door, &lock, &tmp] {
+            assert!(q.contains(n), "{n} 가 격리 계획에 없다 — 초기화 뒤에도 agy 좌석 문이 열린 채 남는다 · 격리: {q:?} · 보존: {k:?}");
+        }
+        for keep in ["agy-seat-door-notes.md", "agy-seat-door.json.bak", "agy-seat-door.json.x.0.tmp"] {
             assert!(!q.contains(&keep.to_string()), "{keep}: 미등록 파일을 격리했다 — 보존 계약 위반: {q:?}");
         }
         let _ = std::fs::remove_dir_all(&td);

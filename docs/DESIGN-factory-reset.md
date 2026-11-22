@@ -62,6 +62,7 @@ hostinger-ftp.env·license.json)까지 파괴한다.
   .master-bootstrapped*, .gui-onboarded, .gui-onboard-attempts, .last-app-version, .pending-restore,
   ime-debug, allow-app-mouse, url-allow-hosts, harness-creator,
   .update-attempt.json(0.14.43~1.1.7 판이 남긴 옛 시도 기록 파일 · 그 기록을 쓰고 읽던 기능은 1.1.8 에서 삭제됨 · 옛 판이 남긴 파일만 기본 격리 — `src/factory_reset.rs` 목록과 같음)
+  agy-seat-door.json(+.lock · 쓰기 잔재 `agy-seat-door.json.<pid>.<순번>.tmp` — 앱이 쓰는 agy 좌석 문 표지 · 초기화 = 새 설치 = 문 닫힘 · 1.1.18 · `src/factory_reset.rs` 목록과 같음)
 - `~/.local/state/`: cys, cys-dept-* (등록·고아 불문. cys-trash 제외 — 격리 목적지)
 - 프로젝트 작업기억: `~/_round`, `${CYS_ROOT:-~/Desktop/CYSjavis}/_round`, 그리고 그
   둘의 `_round/ACTIVE_PROJECT` 가 가리키는 프로젝트의 `_round` — **_round 하위

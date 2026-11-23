@@ -77,11 +77,11 @@ describe("④ 문구·배선", () => {
 });
 
 // (④ 재검 · master#bcc58fe0 윈 실측) 정본 하나 = 맨 위 「## 완료 / ## 진행 중 / 기록 …」 뒤에 「## [날짜 DRAIN-VERIFY …]」 절이 최신순으로 여럿(그 안에도 3절 제목).
-// 윈 C:\Users\oogis\.cys\pack\round\SESSION_STATE.md 머리 줄(1·3·7·9·11·19·26행) 모양 그대로 · 작업 폴더 _round = 3절 없음(후보 탈락).
+// 윈 정본(~\.cys\pack\round\SESSION_STATE.md) 머리 줄(1·3·7·9·11·19·26행) 모양 그대로 · 작업 폴더 _round = 3절 없음(후보 탈락).
 describe("④ 재검 — 한 파일 안: 맨 위 3절만 · 아래 날짜 절에 새 손길이면 알림", () => {
   const win = (top: string) =>
     [
-      "# SESSION_STATE — install-jarvis (master)",
+      "# SESSION_STATE — example-project (master)",
       "",
       "## 완료",
       "- 실기 확인을 마쳤어요",

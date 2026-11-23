@@ -4,7 +4,7 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, needsClick, POLL_MS, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
+import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
@@ -273,7 +273,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     paint(act.state);
     act.attach();
     void act.poll();
-    ctx.timers.every(POLL_MS, () => void act.poll());
+    ctx.timers.every(FAST_POLL_MS, () => act.pollTick()); // (TICKET=cysr-1118u-chat ②) 1초 시계 — 온전한 조회는 POLL_MS 그대로 · 붙잡은 말이 기다릴 때만 그 사이 문턱 재조회
     // 이 자리는 아직 숨겨져 있다(registry 가 옛 화면을 내리며 같은 전환 안에서 보이게 함) — 숨은 요소엔 포커스가 안 들어가므로 전환 끝에 준다.
     queueMicrotask(() => {
       if (root.isConnected) input.focus();

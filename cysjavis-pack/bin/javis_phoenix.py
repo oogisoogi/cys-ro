@@ -3959,6 +3959,13 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                     role_surface[role] = ref
                     j["roles"].setdefault(role, {"stages": {}})["surface"] = ref
                     j["roles"][role]["expected_sid"] = entries.get(role, {}).get("session_id", "")
+                    # ★(1.1.18 · TICKET=cysr-1118u-debug · master#fd2e1ef5 · 되돌리기 단위 1커밋) 앞 실행의 fresh 표식을 지운다 — 이 역할은 **이번 실행**에
+                    #   cys restore 로 섰고, 아래가 이번 실행의 근거(fresh_pre · CLI 관측)로만 다시 세운다. 종전엔 세우는 곳만 있고 지우는 곳이 0 이라
+                    #   journal-default.json(실행·재부팅을 넘어 남음 · 단계 표식만 epoch 문으로 무효화)에 한 번 붙은 표식이 이후 resume 성공 회차의
+                    #   verify 로 계속 흘러갔다(윈 1.1.17·1.1.18 rc1 실측: 근거 줄 = 4좌석 예상=resume ↔ 판정 = no_session_file·cli_fresh unverified ·
+                    #   poison fresh · 실제는 4좌석 원 대화 resume).
+                    for _k in ("fresh_expected", "fresh_reason", "fresh_fallback", "fresh_pre_dir", "fresh_pre_sids", "fresh_evidence"):
+                        j["roles"][role].pop(_k, None)
                     if role in resume_mode:
                         j["roles"][role]["resume_mode"] = resume_mode[role]
                     # ★F-1(0.14.31 · 리뷰 R1): cys restore 입력상 fresh **예상** — 결과 플래그(fresh_fallback)가 아니라

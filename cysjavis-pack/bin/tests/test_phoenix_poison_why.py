@@ -60,7 +60,7 @@ QUIET_OUT = "· master: claude 재기동…\nrestore 완료: 재기동 1 · 실�
 EMPTY_SEAT = {"surface": "surface:7", "pid": 70, "exited": False, "agent_alive": None, "seat": "empty"}
 
 
-def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False):
+def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False, observed="S-NEW", fresh_pred=(False, "")):
     """죽은 master 1명 부활 1사이클(생산 경로 · 대역) — 반환 = (restore 수, fresh 수, 저널, 로그 줄, 결과)."""
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
@@ -87,7 +87,7 @@ def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False):
     m.master_seat_cwd = lambda s, entries=None: None
     m.seat_fresh_cwd = lambda role, c, mc, log_fn=None: c
     m.fresh_awaken = lambda *a, **k: "awaken-stub"
-    m.fresh_expected = lambda e: (False, "")
+    m.fresh_expected = lambda e: fresh_pred
     m.resume_arg_effect = lambda agent: ("effective", "")
 
     def _restore(s, roles, include_master=False, cwd=None, **_kw):
@@ -123,7 +123,7 @@ def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False):
         _save(s, t, j)
     m.save_journal = _cap
     m.stage_ready = lambda s, role, surf, stub: (True, "ready-stub")
-    m.stage_observe_session = lambda s, surf, stub, role=None: ("S-NEW", "stub")
+    m.stage_observe_session = lambda s, surf, stub, role=None: (observed, "stub")
     m.stage_reinject = lambda s, role, surf, stub: (True, "stub")
     m.stage_g2_ack = lambda s, role, surf, stub: (True, "stub")
     m.SPAWN_SETTLE = 0.0

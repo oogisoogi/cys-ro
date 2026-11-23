@@ -13,6 +13,8 @@
   P  기동 실패 꼴: 판정 불변(restore 4 · fresh 1 = 수리 전과 같음) · 미달 사건 4건 · poison_why · 강등 로그 까닭 · verify 사유 까닭 ·
      결과 honesty_note 까닭
   V  verify 판정 줄(M9: expected·observed·결과·사유)이 저널뿐 아니라 로그에도(윈 관찰 ④ 원인 판독용)
+  F  F-1 예상 근거(입력 session_id·cwd·cfg·profile · 확인한 경로 · 실재 · 폴더 실재)가 로그에(윈 관찰 ④ · 예상 no_session_file vs 실재 파일)
+  U3 그 근거 문자열의 순수 판정(없음 → 있음)
   Q  좌석 미달 꼴(실패 줄 없음 · agent_alive=None · seat=empty): 사유 = 좌석 사실 원문
   R  판정 입력 불변(codex 1R blocking): cys.rs stdout 실패 줄 = 기점 바이트 그대로(phoenix 는 800자 절단 stdout 에서 「기동 실패」 를 찾는다) ·
      rc 는 stderr `[restore] · 역할: 기동 실패 rc=N` → 사유 원문엔 실린다
@@ -151,6 +153,9 @@ def axes(src, tmp, tag, sink=None):
     vr = ((j or {}).get("roles", {}).get("master", {}) or {}).get("verify_reason", "")
     check("P 저널 verify 사유에 강등 까닭", "강등 까닭: attempt 3 · cys restore 「기동 실패」" in vr, vr, sink)
     hn = (res or {}).get("honesty_note", "") if isinstance(res, dict) else ""
+    check("F 로그에 F-1 예상 근거 줄(역할별 · 생산 경로 claude 역할)",
+          any(x.startswith("F-1 예상 근거 master: 예상=resume(-) · session_id='S1'") for x in logs),
+          [x for x in logs if x.startswith("F-1")][:1], sink)
     check("V 로그에 verify 판정 줄(역할·expected·observed·결과·사유)",
           any(x.startswith("M9 verify master: expected='S1' observed='S-NEW' → fresh (★독약 세션 fresh 강등") for x in logs),
           [x for x in logs if x.startswith("M9")][:2], sink)
@@ -197,6 +202,20 @@ def main():
           rs.count('println!("· {role}: 기동 실패 — 나머지 역할 계속 진행");') == 1
           and 'eprintln!("[restore] · {role}: 기동 실패 rc={rc}");' in rs
           and "나머지 역할 계속 진행 (launch-agent" not in rs)
+    fx = getattr(m, "fresh_expected_evidence", None)
+    d3 = tempfile.mkdtemp(dir=tmp)
+    cwd = os.path.join(d3, "w")
+    os.makedirs(cwd)
+    ent = {"agent": "claude", "session_id": "SID-1", "cwd": cwd, "claude_config_dir": os.path.join(d3, "cfg")}
+    proj = os.path.join(d3, "cfg", "projects", m._claude_project_component(cwd))
+    ev_missing = fx(ent, True, "no_session_file") if fx else ""
+    os.makedirs(proj)
+    open(os.path.join(proj, "SID-1.jsonl"), "w").close()
+    ev_found = fx(ent, False, "") if fx else ""
+    check("U3 F-1 예상 근거: 입력·확인 경로·실재(없음→있음)·폴더 실재를 그대로 적는다", fx is not None
+          and "예상=fresh(no_session_file)" in ev_missing and "실재=False · 폴더 실재=False" in ev_missing
+          and ("%s/SID-1.jsonl" % proj) in ev_found and "실재=True · 폴더 실재=True" in ev_found
+          and "session_id='SID-1'" in ev_found, ev_found or "missing")
     axes(src, tmp, "base")
     stale_axes(src, tmp, "st")
     a = '                    jevent(j, role, "spawn", "miss", "부활 미달 " + miss_why[role])\n'

@@ -398,6 +398,18 @@ def fresh_expected(entry):
     return False, ""
 
 
+def fresh_expected_evidence(entry, fe, why):
+    """★(1.1.18 · cysr-1118u-debug) fresh_expected 의 판정 근거 1줄(순수 · 관측 전용 — 판정은 fresh_expected 그대로).
+    입력(session_id·cwd·claude_config_dir·seat_profile) · 확인한 세션 파일 경로 · 그 순간 실재 여부 · 프로젝트 폴더 실재 여부."""
+    sid = entry.get("session_id")
+    pdir = _session_project_dir(entry)
+    path = ("%s/%s.jsonl" % (pdir, sid)) if (pdir is not None and isinstance(sid, str) and sid.strip()) else None
+    return ("예상=%s(%s) · session_id=%r · cwd=%r · claude_config_dir=%r · seat_profile=%r · 확인 경로=%r · 실재=%s · 폴더 실재=%s"
+            % ("fresh" if fe else "resume", why or "-", sid, entry.get("cwd"), entry.get("claude_config_dir"),
+               entry.get("seat_profile"), path, (os.path.exists(path) if path else None),
+               (os.path.isdir(pdir) if pdir is not None else None)))
+
+
 # ★F-1(리뷰 R1b · codex major): fresh 는 **세션에 대한 주장**이라 세션 증거가 필요하다. 스폰 **전** 그 좌석의 프로젝트
 #   디렉터리에 이미 있던 세션 파일 stem 들을 재고로 찍어 두고, 관측된(좌석 결속) 세션이 그 재고에 **없고** 지금
 #   파일이 **있으면** 새 세션이다. 재고에 있으면 기존 대화 재개(fork · 타 역할 세션일 수 있음) 의심이다.
@@ -3828,6 +3840,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 fe, why = fresh_expected(e)
                 pre_dir, pre_sids = session_inventory(e)
                 fresh_pre[role] = (why, pre_dir, pre_sids, bool(fe))
+                # ★(1.1.18 · cysr-1118u-debug · 윈 관찰 ④) 예상의 근거를 로그에 — 윈 실측(11-23): 세션 파일이 실재하고 CLI 는 「resume 생략」 0회로
+                #   resume 했는데 phoenix 예상만 no_session_file 이었다. 그 순간 무엇을 봤는지(입력·확인한 경로·실재)가 없어 원인을 못 갈랐다(관측 전용).
+                log("F-1 예상 근거 %s: %s" % (role, fresh_expected_evidence(e, fe, why)))
                 # ★리뷰 R3b(codex major): 어댑터 선언을 **읽었는가**(effective/no_effect) vs **못 읽었는가**
                 #   (unknown). 미상은 뒤의 topology 축이 verified 를 내지 못하게 하는 제약이다 —
                 #   결측은 값이 아니다(미상을 '재개했다' 로 읽으면 거짓 verified 가 된다).

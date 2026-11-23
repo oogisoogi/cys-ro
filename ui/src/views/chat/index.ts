@@ -40,7 +40,11 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       if (!e.isTrusted) return;
       act.rail.toggleGuide();
     });
-    head.append(health, confirms, errors, guideBtn);
+    // (TICKET=cysr-1118u-chat ①) 계정 한도 줄 — 작업 화면 상황판과 같은 값(act.limits · 새 조회 0) · 없으면 숨김.
+    const limits = el("div", "cv-limits");
+    limits.setAttribute("aria-label", "토큰 사용 한도");
+    limits.hidden = true;
+    head.append(health, confirms, errors, limits, guideBtn);
 
     const log = el("ol", "cv-log");
     log.setAttribute("aria-label", "대화");
@@ -203,6 +207,25 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       }
       return li;
     };
+
+    // (TICKET=cysr-1118u-chat ①) 한도 줄 — 값이 바뀔 때만 다시 그린다(원천 = 작업 화면 15초 캐시 · 여기서는 5초마다 들여다봄 · 조회 0).
+    let limitSig = "";
+    const paintLimits = () => {
+      const rows = act.limits();
+      const sig = JSON.stringify(rows);
+      if (sig === limitSig) return;
+      limitSig = sig;
+      limits.replaceChildren();
+      limits.hidden = rows.length === 0;
+      for (const r of rows) {
+        const row = el("span", `cv-limit${r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`);
+        row.title = r.title;
+        row.append(el("span", "cv-limit-name", r.name ?? "7일 한도"), el("span", "cv-limit-text", r.line));
+        limits.append(row);
+      }
+    };
+    paintLimits();
+    ctx.timers.every(5_000, paintLimits);
 
     let lastRev = -1;
     const paint = (s: ChatState) => {

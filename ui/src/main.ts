@@ -351,7 +351,7 @@ import { fixedColumnSplit, GRID_MIN_COLS, GRID_MIN_ROWS, gridColumns, gridView, 
 import { buildTabBar } from "./tabbar";
 import { cleanGroupName, effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
-import { accountLimitRows, accountNeedsAction, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountLimitRows, accountNeedsAction, chatLimitRows, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -12152,7 +12152,7 @@ async function start() {
   // 여기까지 왔으면 저장본을 읽어 본 것이다(내용이 없거나 손상이어도 '읽었다'는 사실은 같다) —
   // 이제부터의 저장은 사용자의 배치를 덮는 것이 아니라 그 배치를 갱신하는 것이다.
   layoutLoaded = true;
-  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true), focusSeat: (sid) => jumpToSurface(sid), onWorkShown: () => { retryFailedRuntimes(); render(); }, openHelp: () => void openFeedbackModal(), restoring: () => briefGate.restoreStarted && !briefGate.restoreFinished }); // (cysr-ui-slice1 · 조각 5 focusSeat·openHelp·restoring · s2 onWorkShown) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
+  bootViews({ invoke, working: (n) => nodeWorking(n.status as Parameters<typeof nodeWorking>[0], n.idle_secs as number | null | undefined, n.exited === true), focusSeat: (sid) => jumpToSurface(sid), onWorkShown: () => { retryFailedRuntimes(); render(); }, openHelp: () => void openFeedbackModal(), restoring: () => briefGate.restoreStarted && !briefGate.restoreFinished, limits: () => chatLimitRows(accountsCache, Date.now() / 1000) }); // (cysr-ui-slice1 · 조각 5 focusSeat·openHelp·restoring · s2 onWorkShown) 전환 단추 + 고른 화면(기본 = 작업 화면 · 대화 화면을 안 고르면 invoke·저장소·타이머 0)
   for (const ws of workspaces) ws.socket = ws.socket ?? undefined; // 하위호환 마이그레이션(기본 데몬)
   // socket 1:1 수렴 + id 중복 제거(중복 탭 증식 차단) — 복원 적재 직후 단일 게이트.
   workspaces = normalizeWorkspaces(workspaces);

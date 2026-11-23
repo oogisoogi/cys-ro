@@ -139,6 +139,16 @@ export interface Deps {
   listenApp?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
   /** (조각 5 · codex 1R major) 앱 수명 전체의 복원 진행 중 여부(main.ts briefGate) */
   restoring?(): boolean;
+  /** (TICKET=cysr-1118u-chat ①) 계정 한도 줄(main.ts 상황판과 같은 판정 statusboard.chatLimitRows · 작업 화면 15초 캐시) — 없으면 줄 없음 · 새 조회 0. */
+  limits?(): readonly LimitView[];
+}
+
+/** (TICKET=cysr-1118u-chat ①) 대화 화면 머리 한도 줄 하나 — name = null 이면 계정 하나(이름 없이 한 줄). 이메일 0(별명·폴더 라벨). */
+export interface LimitView {
+  name: string | null;
+  pct: number;
+  line: string;
+  title: string;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -270,6 +280,15 @@ export class ChatCore {
 
   get state(): ChatState {
     return this.s;
+  }
+
+  /** (TICKET=cysr-1118u-chat ①) 지금 계정 한도 줄 — 원천이 없거나 던지면 빈 목록(줄을 그리지 않음). */
+  limits(): readonly LimitView[] {
+    try {
+      return this.d.limits?.() ?? [];
+    } catch {
+      return [];
+    }
   }
 
   subscribe(fn: Listener): () => void {

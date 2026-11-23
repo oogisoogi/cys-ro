@@ -5,7 +5,7 @@
 //   (대화 화면 가용 판정·마스터 조회·세션 읽기는 전부 대화 화면을 누른 뒤에만 돈다.)
 
 import type { ViewDescriptor } from "./contract";
-import { ChatCore, POLL_MS, type ChatState, type Store } from "./core";
+import { ChatCore, POLL_MS, type ChatState, type LimitView, type Store } from "./core";
 import { chatView } from "./chat/index";
 import { workView, type WorkExtra } from "./work/adapter";
 import { createWorkBand } from "./work/band"; // (s79 조각 9) 작업 화면 띠
@@ -24,6 +24,8 @@ export interface BootDeps {
   openHelp?(): void;
   /** (조각 5) 복원 진행 중(main.ts briefGate — 앱 수명 전체) */
   restoring?(): boolean;
+  /** (TICKET=cysr-1118u-chat ①) 대화 화면 머리 한도 줄 — main.ts 가 상황판과 같은 캐시·판정(statusboard.chatLimitRows)으로. 없으면 줄 없음. */
+  limits?(): readonly LimitView[];
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -81,6 +83,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     focusSeat: (sid) => deps.focusSeat?.(sid),
     openHelp: () => deps.openHelp?.(),
     restoring: () => deps.restoring?.() === true,
+    limits: () => deps.limits?.() ?? [], // (TICKET=cysr-1118u-chat ①)
     workHint: (text) => paintWorkHint(switchHost, text, () => void booted?.registry.choose("chat")),
   });
   // (s79 조각 9 · FR-C7) 작업 화면이 켜져 있는 동안만 붙는 띠 — 대화 화면을 이번 실행에서 켠 적이 없으면 조회 0·띠 0(watchStart = false).

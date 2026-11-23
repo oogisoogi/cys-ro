@@ -109,3 +109,32 @@ describe("③ 턴 안 덧붙임(도구 결과 바로 뒤의 글 있는 user)은 
     expect(m.step).toBe("replied");
   });
 });
+
+describe("③ codex 1R major — 결속이 풀렸다가 다시 묶이면 턴 끝 표지가 이월되지 않는다", () => {
+  it("같은 글 외부 기록에 잘못 결속 → 다음 차례로 닫힘 → 늦은 held 응답(결속 풀림) → 실제 재전송 기록 결속 = 답하는 중 · 진행 줄", async () => {
+    const { mergeOutcome } = await import("./judge/msgstep");
+    // ① 같은 글의 외부 기록(작업 화면 직접 입력 등)에 잘못 결속 → 그 뒤 중계 턴으로 닫힘
+    const wrong = applyRecords([A], [{ uuid: "uX", parent: "p0", role: "user", text: A.text, ts: ts(1) }, asst("x1", "uX", "다른 답"), link("lx", "x1"), { uuid: "uP", parent: "lx", role: "user", text: PEER, ts: ts(5) }]);
+    let m = settleSteps(wrong.msgs, T + 6_000, true)[0];
+    expect(m.turnClosed).toBe(true);
+    // ② 늦게 온 확정 응답 = held(바이트 0) → 결속 풀림(mergeOutcome :313)
+    m = { ...m, ...mergeOutcome(m, "held") };
+    expect(m.userUuid).toBeNull();
+    expect(m.turnClosed).toBeUndefined();
+    // ③ 다시 보냄 → 실제 기록에 결속 → 마스터 일함 = 답하는 중 · 진행 줄
+    m = { ...m, step: "injected", sentAt: T + 20_000 };
+    const r = applyRecords([m], [{ uuid: "uA2", parent: "uP", role: "user", text: A.text, ts: ts(21) }, asst("a9", "uA2", null, ["Read"])], new Set(wrong.consumed));
+    const s = settleSteps(r.msgs, T + 25_000, true)[0];
+    expect(s.userUuid).toBe("uA2");
+    expect(s.turnClosed).toBeUndefined();
+    expect(s.step).toBe("replying");
+    expect(liveMsg([s])).toBe(s);
+  });
+  it("rematchPending 으로 다시 묶일 때도 이월 0", async () => {
+    const { rematchPending } = await import("./judge/msgstep");
+    const closed: Msg = { ...A, step: "injected", sentAt: T, turnClosed: true, tail: "result" };
+    const out = rematchPending([closed], [{ r: { uuid: "uA3", parent: "p0", role: "user", text: A.text, ts: ts(1) }, seenAt: T + 1_000 }]);
+    expect(out.msgs[0].turnClosed).toBeUndefined();
+    expect(out.msgs[0].tail).toBeUndefined();
+  });
+});

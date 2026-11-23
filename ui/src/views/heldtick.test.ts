@@ -124,6 +124,54 @@ describe("② 조회 수 — 붙잡은 말이 없으면 종전과 같다 · 있�
   });
 });
 
+describe("② codex 1R major — 문턱(답하는 중)에 붙잡힌 뒤 연결이 멈추면 조회를 매초 쌓지 않는다", () => {
+  async function hungAfterBusy(loop: Loop): Promise<number> {
+    const sim = new Sim();
+    await ready(sim, loop);
+    sim.seat.working = true;
+    sim.core.submit("둘");
+    await sim.advance(10);
+    expect(sim.core.state.msgs[sim.core.state.msgs.length - 1].code).toBe("busy");
+    const inv = sim.deps.invoke;
+    let org = 0;
+    sim.deps.invoke = (cmd, args) => {
+      if (cmd !== "org_status") return inv(cmd, args);
+      org++;
+      return new Promise(() => {}); // 끝나지 않는 조회(멈춘 연결)
+    };
+    await sim.advance(9_000);
+    return org;
+  }
+  it("9초 동안 끝나지 않은 org_status 수 ≤ 종전 3초 박자(codex 재현: 종전 3 · 고치기 전 9)", async () => {
+    const old = await hungAfterBusy("old3s");
+    const now = await hungAfterBusy("tick1s");
+    expect(old).toBe(3);
+    expect(old + 1).toBeGreaterThanOrEqual(now); // 첫 가벼운 조회 1건(멈춤을 알아채는 몫)까지만
+  });
+  it("연결이 다시 제때 답하면 1초 재조회가 돌아온다(문턱 열림 → ≤1초 안 쓰기)", async () => {
+    const sim = new Sim();
+    await ready(sim, "tick1s");
+    sim.seat.working = true;
+    sim.core.submit("둘");
+    await sim.advance(10);
+    const inv = sim.deps.invoke;
+    let hang = true;
+    sim.deps.invoke = (cmd, args) => (hang && cmd === "org_status" ? new Promise(() => {}) : inv(cmd, args));
+    await sim.advance(6_000);
+    hang = false;
+    await sim.advance(6_000); // 온전한 조회가 제때 끝나 늦음 표지가 풀림
+    let openAt = 0;
+    sim.later(1_500, () => {
+      sim.seat.working = false;
+      openAt = sim.now;
+    });
+    await sim.advance(5_000);
+    const send = sim.calls.find((c) => c.cmd === "chat_send");
+    expect(send !== undefined).toBe(true);
+    expect(FAST_POLL_MS).toBeGreaterThanOrEqual((send?.at ?? 0) - openAt);
+  });
+});
+
 describe("② 배선 — 대화 화면 시계 = 1초 pollTick", () => {
   it("chat/index.ts: every(FAST_POLL_MS, pollTick) · 종전 every(POLL_MS, poll) 0", () => {
     expect(CHAT).toContain("ctx.timers.every(FAST_POLL_MS, () => act.pollTick());");

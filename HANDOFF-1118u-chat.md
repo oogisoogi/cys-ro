@@ -57,3 +57,11 @@
 - 고침(계약 시험 80건 무변경 통과): ⑴ `briefBlock` = 파일에서 처음 나오는 3절 묶음 하나만(첫 3절 제목 ~ 3절 아닌 제목 앞) — 지침 §9 「맨 위 세 절」 그대로 · 항목·기록 줄 모두 이 묶음에서만 ⑵ `briefNewerElsewhere` 가 고른 파일 **자신**의 가장 늦은 시각도 본다(카드 시각·고르기는 그대로 = 판정 B 계약 · 알림만).
 - 시험 +3(윈 모양 05:56 = 맨 위 3절만 · 시각 11-22 11:04 · 알림 / 06:01 = 알림 없음 / 같은 파일 대장만 늦음 = 알림): 직전 커밋 3 fail → 11/11 · 전 UI 4010 pass / 0 fail · tsc 0.
 - 남은 불확실: 05:56 당시 파일의 정확한 내용은 모름(회신은 06:01 이후 상태) — 어느 경우(맨 위 3절 낡음 · 아래 절 항목 섞임)든 이 고침으로 「낡은 요약을 지금 것처럼」은 안 남는다. 근본(마스터가 맨 위 3절을 안 고치고 날짜 절만 쌓음)은 C(생산자 문안) 📌.
+
+## codex 1R(갈래 끝 1회 · 287db655b 기준 · read-only · REVISE major 2 / minor 1) → 3건 모두 받아 고침
+- codex 원문 판정 = REVISE(정본 verdict JSON 은 codex 세션 read-only 로 저장 못 함 · cys send 도 소켓 권한으로 실패 — 판정문은 실행 출력 원문). 세 건 모두 코드로 내가 다시 확인 → 타당.
+  1. major core.ts heldPoll — 답하는 중으로 붙잡힌 뒤 연결이 멈추면 가벼운 조회가 매초 끝나지 않는 org_status 를 쌓음(9초 3 → 9). 고침 = freshBounded 가 시간 상한을 넘기면 `lastFreshTimedOut` → fastWanted 거짓(3초 박자) · 다음 조회가 제때 끝나면 풀림. 시험 2(멈춤 9초 = 종전 3 + 첫 감지 1 이하 · 회복 뒤 ≤1초 쓰기).
+  2. major msgstep — 결속이 풀렸다 다시 묶일 때 turnClosed 이월(잘못 결속 → 닫힘 → 늦은 held(mergeOutcome :313) → 재전송 결속 = 「전달됨」·진행 줄 0 으로 굳음). 고침 = mergeOutcome 결속 풀기·applyRecords 새 결속·rematchPending 새 결속 셋 다 turnClosed·tail 비움. 시험 2(codex 재현 순서 그대로 · rematchPending).
+  3. minor chat_gate — 새 「펼침 전용」 단언이 disabled 단추를 눌러 저절로 통과. 고침 = I 절은 「disabled · 쓰기 0」으로 정직하게 · B 절(과정 있는 말)에서 실제 누름 → aria-expanded true · 과정 1줄 → 다시 누름 → 접힘 · 쓰기 0.
+- 결과: 새 시험 기점(e1874513e) 3 fail → 16/16 · 전 UI 4014 pass / 0 fail · tsc 0 · 진짜 playwright chat_gate 기점·이 가지 65 ok PASS · s79 46 · tickrec 28 · runtime_defer 23 · confirm 37 전부 PASS.
+- codex 2R 은 돌리지 않음(브리프 「codex 호출 = 갈래 끝에 1회」) — 재검토 필요 여부는 master 판단.

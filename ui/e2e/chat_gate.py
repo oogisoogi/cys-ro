@@ -156,6 +156,18 @@ def main() -> int:
         pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
         pg.clock.run_for(3_100)
         check(last_step(pg) == "답함", f"쉬면 답함 ({last_step(pg)})")
+        # (TICKET=cysr-1118u-chat ⑤ · codex 1R minor) 진행 줄 머리 = 펼침 전용 — 과정 기록(마스터 답 a1)이 있는 말에서 실제로 누른다: 눌림 가능 · 펼침/접힘 · 쓰기 0
+        w0 = writes(pg)
+        ph = lambda: pg.evaluate("() => { const b = document.querySelector('.cv-me button.cv-prog-head'); const box = b?.closest('.cv-prog'); return b ? { dis: b.disabled, exp: b.getAttribute('aria-expanded'), steps: box ? box.querySelectorAll('.cv-steps li').length : -1 } : null; }")  # noqa: E731
+        p0 = ph()
+        pg.click(".cv-me button.cv-prog-head")
+        pg.clock.run_for(50)
+        p1 = ph()
+        pg.click(".cv-me button.cv-prog-head")
+        pg.clock.run_for(50)
+        p2 = ph()
+        check(p0 is not None and p0["dis"] is False and p0["exp"] == "false" and p1["exp"] == "true" and p1["steps"] > 0 and p2["exp"] == "false" and p2["steps"] == 0 and writes(pg) == w0,
+              f"진행 줄 머리 = 펼침 전용(과정 있는 말 · 누름 → 펼침 · 다시 → 접힘 · 쓰기 0) ({p0} → {p1} → {p2} · 쓰기 {w0}→{writes(pg)})")
 
         print("== C 문턱 → 쓰기 0 · 붙잡음")
         pg.evaluate("() => { window.__CHAT.approvals = [1]; }")
@@ -323,7 +335,8 @@ def main() -> int:
         wpg = writes(pg)
         pg.evaluate("() => { const li = [...document.querySelectorAll('.cv-me')].at(-1); li?.querySelector('button.cv-prog-head')?.click(); }")
         pg.clock.run_for(50)
-        check(b["prog"] == 1 and writes(pg) == wpg, f"진행 줄 머리 1개 = 펼침 전용(눌러도 쓰기 0) ({b['prog']} · {wpg}→{writes(pg)})")
+        dis = pg.evaluate("() => !![...document.querySelectorAll('.cv-me')].at(-1)?.querySelector('button.cv-prog-head')?.disabled")
+        check(b["prog"] == 1 and dis and writes(pg) == wpg, f"과정 기록 없는 말의 진행 줄 머리 1개 = 누를 수 없음(disabled) · 쓰기 0 ({b['prog']} · disabled {dis} · {wpg}→{writes(pg)})")
         pg.clock.run_for(3_000)
         check(bubble(pg, 1)["step"] == "전달 확인 중" and writes(pg) == n0 + 1, f"응답(written) 도착 → 전달 확인 중 · 쓰기 1 ({bubble(pg, 1)['step']})")
         pg.evaluate("() => { window.__CHAT.hangMs = 0; }")

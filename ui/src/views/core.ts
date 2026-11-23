@@ -214,6 +214,8 @@ export class ChatCore {
   /** (TICKET=cysr-1118u-chat ②) 마지막 온전한 조회 시작 시각 · 마지막 조회(가벼운 것 포함) 시작 시각. */
   private lastFullPollStart: number | null = null;
   private lastAnyPollStart: number | null = null;
+  /** (codex 1R major) 마지막 상태 재조회(freshBounded)가 시간 상한을 넘겼는가 — 참이면 1초 재조회를 쉬고 3초 박자로(다음 조회가 제때 끝나면 풀림). */
+  private lastFreshTimedOut = false;
   private offset: number | null = null;
   private sessionId: string | null = null;
   /** 이 결속 세션에서 이미 근거로 쓴 레코드 uuid — 말 목록 정리와 무관하게 유지 · 세션이 바뀌면 비움(codex 2R major). */
@@ -628,6 +630,7 @@ export class ChatCore {
    *  넘으면 모름(마스터 undefined · 승인 대기 null → 문턱이 붙잡음 · 쓰기 0) + timedOut 표지. 늦게 온 답은 버린다. */
   private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean; feed?: unknown; org?: unknown }> {
     const r = await this.bounded(this.fetchFresh(), this.limitFor(2));
+    this.lastFreshTimedOut = r === TIMED_OUT; // (TICKET=cysr-1118u-chat ② · codex 1R major) 늦은 연결 = 1초 재조회 멈춤(끝나지 않은 조회를 매초 쌓지 않게)
     return r === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : r;
   }
 
@@ -906,7 +909,7 @@ export class ChatCore {
 
   /** (TICKET=cysr-1118u-chat ②) 1초 문턱 재조회가 필요한가 — 대화 화면 · 쓰는 중 아님 · 자동으로 나갈 붙잡은 말(쉼 끝 · 상태 확인 늦음 계열 아님)이 있을 때만. */
   private fastWanted(now: number): boolean {
-    if (this.watchOnly || this.writing) return false;
+    if (this.watchOnly || this.writing || this.lastFreshTimedOut) return false;
     const first = this.s.msgs.find(autoHeld); // pump·poll 과 같은 「가장 오래된 하나」 — 그 말이 쉼 중이면 뒤 말도 못 나간다
     return !!first && !slowHeld(first) && (first.notBefore === undefined || now >= first.notBefore);
   }

@@ -205,6 +205,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
         cand.note = undefined;
         cand.thread = r.uuid ? [r.uuid] : [];
         cand.tail = undefined;
+        cand.turnClosed = undefined; // (codex 1R major) 새 결속 = 새 턴 — 앞 결속의 턴 끝 표지를 이월하지 않는다
         continue;
       }
       // 글 있는 user 레코드 = 새 사람 차례 → 옛 말들의 사슬을 닫는다(부모가 옛 답이어도 이어 붙이지 않음).
@@ -277,7 +278,7 @@ export function rematchPending(msgs: readonly Msg[], pool: readonly PendingRec[]
       left.push(p);
       continue;
     }
-    out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [] };
+    out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [], tail: undefined, turnClosed: undefined }; // (TICKET=cysr-1118u-chat ③ · codex 1R major) 새 결속 = 턴 끝 표지 이월 0
     changed = true;
   }
   return { msgs: out, pool: left, changed };
@@ -310,7 +311,7 @@ export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
   const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
   if (EVIDENCED.has(cur.step) && !definite) return {};
   if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
-  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined };
+  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined, tail: undefined, turnClosed: undefined }; // (codex 1R major) 결속을 풀면 턴 끝 표지도 푼다
   return { step: outcomeStep };
 }
 

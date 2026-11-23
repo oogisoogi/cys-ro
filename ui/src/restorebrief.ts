@@ -42,10 +42,29 @@ export function plainLine(s: string): string {
 }
 
 /** 고정 3절을 뽑는다. 절 제목이 없으면 그 절은 빈 배열(지어내지 않는다). */
+/**
+ * (TICKET=cysr-1118u-chat ④ 재검 · master#bcc58fe0 윈 실측) 카드가 읽는 3절 = 파일에서 **처음 나오는 3절 묶음 하나**(첫 3절 제목부터 3절이 아닌 제목 바로 앞까지).
+ * 윈 정본은 맨 위 3절 뒤에 「## [날짜 DRAIN-VERIFY …]」 절이 최신순으로 쌓이고 그 안에도 「## 완료」 등이 있다 — 종전엔 파일 전체의 3절 제목을 다 모아
+ * 옛 절의 항목(11-22 「재시작 대기」 등)이 카드에 섞이고 기록 줄도 옛 절 것까지 비교했다. 지침 §9 = 「맨 위 세 절」.
+ */
+function briefBlock(text: string): string[] {
+  const out: string[] = [];
+  let started = false;
+  for (const raw of text.split(/\r?\n/)) {
+    if (/^#{1,6}\s/.test(raw)) {
+      const is3 = HEADS.some(([, re]) => re.test(raw));
+      if (!started && is3) started = true;
+      else if (started && !is3) break;
+    }
+    if (started) out.push(raw);
+  }
+  return out;
+}
+
 export function parseBriefSections(text: string): BriefSections {
   const out: BriefSections = { done: [], doing: [], decide: [] };
   let cur: keyof BriefSections | null = null;
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of briefBlock(text)) {
     if (/^#{1,6}\s/.test(raw)) {
       const hit = HEADS.find(([, re]) => re.test(raw));
       cur = hit ? hit[0] : null;
@@ -89,7 +108,7 @@ export function latestStamp(text: string, notAfter?: string): string | null {
 }
 
 /**
- * (TICKET=cysr-1118u-chat ④ · master 판정 A) 카드가 고른 3절보다 **다른 후보 파일**에 더 늦은 손길이 있는가(순수).
+ * (TICKET=cysr-1118u-chat ④ · master 판정 A) 카드가 고른 3절보다 늦은 손길이 **다른 후보 파일 또는 같은 파일의 다른 곳**에 있는가(순수).
  * 윈 1.1.17 관찰: 「다시 켜졌어요」 카드가 옛 기록(11-22 11:04)을 보임 — 고르기 계약(pickBriefText · 판정 B 후속)은 그대로 두고,
  * 고른 요약이 낡았음을 카드가 **눈에 띄게** 말하게 한다. 고른 3절의 시각을 모르면(null) 말하지 않는다(모르는 것을 단정하지 않음).
  */
@@ -97,7 +116,8 @@ export function briefNewerElsewhere(found: { path: string; text: string }[], cho
   if (chosen === null) return false;
   const at = recordedAt(chosen, notAfter);
   if (at === null) return false;
-  return found.some((f) => f.text !== chosen && (latestStamp(f.text, notAfter) ?? "") > at);
+  // (④ 재검 · master#bcc58fe0) 고른 파일 **자신**도 본다 — 윈 정본은 3절(기록 11-22 11:04)이 멈춘 채 그 아래 「## [11-23 05:38 DRAIN-VERIFY …]」 절에 새 일이 쌓였다(한 파일).
+  return found.some((f) => (latestStamp(f.text, notAfter) ?? "") > at);
 }
 
 /** (TICKET=cysr-1118u-chat ④) 낡은 요약 알림 한 줄 — 처음 쓰는 사람 말투 · 내부 용어 0. */
@@ -118,7 +138,7 @@ const REC_LINE = /^ ?(?:(?:[-*+]|\d+[.)])\s+)?기록\s*[:：]?\s*(20\d{2}-\d{2}-
 function briefRecordLine(text: string, notAfter?: string): string | null {
   let inBrief = false;
   let best: string | null = null;
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of briefBlock(text)) { // (TICKET=cysr-1118u-chat ④ 재검) 첫 3절 묶음 안의 기록 줄만
     if (/^#{1,6}\s/.test(raw)) {
       inBrief = HEADS.some(([, re]) => re.test(raw));
       continue;

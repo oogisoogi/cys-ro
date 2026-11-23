@@ -75,3 +75,61 @@ describe("④ 문구·배선", () => {
     expect(body).toContain("newerElsewhere: briefNewerElsewhere(found, text, now),");
   });
 });
+
+// (④ 재검 · master#bcc58fe0 윈 실측) 정본 하나 = 맨 위 「## 완료 / ## 진행 중 / 기록 …」 뒤에 「## [날짜 DRAIN-VERIFY …]」 절이 최신순으로 여럿(그 안에도 3절 제목).
+// 윈 C:\Users\oogis\.cys\pack\round\SESSION_STATE.md 머리 줄(1·3·7·9·11·19·26행) 모양 그대로 · 작업 폴더 _round = 3절 없음(후보 탈락).
+describe("④ 재검 — 한 파일 안: 맨 위 3절만 · 아래 날짜 절에 새 손길이면 알림", () => {
+  const win = (top: string) =>
+    [
+      "# SESSION_STATE — install-jarvis (master)",
+      "",
+      "## 완료",
+      "- 실기 확인을 마쳤어요",
+      "",
+      "## 진행 중",
+      "- 다음 지시를 기다려요",
+      `기록 ${top}`,
+      "",
+      "## [2026-11-23 05:38 DRAIN-VERIFY · 1.1.17 후보 설치(F) 중 재시작] 설치 중",
+      "## 완료",
+      "- F 설치 시작",
+      "## 진행 중",
+      "- F 설치",
+      "기록 2026-11-23 05:38",
+      "",
+      "## [2026-11-22 11:04 DRAIN-VERIFY · 재시작 대기] 복원 뒤 대기 중",
+      "## 완료",
+      "- 옛 11-22 일",
+      "## 진행 중",
+      "- 재시작 대기",
+      "기록 2026-11-22 11:04",
+    ].join("\n");
+  const cwdNoHeads = "# S\n- 재시작 저장 메모 2026-11-23 05:38\n";
+  it("관찰 시점(05:56 · 맨 위 기록 줄이 아직 11-22 11:04): 카드 = 맨 위 3절만 · 시각 11-22 11:04 · 아래 05:38 절 때문에 알림 한 줄", () => {
+    const now = "2026-11-23 05:56";
+    const found = [
+      { path: "canon", text: win("2026-11-22 11:04") },
+      { path: "cwd", text: cwdNoHeads },
+    ];
+    const text = pickBriefText(found, now);
+    expect(text).toBe(found[0].text);
+    const s = parseBriefSections(text as string);
+    expect(s.done).toEqual(["실기 확인을 마쳤어요"]); // 종전 = 「F 설치 시작」「옛 11-22 일」까지 섞임
+    expect(s.doing).toEqual(["다음 지시를 기다려요"]);
+    expect(recordedAt(text as string, now)).toBe("2026-11-22 11:04"); // 종전 = 아래 절 기록 줄(05:38)을 3절 기록으로 잘못 씀
+    expect(briefNewerElsewhere(found, text, now)).toBe(true);
+  });
+  it("06:01 맨 위 3절을 새로 씀: 맨 위 3절 · 시각 06:01 · 알림 없음", () => {
+    const now = "2026-11-23 06:10";
+    const found = [{ path: "canon", text: win("2026-11-23 06:01") }];
+    const text = pickBriefText(found, now) as string;
+    expect(parseBriefSections(text).done).toEqual(["실기 확인을 마쳤어요"]);
+    expect(recordedAt(text, now)).toBe("2026-11-23 06:01");
+    expect(briefNewerElsewhere(found, text, now)).toBe(false);
+  });
+  it("같은 파일의 기계용 절(오너 지시 대장)만 늦어도 알림 — 고르기·카드 시각은 그대로(판정 B 계약)", () => {
+    const f = "## 완료\n- a\n기록 2026-09-24 10:00\n\n## 오너 지시 대장\n| 2026-09-24 15:00 | 배포 준비 | 진행 |";
+    expect(recordedAt(f, "2026-09-24 16:00")).toBe("2026-09-24 10:00");
+    expect(briefNewerElsewhere([{ path: "c", text: f }], f, "2026-09-24 16:00")).toBe(true);
+  });
+});

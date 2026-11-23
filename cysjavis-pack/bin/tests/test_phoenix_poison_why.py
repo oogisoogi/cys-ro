@@ -12,6 +12,7 @@
   U2 spawn_miss_reason: 기동 실패 / 좌석 없음 / 부활 조건 미달(좌석 사실) 셋을 가르고 rc·원문을 싣는다
   P  기동 실패 꼴: 판정 불변(restore 4 · fresh 1 = 수리 전과 같음) · 미달 사건 4건 · poison_why · 강등 로그 까닭 · verify 사유 까닭 ·
      결과 honesty_note 까닭
+  V  verify 판정 줄(M9: expected·observed·결과·사유)이 저널뿐 아니라 로그에도(윈 관찰 ④ 원인 판독용)
   Q  좌석 미달 꼴(실패 줄 없음 · agent_alive=None · seat=empty): 사유 = 좌석 사실 원문
   M  뮤턴트(미달 사유 기록 제거 · 변이 적용 선-assert) → P 적색
 
@@ -135,6 +136,9 @@ def axes(src, tmp, tag, sink=None):
     vr = ((j or {}).get("roles", {}).get("master", {}) or {}).get("verify_reason", "")
     check("P 저널 verify 사유에 강등 까닭", "강등 까닭: attempt 3 · cys restore 「기동 실패」" in vr, vr, sink)
     hn = (res or {}).get("honesty_note", "") if isinstance(res, dict) else ""
+    check("V 로그에 verify 판정 줄(역할·expected·observed·결과·사유)",
+          any(x.startswith("M9 verify master: expected='S1' observed='S-NEW' → fresh (★독약 세션 fresh 강등") for x in logs),
+          [x for x in logs if x.startswith("M9")][:2], sink)
     check("P 결과 honesty_note 에 강등 까닭(역할별)", '강등 까닭={"master": "attempt 3 · cys restore 「기동 실패」' in hn, hn[-400:], sink)
     r, f, j, logs, _ = scenario(src, tmp, tag + "q", QUIET_OUT, [EMPTY_SEAT])
     ev = miss_events(j)

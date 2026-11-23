@@ -4218,6 +4218,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             mark_stage(j, role, "verify", verify_done,
                        "M9: expected=%r observed=%r → %s (%s)" % (exp, obs, outcome, reason))
             jevent(j, role, "verify", outcome, "expected=%r observed=%r [%s]" % (exp, obs, reason))
+            # ★(1.1.18 · TICKET=cysr-1118u-debug · 윈 관찰 ④) 판정 사유를 로그(phoenix-restore.log)에도 — 종전엔 저널에만 있어 윈 실기에서
+            #   「4 좌석이 다 원 대화로 떴는데 UNVERIFIED」 의 까닭을 로그로 못 갈랐다(관측 전용 · 판정 그대로).
+            log("M9 verify %s: expected=%r observed=%r → %s (%s)" % (role, exp, obs, outcome, reason))
             save_journal(socket, ticket, j)
             if f1_retry and f1_pass + 1 < F1_REVERIFY_PASSES:
                 jevent(j, role, "verify", "reobserve",

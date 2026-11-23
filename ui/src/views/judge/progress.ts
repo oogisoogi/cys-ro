@@ -88,7 +88,7 @@ const LIVE: ReadonlySet<Step> = new Set<Step>(["injected", "checking", "slow", "
 export function liveMsg(msgs: readonly Msg[]): Msg | null {
   let newest: Msg | null = null;
   for (const m of msgs) if (m.sentAt !== null && (newest === null || (newest.sentAt as number) <= m.sentAt)) newest = m;
-  return newest && LIVE.has(newest.step) ? newest : null;
+  return newest && LIVE.has(newest.step) && !newest.turnClosed ? newest : null; // (TICKET=cysr-1118u-chat ③) 턴이 끝난 말(뒤에 중계 등 새 차례) = 진행 줄을 살려 달지 않음
 }
 
 /** 경과(ms) → 「12초」 · 「1분 5초」 · 「1시간 2분」(음수 = 0초). */

@@ -18,3 +18,12 @@
   기점 = 이 시험 파일 모듈 오류(FAST_POLL_MS·pollTick 없음 = 붉음) → 고침 6/6 · 전 UI 3993 pass / 0 fail · tsc 0.
   e2e chat_gate.py(patchright 주 세계 대역): 기점 번들 FAIL 6 = 고친 번들 FAIL 6 **같은 6항**(작업 화면 30초 조회 상한 3 · 진행 줄 단추 3 — 1.1.17 진행 줄(cysr-1118-ui ①) 이후 게이트 단언이 낡음 · 이 갈래와 무관) · 새 FAIL 0.
 - 기대 효과(윈): 쉬는 중 도착 = 문턱 열림 + ≤1초(종전 ≤3초) · K2 = 15.7s 에서 최대 2초 줄어드는 몫(나머지는 출력 10초 정적 문턱 = 판정 정책 · 이 갈래 밖 📌). 확인 = 통합 판 윈 실기 v2 재실행.
+
+## ③ 중계(RC) 메시지로 시작한 턴의 진행 줄이 앞 사람 말 밑에 붙음
+- 관찰: 윈 실기 1.1.17(2374 05:56) — 사람 말이 아닌 중계 메시지로 시작한 턴의 진행 줄이 앞 사람 말 밑에 「답하는 중」.
+- 채록(맥 master 세션 기록 · Claude Code 2.1.329 · 윈 좌석도 같은 CLI): 중계로 **시작한** 턴의 첫 레코드 = `type:"user" · isMeta:true · turnOrigin:"peer" · origin.kind:"peer"(from "bridge:session_…") · content = 문자열 "Another Claude session sent a message:\n<cross-session-message …>"` → 파서(viewcore.rs content_text) = role user · text 있음. 턴 **중에** 온 중계 = `attachment · queued_command`(고리 · 표본 11건 전부 도구 결과 뒤). 실측 분류(최근 250 기록): 턴 시작 user 의 가장 가까운 앞 레코드 = assistant end_turn/stop_sequence · 도구 결과 바로 뒤 글 있는 user = 그림 안내(isMeta) 86 · 스킬 본문 11 · 중단 표지 10.
+- 원인: 레코드 사슬은 msgstep `applyRecords` :205(글 있는 user = 새 차례 → 사슬 닫기)에서 제대로 닫힌다(실기록 9구간 재생 = 중계 턴 도구 0건이 앞 말 과정에 붙음 · 답 = stray). 그러나 **앞 말의 단계는 그대로** → `settleSteps` 가 새 턴의 마스터 활동으로 delivered → 「답하는 중」을 다시 칠하고(답 글 없던 말), replying 인 말은 앞 턴 끝과 중계 턴 시작 사이에 조회가 「쉼」을 못 보면 그대로 남아 `liveMsg` 가 진행 줄(경과 초)을 계속 단다.
+  (함께 드러난 같은 줄 결함) 도구 결과 바로 뒤의 글 있는 user(그림 안내·스킬 본문)도 「새 차례」로 보고 사슬을 끊었다 → 그 뒤 도구가 앞 말 과정에서 빠짐. 이 판에서 닫힘 조건을 고치며 함께 바로잡음.
+- 설계: ⑴ Msg.tail = 사슬에 마지막으로 이은 레코드 종류(고리 제외 · assistant/result). 글 있는 user 가 tail=result 인 말의 사슬 끝에 오면 = 턴 안 덧붙임 → 고리로 잇고(tail 비움) 닫지 않음 ⑵ 그 밖(앞 턴 끝 뒤)이면 종전처럼 사슬을 닫고 + `turnClosed` = 전달됨 이상 말의 턴 끝 표지 · replying → 답 있으면 답함 / 없으면 전달됨 ⑶ settleSteps: turnClosed 말은 활동으로 칠하지 않음 ⑷ liveMsg: turnClosed 말엔 진행 줄 안 닮(「과정 N단계」 접힌 줄은 그대로).
+- 시험 `ui/src/views/rcturn.test.ts` 6건(채록 모양 fixture): 기점 1 pass / 5 fail → 고침 6/6 · 전 UI 3999 pass / 0 fail · tsc 0. 원본 세션 기록은 개인 대화라 저장소에 넣지 않음(재생 스크립트는 작업 폴더 밖 · 모양만 fixture 로).
+- 남은 확인: 통합 판 윈 실기에서 맥 master → 윈 master 중계 1회 뒤 앞 말 진행 줄 0.

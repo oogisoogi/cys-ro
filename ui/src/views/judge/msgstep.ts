@@ -90,6 +90,12 @@ export interface Msg {
   slowHolds?: number;
   /** (TICKET=cysr-1118-ui ①) 이 말에 이어진 마스터 과정(도구·중간 글·생각 표지) — 진행 줄·「과정 보기」 재료 · 메모리만(화면 저장소 0 = NFR-S3) */
   steps?: ProgStep[];
+  /** (TICKET=cysr-1118u-chat ③) 이 말의 턴이 끝났다 — 세션 기록에 이 말 사슬 뒤로 **다른 글 있는 user 레코드**(중계·작업 화면 직접 입력·알림 등 새 차례)가 왔다.
+   *  이 뒤로는 마스터 활동으로 「답하는 중」을 다시 칠하지 않는다(그 활동은 새 차례의 일이다) · 진행 줄도 달지 않는다. */
+  turnClosed?: boolean;
+  /** (TICKET=cysr-1118u-chat ③) 사슬에 마지막으로 이은 레코드 종류(고리 제외) — "result" = 도구 결과(user · 글 없음) 뒤 = 아직 턴 안.
+   *  도구 결과 바로 뒤의 글 있는 user 레코드(그림 안내 · 스킬 본문 · 중단 표지 — 실측 표본 107건)는 새 차례가 아니라 같은 턴의 고리다. */
+  tail?: "assistant" | "result";
 }
 
 export interface Rec {
@@ -198,11 +204,34 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
         cand.code = undefined; // (조각 3 · 검토 지적 4) 근거가 왔으니 옛 「확인 중」 까닭·안내를 지운다
         cand.note = undefined;
         cand.thread = r.uuid ? [r.uuid] : [];
+        cand.tail = undefined;
+        cand.turnClosed = undefined; // (codex 1R major) 새 결속 = 새 턴 — 앞 결속의 턴 끝 표지를 이월하지 않는다
         continue;
       }
       // 글 있는 user 레코드 = 새 사람 차례 → 옛 말들의 사슬을 닫는다(부모가 옛 답이어도 이어 붙이지 않음).
       if (r.text !== null) {
-        for (const m of out) if (r.parent && m.thread.includes(r.parent)) m.thread = [];
+        // (TICKET=cysr-1118u-chat ③) 단 도구 결과 바로 뒤에 온 것은 턴 안의 덧붙임(isMeta 그림 안내·스킬 본문·중단 표지)이다 — 새 차례로 닫지 않고 고리로 잇는다.
+        //   (새 차례 = 앞 턴 끝(assistant) 뒤에 오는 사람 말·중계(peer)·알림·예약 — 실측 표본: 턴 시작 user 레코드의 가장 가까운 앞 레코드 = assistant end_turn·stop_sequence)
+        const mid = r.parent ? out.find((m) => m.tail === "result" && m.thread.includes(r.parent as string)) : undefined;
+        if (mid) {
+          if (r.uuid !== null) {
+            seen.add(r.uuid);
+            used.push(r.uuid);
+            mid.thread.push(r.uuid);
+          }
+          mid.tail = undefined; // 덧붙임 바로 뒤의 글 있는 user(예: 중단 표지 뒤 새로 친 말)는 새 차례로 닫힌다
+          continue;
+        }
+        for (const m of out)
+          if (r.parent && m.thread.includes(r.parent)) {
+            m.thread = [];
+            // (TICKET=cysr-1118u-chat ③) 윈 1.1.17 관찰: 중계(RC 다리 · origin.kind "peer" · isMeta user 레코드)로 시작한 턴의 진행 줄이 앞 사람 말 밑에 「답하는 중」으로 붙음.
+            //   사슬은 여기서 닫혔지만 이 말의 단계는 그대로라 settleSteps 가 마스터 활동(새 차례의 일)으로 다시 「답하는 중」을 칠했다 → 턴 끝을 단계에 남긴다.
+            if (EVIDENCED.has(m.step)) {
+              m.turnClosed = true;
+              if (m.step === "replying") m.step = m.replies.length > 0 ? "replied" : "delivered";
+            }
+          }
         unmatched.push(r);
         continue;
       }
@@ -210,6 +239,8 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
     const owner = r.parent ? out.find((m) => m.thread.includes(r.parent as string)) : undefined;
     if (owner) {
       if (r.uuid) owner.thread.push(r.uuid);
+      if (r.role === "assistant") owner.tail = "assistant";
+      else if (r.role === "user") owner.tail = "result"; // (TICKET=cysr-1118u-chat ③) 글 없는 user = 도구 결과
       if (r.role === "assistant") owner.steps = appendSteps(owner.steps, stepsOf(r)); // (TICKET=cysr-1118-ui ①) 진행 줄 재료
       if (r.role === "assistant" && r.text !== null) {
         owner.replies.push({ uuid: r.uuid, text: r.text });
@@ -247,7 +278,7 @@ export function rematchPending(msgs: readonly Msg[], pool: readonly PendingRec[]
       left.push(p);
       continue;
     }
-    out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [] };
+    out[hit] = { ...out[hit], userUuid: r.uuid, step: "delivered", code: undefined, note: undefined, thread: r.uuid ? [r.uuid] : [], tail: undefined, turnClosed: undefined }; // (TICKET=cysr-1118u-chat ③ · codex 1R major) 새 결속 = 턴 끝 표지 이월 0
     changed = true;
   }
   return { msgs: out, pool: left, changed };
@@ -261,6 +292,7 @@ export function settleSteps(msgs: readonly Msg[], now: number, masterWorking: bo
   let newest: Msg | null = null;
   for (const m of msgs) if ((m.step === "delivered" || m.step === "replying" || m.step === "replied") && m.sentAt !== null && (newest === null || (newest.sentAt as number) <= m.sentAt)) newest = m;
   return msgs.map((m) => {
+    if (m.turnClosed && (m.step === "replying" || m.step === "delivered")) return m.replies.length > 0 ? { ...m, step: "replied" as Step } : m.step === "replying" ? { ...m, step: "delivered" as Step } : m; // (TICKET=cysr-1118u-chat ③) 턴이 끝난 말 = 활동으로 칠하지 않음
     if ((m.step === "replying" || m.step === "delivered") && m.replies.length > 0 && masterWorking === false) return { ...m, step: "replied" as Step };
     if (m.step === "replying" && m.replies.length === 0 && (masterWorking === false || m !== newest)) return { ...m, step: "delivered" as Step }; // 답 글 없이 쉼 · 더 새 말이 있음 = 「전달됨」으로(답하는 중이 굳지 않게)
     if (m.step === "delivered" && masterWorking === true && m === newest) return { ...m, step: "replying" as Step };
@@ -279,7 +311,7 @@ export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
   const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
   if (EVIDENCED.has(cur.step) && !definite) return {};
   if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
-  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined };
+  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined, tail: undefined, turnClosed: undefined }; // (codex 1R major) 결속을 풀면 턴 끝 표지도 푼다
   return { step: outcomeStep };
 }
 

@@ -2032,6 +2032,17 @@ jobs:
           #   phoenix 글롭 루프·TMPDIR 정규화가 따로 남지 않았는지).
           bash scripts/ci/phoenix-host-gate.sh cysjavis-pack/bin/tests/test_phoenix_*.py
 
+      # ★(1.1.18 · TICKET=cysr-1118u-debug) 깜빡이 원인 규명용 — 게이트 스크립트가 CI 에서 거는 S5_NATIVE_EVIDENCE($RUNNER_TEMP/s5-evidence ·
+      #   test_phoenix_c6_reap 의 격리 daemon.log(운영 토큰 가림) + manifest)를 붉을 때만 올린다. 레인 대조 = test_phoenix_host_gate_lane.py.
+      - name: phoenix S5 증거 업로드 (실패 때만 · daemon.log·manifest)
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: phoenix-s5-evidence-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/s5-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
   # ═══════════════════════════════════════════════════════════════════════════
   # 잡3 — NSIS 훅 컴파일 하네스 + 컴파일 가드 negative control (R2 라운드2 편입)
   #

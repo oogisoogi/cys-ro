@@ -14,6 +14,9 @@
   4) 행동: release 스텝 run 본문 그대로를 가짜 cargo·가짜 python3 로 별칭 TMPDIR 아래에서 돌리면 phoenix 파이썬은 정규 경로를,
      cargo 시험 3줄은 부른 쪽 TMPDIR 그대로를 본다 · 파이썬 시험이 실패하면 그 rc 로 끝나고 cargo 시험은 돌지 않는다 ·
      스크립트 인자가 없거나 글롭이 빈 경우 rc 2.
+  5) (1.1.18 · TICKET=cysr-1118u-debug) CI(RUNNER_TEMP 있음)에서는 파이썬 시험이 S5_NATIVE_EVIDENCE=$RUNNER_TEMP/s5-evidence 를
+     본다(c6_reap 가 daemon.log·manifest 를 거기 남긴다 · 부른 쪽 값이 있으면 그대로 · 로컬 = 안 건다) · ci-branch 잡은 그 폴더를
+     실패 때만 artifact 로 올린다(깜빡이 원인 규명 — 종전엔 daemon.log 가 러너와 함께 사라졌다).
 표준 라이브러리만 쓴다(CI 파이썬에 PyYAML 이 없다).
 
     python3 scripts/tests/test_phoenix_host_gate_lane.py
@@ -38,6 +41,8 @@ STEPS = [
     ("ci-branch.yml", "phoenix host-level 게이트 — 태그 레인 동일 조건 (macos-latest arm64)"),
 ]
 BASH = shutil.which("bash") or "/bin/bash"
+EVIDENCE_STEP = "phoenix S5 증거 업로드 (실패 때만 · daemon.log·manifest)"
+UPLOAD_PIN = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
 
 
 def code_lines(text):
@@ -70,6 +75,35 @@ class Text(unittest.TestCase):
                     self.assertIsNone(re.search(r"\bexport\s+TMPDIR=", line),
                                       "스텝 전체에 TMPDIR 를 export 하면 같은 스텝의 다른 명령(cargo 시험 등)까지 바뀐다 — "
                                       "필요한 명령 앞에만 TMPDIR= 를 붙이거나 서브셸에 가둬라")
+
+    def test_branch_job_uploads_s5_evidence_only_on_failure(self):
+        wf = ROOT / ".github/workflows/ci-branch.yml"
+        lines = wf.read_text(encoding="utf-8").split("\n")
+        # uses 스텝이라 extract_step(run: 전용)을 못 쓴다 — 스텝 머리 다음 더 깊은 줄을 `키: 값` 으로 읽는다(with: 아래는 한 단계).
+        heads = [i for i, l in enumerate(lines) if l == "      - name: " + EVIDENCE_STEP]
+        self.assertEqual(len(heads), 1, "업로드 스텝은 정확히 1개")
+        step, sub = {}, None
+        for raw in lines[heads[0] + 1:]:
+            if not raw.strip() or raw.strip().startswith("#"):
+                continue
+            ind = len(raw) - len(raw.lstrip(" "))
+            if ind <= 6:
+                break
+            k, _, v = raw.strip().partition(":")
+            v = v.split(" #")[0].strip()
+            if ind == 8:
+                step[k] = v if v else {}
+                sub = step[k] if not v else None
+            elif sub is not None:
+                sub[k] = v
+        self.assertEqual(step.get("if"), "failure()", "증거는 붉을 때만 올린다(초록 런마다 artifact 를 쌓지 않는다)")
+        self.assertEqual(step.get("uses"), UPLOAD_PIN, "다른 워크플로와 같은 SHA 핀")
+        self.assertEqual(step.get("with", {}).get("path"), "${{ runner.temp }}/s5-evidence", "스크립트가 거는 경로와 같아야 한다")
+        job = lines.index("  phoenix-host-gate:")
+        nxt = next(i for i in range(job + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i]))
+        gate = lines.index("      - name: " + STEPS[1][1])
+        up = lines.index("      - name: " + EVIDENCE_STEP)
+        self.assertTrue(job < gate < up < nxt, "업로드 스텝은 phoenix-host-gate 잡 안, 게이트 스텝 뒤에 있어야 한다")
 
     def test_script_confines_the_export_to_a_subshell_and_runs_no_cargo_tests(self):
         lines = (ROOT / SCRIPT).read_text(encoding="utf-8").splitlines()
@@ -110,6 +144,7 @@ class Behaviour(unittest.TestCase):
         (bin_ / "cargo").write_text('#!/bin/sh\nprintf "cargo %s|TMPDIR=%s\\n" "$1" "$TMPDIR" >> "$CALLS"\nexit 0\n', encoding="utf-8")
         (bin_ / "python3").write_text('#!/bin/sh\nprintf "python3 %s|TMPDIR=%s\\n" "$(basename "$1")" "$TMPDIR" >> "$CALLS"\n'
                                       'printf "env %s|%s|%s|%s\\n" "$CYS_PACK_DIR" "$PHOENIX_HARNESS_CYSD" "$PHOENIX_CYS" "${PATH%%:*}" >> "$CALLS"\n'
+                                      'printf "ev %s\\n" "${S5_NATIVE_EVIDENCE-<unset>}" >> "$CALLS"\n'
                                       '[ -d "$CYS_PACK_DIR" ] || exit 99\n'
                                       'case "$1" in *"$FAIL_ON"*) exit 7;; esac\nexit 0\n', encoding="utf-8")
         # 실패 주입용 대역(기본은 꺼짐 — 각 시험이 env 로 켠다): 시험별 팩 mktemp 실패 · 정리(rm/chmod) 실패
@@ -169,6 +204,20 @@ class Behaviour(unittest.TestCase):
         r = subprocess.run([BASH, SCRIPT, "cysjavis-pack/bin/tests/test_phoenix_a.py", "cysjavis-pack/bin/tests/test_phoenix_b.py"],
                            cwd=self.root, env=dict(self.env, **extra), capture_output=True, text=True, timeout=60)
         return r, (self.calls.read_text().splitlines() if self.calls.exists() else [])
+
+    def test_ci_runs_hand_python_the_s5_evidence_folder_and_local_runs_do_not(self):
+        r, calls = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([c for c in calls if c.startswith("ev ")], ["ev " + str(self.rt / "s5-evidence")] * 2, calls)
+        r, calls = self.run_script(S5_NATIVE_EVIDENCE=str(self.rt / "mine"))
+        self.assertEqual([c for c in calls if c.startswith("ev ")], ["ev " + str(self.rt / "mine")] * 2, "부른 쪽 값을 덮지 않는다")
+        self.calls.unlink(missing_ok=True)
+        env = {k: v for k, v in self.env.items() if k != "RUNNER_TEMP"}
+        r = subprocess.run([BASH, SCRIPT, "cysjavis-pack/bin/tests/test_phoenix_a.py"], cwd=self.root, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([c for c in self.calls.read_text().splitlines() if c.startswith("ev ")], ["ev <unset>"],
+                         "로컬(RUNNER_TEMP 없음)은 증거 폴더를 걸지 않는다")
 
     def test_pack_mktemp_failure_stops_the_gate_before_any_python(self):
         # codex 1R major: 종전 `CYS_PACK_DIR="$(mktemp …)" python3` 은 mktemp 실패를 삼키고 rc 0 이었다

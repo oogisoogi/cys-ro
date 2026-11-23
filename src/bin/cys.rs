@@ -27617,6 +27617,10 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 println!("· {role}: 다른 복원 경로가 먼저 세움 — 건너뜀");
             } else {
                 fail += 1;
+                // ★(1.1.18 · TICKET=cysr-1118u-debug) launch-agent rc 는 **stderr** 로 — 종전엔 버려져 phoenix 독약 강등의 까닭을 로그로 못 갈랐다
+                //   (윈 1.1.17 관찰 ③). stdout 줄은 바이트 그대로 둔다: phoenix 는 800자로 자른 stdout 에서 「기동 실패」 역할을 찾으므로
+                //   줄이 길어지면 판정 입력이 바뀐다(codex 1R blocking). stderr 는 phoenix-restore.log 에 전문으로 남는다(log_restore_output).
+                eprintln!("[restore] · {role}: 기동 실패 rc={rc}");
                 println!("· {role}: 기동 실패 — 나머지 역할 계속 진행");
             }
         }

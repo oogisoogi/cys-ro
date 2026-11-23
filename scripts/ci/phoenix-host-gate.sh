@@ -53,6 +53,13 @@ cargo build --bin cys --bin cysd --bin cys-seatkeep
 export PHOENIX_HARNESS_CYSD="$PWD/target/debug/cysd"
 export PATH="$PWD/target/debug:$PATH"
 export PHOENIX_CYS="$PWD/target/debug/cys"
+# ★(1.1.18 · TICKET=cysr-1118u-debug) CI 에서는 S5 증거 폴더를 건다 — test_phoenix_c6_reap 가 붉든 녹이든 격리 데몬의 daemon.log·manifest 를
+#   여기 남기고, ci-branch `phoenix-host-gate` 잡이 실패 때만 artifact 로 올린다. 종전엔 이 변수가 없어 daemon.log 가 러너와 함께 사라져
+#   c6_reap 첫 surface.create 6초 깜빡이(11-06~ · 29잡 중 4)의 원인을 잴 수 없었다. 부른 쪽 값이 있으면 그대로 · 로컬(RUNNER_TEMP 없음) = 안 건다.
+#   폴더는 CYS_TMP 밖이라 아래 정리 trap 이 지우지 않는다. 레인 대조 = scripts/tests/test_phoenix_host_gate_lane.py.
+if [ -z "${S5_NATIVE_EVIDENCE:-}" ] && [ -n "${RUNNER_TEMP:-}" ]; then
+  export S5_NATIVE_EVIDENCE="$RUNNER_TEMP/s5-evidence"
+fi
 
 # ★커밋된 phoenix 시험 전건(부르는 쪽 글롭) — 하드코딩 목록은 새 웨이브 시험을 조용히 빠뜨린다.
 (

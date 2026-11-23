@@ -2540,6 +2540,36 @@ def log_restore_output(r):
             log("cys restore %s| %s" % (name, line))
 
 
+_RESTORE_ROLE_LINE_RE = re.compile(r"^· (\S+): (.+)$", re.M)
+
+
+def restore_role_lines(text):
+    """★(1.1.18 · TICKET=cysr-1118u-debug) `cys restore` stdout 전량 → {역할: [그 역할의 「· 역할: …」 줄 원문, …]}(순수 · 관측 전용).
+    저널 `out` 은 800자로 잘려 뒤쪽 역할의 줄이 빠진다 — 부활 미달 사유(spawn_miss_reason)는 자르기 **전** 원문에서 뽑는다."""
+    found = {}
+    for mm in _RESTORE_ROLE_LINE_RE.finditer(text or ""):
+        found.setdefault(mm.group(1), []).append(mm.group(0).strip())
+    return found
+
+
+def spawn_miss_reason(role, failed_now, rows, role_lines, rc):
+    """★(1.1.18 · TICKET=cysr-1118u-debug · 윈 실기 1.1.17 관찰 ③) 이번 resume 회차(`cys restore`)가 role 을 부활로 **세지 않은 까닭** 1줄
+    (순수 · 관측 전용 — 판정은 호출부 그대로). 종전엔 이 까닭이 어디에도 안 남아 「독약 강등」(Phase 11)이 왜 일어났는지
+    윈 phoenix-restore.log 로 가를 수 없었다(11-19·11-22·11-23 worker poison 반복 · debt-d 「기동 실패 줄 원문 확인 필요」).
+    ⓐ 이번 출력에 그 역할의 「기동 실패」 줄 ⓑ 그 역할 좌석이 없음 ⓒ 좌석은 있으나 부활 조건(exited=false ∧ agent_alive=True ∧ seat≠empty)
+    미달 — 좌석 사실을 그대로 싣는다. 뒤에 restore rc 와 그 역할의 `cys restore` 줄 원문(마지막 3줄)을 붙인다."""
+    if role in failed_now:
+        why = "cys restore 「기동 실패」"
+    elif not rows:
+        why = "역할 좌석 없음"
+    else:
+        why = "부활 조건 미달(%s)" % "; ".join(
+            "%s exited=%s agent_alive=%s seat=%s" % (s.get("surface"), s.get("exited"), s.get("agent_alive"), s.get("seat"))
+            for s in rows[:3])
+    own = (role_lines or {}).get(role) or []
+    return "%s · restore rc=%s · 원문: %s" % (why, rc, " | ".join(own[-3:]) if own else "(이 역할 줄 없음)")
+
+
 _LEASE_REFUSAL_RE = re.compile(
     r"^· (\S+): 대화 (\S+) (?:— (.+?) — 띄우지 않음|작성자 생존 판정 불가\((.+?)\) — 띄우지 않음)", re.M)
 
@@ -2602,6 +2632,8 @@ def spawn_production(socket, pending_roles, include_master=False, cwd=None, unit
             "timeout_s": budget, "units": n, "stall_s": stall, "stalled": stalled,
             "out": (r.stdout or r.stderr or "").strip()[:800],
             "fresh_observed": sorted(cli_fresh_roles(streams)),
+            # ★(1.1.18 · cysr-1118u-debug) 역할별 「· 역할: …」 줄도 절단 **전** stdout 전량에서 — 부활 미달 사유의 원문.
+            "restore_role_lines": restore_role_lines(r.stdout or ""),
             # ★seatkeep-t1(codex 1R M1): 대화 임대 거절 줄도 `out` 800자 절단 **전** 전량에서 뽑는다.
             "lease_refused": _lease_refusals(streams)}
 
@@ -3711,6 +3743,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #   topology 를 읽으므로 단위가 준다). 한 번이라도 상한에 걸리면(rc=124) 이후 회차는 종전 90s(행 의심).
     _units_view = live
     _restore_hang = False
+    miss_why = {}  # ★(1.1.18 · cysr-1118u-debug) 역할 → 마지막 부활 미달 사유(관측 전용 · fresh 강등 줄·저널에 싣는다)
     while need and attempt <= SPAWN_RETRIES:
         need = _drop_tombstoned(need, "resume %d회차" % attempt)
         if not need:
@@ -3831,6 +3864,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                     mark_stage(j, role, "spawn", True, "cys restore → %s (attempt %d)" % (ref, attempt))
                 else:
                     still.append(role)
+                    # ★(1.1.18 · cysr-1118u-debug) 판정은 위 그대로 — 왜 부활로 안 셌는지만 남긴다(로그 = phoenix-restore.log 전문 · 저널 = 300자).
+                    miss_why[role] = "attempt %d · %s" % (attempt, spawn_miss_reason(
+                        role, _failed_now, live2.get(role, []), res.get("restore_role_lines"), res.get("rc")))
+                    jevent(j, role, "spawn", "miss", "부활 미달 " + miss_why[role])
+                    log("★부활 미달 사유 %s: %s" % (role, miss_why[role]))
         if not still:
             need = []
             break
@@ -3995,10 +4033,15 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 rr.pop("fresh_held", None)          # (master#26ff3e1f ②) 부활했다 — 지난 회차 보류 표식을 지운다
                 # ★F-1(0.14.31): 세션 부재 예상과 독약 강등을 구분한다.
                 rr["fresh_reason"] = "poison"
+                if role in miss_why:
+                    rr["poison_why"] = miss_why[role][:600]  # ★(1.1.18 · cysr-1118u-debug) 강등 까닭(마지막 부활 미달 사유 · 관측 전용)
+                else:
+                    rr.pop("poison_why", None)               # 앞 실행의 까닭을 이번 강등에 붙이지 않는다
                 mark_stage(j, role, "spawn", True, "★fresh 강등(독약 세션): " + msg)
                 jevent(j, role, "spawn", "fresh_fallback",
                        "resume %d회 소진→fresh 강등(무 resume 재기동): %s" % (SPAWN_RETRIES, msg))
-                log("★독약 세션 fresh 강등: role=%s → %s (resume 불가 → 무 resume 부활)" % (role, ref))
+                log("★독약 세션 fresh 강등: role=%s → %s (resume 불가 → 무 resume 부활) · 까닭: %s"
+                    % (role, ref, miss_why.get(role, "(이번 실행의 resume 회차 사유 없음 — 강제 fresh·stub·앞 실행)")))
             else:
                 fresh_still.append(role)
                 jevent(j, role, "spawn", "fail", "fresh 강등도 실패: %s" % msg)
@@ -4111,6 +4154,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 outcome = "fresh"
                 reason = ("★독약 세션 fresh 강등(원 세션 %r unresumable → 무 resume 새 세션 %r·디렉티브/원장 재주입). "
                           "정직: 세션 보존 아님·의도적 전환(fork/오복원 아님·roster 부활 완료)" % (exp, obs))
+                if j["roles"][role].get("poison_why"):
+                    reason += " · 강등 까닭: " + j["roles"][role]["poison_why"]  # ★(1.1.18 · cysr-1118u-debug) 관측 전용
             elif fresh_exp:
                 # ★F-1(0.14.31 · 리뷰 R1 · codex BLOCK): 예상은 결과가 아니다 — 'fresh' 는 **이 기동의 각성 증거**
                 #   (관문 통과 gate_pending=null ∧ agent_alive ∧ reinject ack|injected)가 전부 있을 때만. 관문에 갇힌
@@ -4261,6 +4306,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         honesty += (" ★fresh 강등 역할=%s: 원 세션이 독약(resume 불가)이라 무 resume 로 새 세션을 기동하고 "
                     "디렉티브/원장을 재주입했다(세션 보존 실패를 정직히 밝힘 — roster 는 부활 완료). "
                     "독약 세션이 무한 재시도로 roster 를 막지 않게 유한 강등했다(§15·DRILL_LIVE_4)." % poison_roles)
+        # ★(1.1.18 · cysr-1118u-debug) 왜 resume 을 버렸는가 — 마지막 부활 미달 사유(관측 전용 · 없으면 싣지 않는다).
+        _poison_whys = {r: (j["roles"].get(r) or {}).get("poison_why") for r in poison_roles}
+        _poison_whys = {r: w[:300] for r, w in _poison_whys.items() if w}
+        if _poison_whys:
+            honesty += " 강등 까닭=%s." % json.dumps(_poison_whys, ensure_ascii=False)
     # ★F-1(0.14.31): 세션 부재로 예상된 fresh 각성은 세션 보존 실패가 아니다.
     if f1_roles:
         honesty += (" ★F-1 fresh 각성 역할=%s: 세션이 없어 fresh 로 각성했다(전문 디렉티브+[RESTORE] · 관문 통과·"

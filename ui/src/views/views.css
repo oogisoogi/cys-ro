@@ -34,6 +34,12 @@
 .cv-health[data-health="ready"] { color: var(--cv-accent); }
 .cv-confirms:not([data-count="0"]):not([data-count=""]) { color: var(--cv-attn); }
 .cv-errors:not([data-count="0"]) { color: var(--cv-err); }
+/* (TICKET=cysr-1118u-chat ①) 계정 한도 줄 — 계정마다 한 덩이(덩이 안 줄바꿈 0 · 덩이 사이는 접힘 = 좁은 창에서도 글자 중간 잘림 0) · 60/80 문턱 = 상황판과 같음 */
+.cv-limits { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 18px; color: var(--cv-sub); min-width: 0; }
+.cv-limit { display: inline-flex; gap: .4em; white-space: nowrap; }
+.cv-limit-name { max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
+.cv-limit.warn .cv-limit-text { color: var(--cv-wait); }
+.cv-limit.crit .cv-limit-text { color: var(--cv-err); }
 
 .cv-log { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 12px 0; display: flex; flex-direction: column; gap: 12px; }
 .cv-empty { color: var(--cv-sub); }

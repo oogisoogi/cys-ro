@@ -25,6 +25,12 @@ export const HOLD_MAX = 20;
 export const LOG_MAX = 200;
 /** 대화 화면이 켜져 있을 때 마스터 상태 조회 주기(작업 화면 3초 고리와 같은 박자 · 조각 2 에서 한 벌로 합침 📌). */
 export const POLL_MS = 3_000;
+/** (TICKET=cysr-1118u-chat ②) 자동으로 나갈 붙잡은 말이 문턱을 기다리는 동안의 가벼운 재조회 박자(대화 화면 1초 시계).
+ *  윈 1.1.17 실측(v2): 쉬는 중 도착 2.6~3.5s / 5.4~5.8s 양분 · 도착 초 mod 3 = 1 · 답 끝 뒤 도착 15.7s — 붙잡힌 말이 POLL_MS(3초) 틱에서만 풀렸다.
+ *  가벼운 재조회 = 상태 조회(feed_list·org_status) → 문턱 → 통과면 그 말 1건만(메뉴바·결과·세션 기록 읽기 0). 상태 확인 늦음 계열(slowHeld)은 3초 그대로(느린 연결에 조회를 쌓지 않게). */
+export const FAST_POLL_MS = 1_000;
+/** 1초 시계가 조금 일찍 불려도(타이머 흔들림) 박자를 한 칸 놓치지 않게 두는 여유. */
+const TICK_SLOP_MS = 100;
 /** 쓰기 직전 입력줄 관측(org.status 왕복)의 유효 상한(설계 목표값) — 넘으면 그 관측으로 쓰지 않는다(0.5 M12: 데몬 몫 < 1ms). */
 export const OBS_MAX_MS = 500;
 /** (TICKET=cysr-chat-held-win · ⓐ) 관측 기반 상한의 천장 — 상한 = clamp(최근 왕복 최대 × OBS_RTT_FACTOR, OBS_MAX_MS, OBS_CAP_MS).
@@ -139,6 +145,16 @@ export interface Deps {
   listenApp?(name: string, handler: (e: { payload: unknown }) => void): Promise<() => void>;
   /** (조각 5 · codex 1R major) 앱 수명 전체의 복원 진행 중 여부(main.ts briefGate) */
   restoring?(): boolean;
+  /** (TICKET=cysr-1118u-chat ①) 계정 한도 줄(main.ts 상황판과 같은 판정 statusboard.chatLimitRows · 작업 화면 15초 캐시) — 없으면 줄 없음 · 새 조회 0. */
+  limits?(): readonly LimitView[];
+}
+
+/** (TICKET=cysr-1118u-chat ①) 대화 화면 머리 한도 줄 하나 — name = null 이면 계정 하나(이름 없이 한 줄). 이메일 0(별명·폴더 라벨). */
+export interface LimitView {
+  name: string | null;
+  pct: number;
+  line: string;
+  title: string;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";
@@ -195,6 +211,11 @@ export class ChatCore {
   /** 진행 중인 쓰기(원자 제출 1건) — 겹쳐 쓰지 않는다(클릭 1 → 호출 ≤ 1). */
   private writing = false;
   private polling = false;
+  /** (TICKET=cysr-1118u-chat ②) 마지막 온전한 조회 시작 시각 · 마지막 조회(가벼운 것 포함) 시작 시각. */
+  private lastFullPollStart: number | null = null;
+  private lastAnyPollStart: number | null = null;
+  /** (codex 1R major) 마지막 상태 재조회(freshBounded)가 시간 상한을 넘겼는가 — 참이면 1초 재조회를 쉬고 3초 박자로(다음 조회가 제때 끝나면 풀림). */
+  private lastFreshTimedOut = false;
   private offset: number | null = null;
   private sessionId: string | null = null;
   /** 이 결속 세션에서 이미 근거로 쓴 레코드 uuid — 말 목록 정리와 무관하게 유지 · 세션이 바뀌면 비움(codex 2R major). */
@@ -270,6 +291,15 @@ export class ChatCore {
 
   get state(): ChatState {
     return this.s;
+  }
+
+  /** (TICKET=cysr-1118u-chat ①) 지금 계정 한도 줄 — 원천이 없거나 던지면 빈 목록(줄을 그리지 않음). */
+  limits(): readonly LimitView[] {
+    try {
+      return this.d.limits?.() ?? [];
+    } catch {
+      return [];
+    }
   }
 
   subscribe(fn: Listener): () => void {
@@ -600,6 +630,7 @@ export class ChatCore {
    *  넘으면 모름(마스터 undefined · 승인 대기 null → 문턱이 붙잡음 · 쓰기 0) + timedOut 표지. 늦게 온 답은 버린다. */
   private async freshBounded(): Promise<{ master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; timedOut?: boolean; feed?: unknown; org?: unknown }> {
     const r = await this.bounded(this.fetchFresh(), this.limitFor(2));
+    this.lastFreshTimedOut = r === TIMED_OUT; // (TICKET=cysr-1118u-chat ② · codex 1R major) 늦은 연결 = 1초 재조회 멈춤(끝나지 않은 조회를 매초 쌓지 않게)
     return r === TIMED_OUT ? { master: undefined, approvals: null, obsAt: this.d.now(), timedOut: true } : r;
   }
 
@@ -876,12 +907,52 @@ export class ChatCore {
     if (!g.ok) this.patchMsg(first.id, { code: g.code, note: g.msg, slowHolds: undefined });
   }
 
-  /** 대화 화면이 켜져 있을 때 POLL_MS 마다. 붙잡은 말이 있고 문턱이 열렸으면 오래된 것 1건을 보낸다(그 안에서 다시 재조회). */
+  /** (TICKET=cysr-1118u-chat ②) 1초 문턱 재조회가 필요한가 — 대화 화면 · 쓰는 중 아님 · 자동으로 나갈 붙잡은 말(쉼 끝 · 상태 확인 늦음 계열 아님)이 있을 때만. */
+  private fastWanted(now: number): boolean {
+    if (this.watchOnly || this.writing || this.lastFreshTimedOut) return false;
+    const first = this.s.msgs.find(autoHeld); // pump·poll 과 같은 「가장 오래된 하나」 — 그 말이 쉼 중이면 뒤 말도 못 나간다
+    return !!first && !slowHeld(first) && (first.notBefore === undefined || now >= first.notBefore);
+  }
+
+  /** (TICKET=cysr-1118u-chat ②) 대화 화면 1초 시계 — POLL_MS 마다 온전한 조회 · 그 사이엔 붙잡은 말이 문턱을 기다릴 때만 가벼운 조회(FAST_POLL_MS 박자). */
+  pollTick(): void {
+    const now = this.d.now();
+    if (this.lastFullPollStart === null || now - this.lastFullPollStart >= POLL_MS - TICK_SLOP_MS) {
+      void this.poll();
+      return;
+    }
+    if (this.polling || !this.fastWanted(now)) return;
+    if (this.lastAnyPollStart !== null && now - this.lastAnyPollStart < FAST_POLL_MS - TICK_SLOP_MS) return;
+    void this.heldPoll();
+  }
+
+  /** (TICKET=cysr-1118u-chat ②) 가벼운 조회 = 상태 조회 → 단계 갱신 → 문턱 → 통과면 가장 오래된 자동 말 1건(poll 과 같은 규칙 · 쓰기 직전 재조회는 deliver 안에서 그대로).
+   *  메뉴바·결과·표식 훑기·세션 기록 읽기 0 · 활동 바뀜 기준값(lastWorking·lastPollAt)도 건드리지 않는다(온전한 조회의 기록 읽기 계기가 그대로). */
+  private async heldPoll(): Promise<void> {
+    if (this.polling) return;
+    this.polling = true;
+    this.lastAnyPollStart = this.d.now();
+    let heldId: string | null = null;
+    try {
+      const fresh = await this.freshBounded();
+      this.applyFresh(fresh);
+      this.reviewSlowHeld(fresh);
+      this.markStale();
+      const held = this.s.msgs.find(autoHeld);
+      if (!this.watchOnly && held && (held.notBefore === undefined || this.d.now() >= held.notBefore) && this.gateOf(fresh).ok) heldId = held.id;
+    } finally {
+      this.polling = false;
+    }
+    if (heldId !== null) await this.deliver(heldId);
+  }
+
+  /** 대화 화면이 켜져 있을 때 POLL_MS 마다(그 사이 붙잡은 말 문턱 재조회 = pollTick·heldPoll). 붙잡은 말이 있고 문턱이 열렸으면 오래된 것 1건을 보낸다(그 안에서 다시 재조회). */
   async poll(): Promise<void> {
     // (조각 3 · 하네스 seed 49) 쓰는 중에도 조회·단계 갱신은 한다 — 응답이 걸린 보내기(수 초) 동안 다른 말의 「답함」·「오래 걸려요」가 멈추지 않게.
     //   보내기는 deliver 가 쓰는 중이면 바로 돌아간다(겹쳐 쓰기 0 · 클릭 1 → 호출 ≤ 1).
     if (this.polling) return;
     this.polling = true;
+    this.lastFullPollStart = this.lastAnyPollStart = this.d.now(); // (TICKET=cysr-1118u-chat ②) pollTick 박자 기준
     let heldId: string | null = null;
     try {
       const fresh = await this.freshBounded(); // (조각 3 고침 · 검증 지적 F) 멈춘 데몬에 조회 고리가 묶이지 않게

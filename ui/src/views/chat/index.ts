@@ -4,7 +4,7 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { DUP, dupPending, errorCount, HEALTH_LABEL, lastSendStep, logOrder, needsClick, POLL_MS, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
+import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
 import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
@@ -40,7 +40,11 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       if (!e.isTrusted) return;
       act.rail.toggleGuide();
     });
-    head.append(health, confirms, errors, guideBtn);
+    // (TICKET=cysr-1118u-chat ①) 계정 한도 줄 — 작업 화면 상황판과 같은 값(act.limits · 새 조회 0) · 없으면 숨김.
+    const limits = el("div", "cv-limits");
+    limits.setAttribute("aria-label", "토큰 사용 한도");
+    limits.hidden = true;
+    head.append(health, confirms, errors, limits, guideBtn);
 
     const log = el("ol", "cv-log");
     log.setAttribute("aria-label", "대화");
@@ -204,6 +208,25 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       return li;
     };
 
+    // (TICKET=cysr-1118u-chat ①) 한도 줄 — 값이 바뀔 때만 다시 그린다(원천 = 작업 화면 15초 캐시 · 여기서는 5초마다 들여다봄 · 조회 0).
+    let limitSig = "";
+    const paintLimits = () => {
+      const rows = act.limits();
+      const sig = JSON.stringify(rows);
+      if (sig === limitSig) return;
+      limitSig = sig;
+      limits.replaceChildren();
+      limits.hidden = rows.length === 0;
+      for (const r of rows) {
+        const row = el("span", `cv-limit${r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`);
+        row.title = r.title;
+        row.append(el("span", "cv-limit-name", r.name ?? "7일 한도"), el("span", "cv-limit-text", r.line));
+        limits.append(row);
+      }
+    };
+    paintLimits();
+    ctx.timers.every(5_000, paintLimits);
+
     let lastRev = -1;
     const paint = (s: ChatState) => {
       if (s.rev === lastRev) return;
@@ -250,7 +273,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     paint(act.state);
     act.attach();
     void act.poll();
-    ctx.timers.every(POLL_MS, () => void act.poll());
+    ctx.timers.every(FAST_POLL_MS, () => act.pollTick()); // (TICKET=cysr-1118u-chat ②) 1초 시계 — 온전한 조회는 POLL_MS 그대로 · 붙잡은 말이 기다릴 때만 그 사이 문턱 재조회
     // 이 자리는 아직 숨겨져 있다(registry 가 옛 화면을 내리며 같은 전환 안에서 보이게 함) — 숨은 요소엔 포커스가 안 들어가므로 전환 끝에 준다.
     queueMicrotask(() => {
       if (root.isConnected) input.focus();

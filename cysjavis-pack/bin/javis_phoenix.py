@@ -398,6 +398,18 @@ def fresh_expected(entry):
     return False, ""
 
 
+def fresh_expected_evidence(entry, fe, why):
+    """★(1.1.18 · cysr-1118u-debug) fresh_expected 의 판정 근거 1줄(순수 · 관측 전용 — 판정은 fresh_expected 그대로).
+    입력(session_id·cwd·claude_config_dir·seat_profile) · 확인한 세션 파일 경로 · 그 순간 실재 여부 · 프로젝트 폴더 실재 여부."""
+    sid = entry.get("session_id")
+    pdir = _session_project_dir(entry)
+    path = ("%s/%s.jsonl" % (pdir, sid)) if (pdir is not None and isinstance(sid, str) and sid.strip()) else None
+    return ("예상=%s(%s) · session_id=%r · cwd=%r · claude_config_dir=%r · seat_profile=%r · 확인 경로=%r · 실재=%s · 폴더 실재=%s"
+            % ("fresh" if fe else "resume", why or "-", sid, entry.get("cwd"), entry.get("claude_config_dir"),
+               entry.get("seat_profile"), path, (os.path.exists(path) if path else None),
+               (os.path.isdir(pdir) if pdir is not None else None)))
+
+
 # ★F-1(리뷰 R1b · codex major): fresh 는 **세션에 대한 주장**이라 세션 증거가 필요하다. 스폰 **전** 그 좌석의 프로젝트
 #   디렉터리에 이미 있던 세션 파일 stem 들을 재고로 찍어 두고, 관측된(좌석 결속) 세션이 그 재고에 **없고** 지금
 #   파일이 **있으면** 새 세션이다. 재고에 있으면 기존 대화 재개(fork · 타 역할 세션일 수 있음) 의심이다.
@@ -2091,7 +2103,98 @@ def _ps_table():
     return table or None
 
 
-def agent_process_verdict(shell_pid, agent, table):
+_AGENT_NODE_ENTRY_SUFFIXES = ("/@anthropic-ai/claude-code/cli.js", "/@openai/codex/bin/codex.js", "/@google/gemini-cli/dist/index.js")
+
+
+def _argv_words(cmdline):
+    """명령줄 → 낱말(큰따옴표로 묶인 경로 · 역슬래시 보존 · shlex 의 POSIX 이스케이프 해석 없음)."""
+    out, cur, q = [], "", False
+    for ch in cmdline or "":
+        if ch == '"':
+            q = not q
+        elif ch.isspace() and not q:
+            if cur:
+                out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
+
+# ★(1.1.18 · 독립 검증 2390 REVISE ②) node/bun 이 스크립트를 **실행하지 않는** 옵션(구문 검사·인라인 평가·출력) — 있으면 에이전트 아님.
+_NODE_NON_EXEC_OPTS = ("-c", "--check", "-e", "--eval", "-p", "--print")
+# 값을 **다음 낱말로** 받는 옵션 — 그 값을 스크립트로 오해하지 않게 함께 건너뛴다(`--opt=값` 꼴은 한 낱말이라 해당 없음).
+_NODE_VALUE_OPTS = ("-r", "--require", "--import", "--loader", "--experimental-loader", "--title", "-C", "--conditions",
+                    "--env-file", "--input-type", "--inspect-port", "--redirect-warnings", "--watch-path", "--icu-data-dir",
+                    "--openssl-config", "--diagnostic-dir", "--report-dir", "--unhandled-rejections")
+
+
+def _node_entry_script(args):
+    """node/bun 뒤 낱말들 → 실행할 진입 스크립트(없거나 실행 안 하는 옵션이면 None) · 순수."""
+    skip = False
+    for i, w in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if w == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if w.startswith("-") and len(w) > 1:
+            name = w.split("=", 1)[0]
+            if name in _NODE_NON_EXEC_OPTS or (not w.startswith("--") and set(w[1:]) & {"c", "e", "p"}):
+                return None
+            if name in _NODE_VALUE_OPTS and "=" not in w:
+                skip = True
+            continue
+        if w == "run" and i == 0:
+            continue  # `bun run <script>`
+        return w
+    return None
+
+
+def _self_is_agent(cmdline, tokens, self_exe=None):
+    """좌석 pid 자신의 명령줄이 에이전트 프로세스인가(순수). True = 실행 파일 basename ∈ tokens 이거나, node/bun 이고
+    진입 스크립트(_node_entry_script)가 알려진 에이전트 진입점(_AGENT_NODE_ENTRY_SUFFIXES)일 때.
+    ★(독립 검증 2390 REVISE ①) 대소문자: 데몬 `cmdline_matches_agent`(governance.rs)와 같게 — `.exe` 를 **실제로 뗀** 토큰만
+      대소문자 무시, 그 밖은 정확 비교(맥 `/Applications/Claude.app/…/Claude` 데스크톱 앱이 claude 로 뭉개지지 않게).
+    ★(REVISE ③) 공백 경로: 맥 `ps args` 는 공백을 따옴표로 묶지 않아 실행 파일 경계를 잃는다 — 호출부가 그 좌석 pid 하나의
+      `ps -o comm=`(마지막 열 = 공백 보존)를 `self_exe` 로 넘기면 그것이 실행 파일이다. 없으면(윈 · 표 대역) 둘째 낱말이 옵션이
+      아닌 경로(`/` 포함)일 때 경계가 모호하다 → 자기 판정을 하지 않는다(dead 쪽 = 종전 동작 · 공백 경로 CLI 는 거짓 dead 로 남음)."""
+    words = _argv_words(cmdline)
+    if self_exe:
+        rest = cmdline[len(self_exe):] if (cmdline or "").startswith(self_exe) else " ".join(words[1:])
+        exe_path, args, bounded = self_exe, _argv_words(rest), True
+    elif words:
+        exe_path, args, bounded = words[0], words[1:], not (len(words) > 1 and not words[1].startswith("-") and "/" in words[1])
+    else:
+        return False
+    raw = exe_path.replace("\\", "/").rsplit("/", 1)[-1]
+    win = raw.lower().endswith(".exe")
+    exe = raw[:-4].lower() if win else raw
+    if exe in tokens and bounded:
+        return True
+    if exe in ("node", "bun"):
+        script = _node_entry_script(args) or ""
+        script = script.replace("\\", "/")
+        return (script.lower() if win else script).endswith(_AGENT_NODE_ENTRY_SUFFIXES)
+    return False
+
+
+def _ps_comm(pid):
+    """★(1.1.18 · 독립 검증 2390 REVISE ③) 좌석 pid 하나의 실행 경로 — `ps -o comm= -p <pid>`(comm 이 마지막이자 유일한 열이라
+    공백 경로가 온전하다 · 뒤에 열이 있으면 잘린다). Windows·실패·빈 출력 = None(호출부는 args 첫 낱말로 내려간다)."""
+    if os.name == "nt" or not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        r = _run_decoded(["ps", "-o", "comm=", "-p", str(pid)], _dec_any, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip("\r\n") if r.returncode == 0 else ""
+    return out.strip() or None
+
+
+def agent_process_verdict(shell_pid, agent, table, self_exe=None):
     """순수 판정: 좌석 셸(shell_pid)의 자손 중 에이전트 프로세스가 있는가 → 'alive'|'dead'|'unknown'.
     unknown = 표 없음·셸 pid 미상·셸이 표에 없음(이미 exited 축 소관). 자손의 인자 문자열에 에이전트
     토큰(AGENT_PROC_TOKENS + 로스터 agent 이름)이 들어 있으면 alive — `node …/claude-code/cli.js` 형태 포함."""
@@ -2100,6 +2203,12 @@ def agent_process_verdict(shell_pid, agent, table):
     tokens = set(AGENT_PROC_TOKENS)
     if agent:
         tokens.add(str(agent).lower())
+    # ★(1.1.18 · cysr-1118u-debug · master#2c028362 후보 · 따로 되돌릴 수 있는 커밋) 좌석 pid **자신**이 에이전트인 꼴 — 설치기 wake.sh(`bash wake.sh` → `exec claude`)처럼
+    #   셸이 에이전트로 바뀐 좌석은 자손이 0 이라 종전엔 dead(같은 대화인데 UNVERIFIED · 다음 회차 재대상)였다. 인자 부분 문자열이 아니라
+    #   **실행 파일**(argv[0] basename) 또는 node/bun 의 **진입 스크립트**(옵션 다음 첫 인자)가 알려진 에이전트 진입점일 때만 alive
+    #   — `zsh -c 'claude …; exec zsh'`(claude 죽음) · `node /tmp/claude-monitor.js` · `node --require=/tmp/claude-x.js a.js` 는 dead 유지(codex 1R).
+    if _self_is_agent((table.get(shell_pid) or (None, ""))[1], tokens, self_exe):
+        return "alive"
     children = {}
     for pid, (ppid, _args) in table.items():
         children.setdefault(ppid, []).append(pid)
@@ -2129,7 +2238,9 @@ def _surface_shell_pids(socket):
 
 def surface_agent_verdict(socket, surface, agent):
     """좌석 1개의 ps 축 판정(실측 1회) — 'alive'|'dead'|'unknown'."""
-    return agent_process_verdict(_surface_shell_pids(socket).get(surface), agent, _ps_table())
+    pid = _surface_shell_pids(socket).get(surface)
+    table = _ps_table()
+    return agent_process_verdict(pid, agent, table, _ps_comm(pid) if table else None)
 
 
 # ------------------------------------------------------------------ 저널
@@ -2540,6 +2651,37 @@ def log_restore_output(r):
             log("cys restore %s| %s" % (name, line))
 
 
+_RESTORE_ROLE_LINE_RE = re.compile(r"^(?:\[restore\] )?· (\S+): (.+)$", re.M)
+
+
+def restore_role_lines(text):
+    """★(1.1.18 · TICKET=cysr-1118u-debug) `cys restore` stdout+stderr 전량 → {역할: [그 역할의 「· 역할: …」 줄 원문, …]}(순수 · 관측 전용).
+    stdout 줄 + stderr 의 `[restore] · 역할: 기동 실패 rc=N`(cys.rs 가 판정 입력 밖으로 낸 rc) 둘 다. 저널 `out` 은 800자로 잘려 뒤쪽 역할의
+    줄이 빠진다 — 부활 미달 사유(spawn_miss_reason)는 자르기 **전** 원문에서 뽑는다. 판정 입력(`out`·`_failed_now`)은 건드리지 않는다."""
+    found = {}
+    for mm in _RESTORE_ROLE_LINE_RE.finditer(text or ""):
+        found.setdefault(mm.group(1), []).append(mm.group(0).strip())
+    return found
+
+
+def spawn_miss_reason(role, failed_now, rows, role_lines, rc):
+    """★(1.1.18 · TICKET=cysr-1118u-debug · 윈 실기 1.1.17 관찰 ③) 이번 resume 회차(`cys restore`)가 role 을 부활로 **세지 않은 까닭** 1줄
+    (순수 · 관측 전용 — 판정은 호출부 그대로). 종전엔 이 까닭이 어디에도 안 남아 「독약 강등」(Phase 11)이 왜 일어났는지
+    윈 phoenix-restore.log 로 가를 수 없었다(11-19·11-22·11-23 worker poison 반복 · debt-d 「기동 실패 줄 원문 확인 필요」).
+    ⓐ 이번 출력에 그 역할의 「기동 실패」 줄 ⓑ 그 역할 좌석이 없음 ⓒ 좌석은 있으나 부활 조건(exited=false ∧ agent_alive=True ∧ seat≠empty)
+    미달 — 좌석 사실을 그대로 싣는다. 뒤에 restore rc 와 그 역할의 `cys restore` 줄 원문(마지막 3줄)을 붙인다."""
+    if role in failed_now:
+        why = "cys restore 「기동 실패」"
+    elif not rows:
+        why = "역할 좌석 없음"
+    else:
+        why = "부활 조건 미달(%s)" % "; ".join(
+            "%s exited=%s agent_alive=%s seat=%s" % (s.get("surface"), s.get("exited"), s.get("agent_alive"), s.get("seat"))
+            for s in rows[:3])
+    own = (role_lines or {}).get(role) or []
+    return "%s · restore rc=%s · 원문: %s" % (why, rc, " | ".join(own[-3:]) if own else "(이 역할 줄 없음)")
+
+
 _LEASE_REFUSAL_RE = re.compile(
     r"^· (\S+): 대화 (\S+) (?:— (.+?) — 띄우지 않음|작성자 생존 판정 불가\((.+?)\) — 띄우지 않음)", re.M)
 
@@ -2602,6 +2744,8 @@ def spawn_production(socket, pending_roles, include_master=False, cwd=None, unit
             "timeout_s": budget, "units": n, "stall_s": stall, "stalled": stalled,
             "out": (r.stdout or r.stderr or "").strip()[:800],
             "fresh_observed": sorted(cli_fresh_roles(streams)),
+            # ★(1.1.18 · cysr-1118u-debug) 역할별 「· 역할: …」 줄도 절단 **전** stdout 전량에서 — 부활 미달 사유의 원문.
+            "restore_role_lines": restore_role_lines(streams),
             # ★seatkeep-t1(codex 1R M1): 대화 임대 거절 줄도 `out` 800자 절단 **전** 전량에서 뽑는다.
             "lease_refused": _lease_refusals(streams)}
 
@@ -3441,8 +3585,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             if aa is True:
                 return "alive"
             return "unknown"
-        v = agent_process_verdict(_ps_cache["p"].get(surface),
-                                  entries.get(role, {}).get("agent", "claude"), _ps_cache["t"])
+        _pid = _ps_cache["p"].get(surface)
+        v = agent_process_verdict(_pid, entries.get(role, {}).get("agent", "claude"), _ps_cache["t"], _ps_comm(_pid))
         if v == "dead":
             log("★ps 축: role=%s %s 좌석 셸 아래 에이전트 프로세스 부재 — 생존 아님(부활 대상)" % (role, surface))
         return "dead" if v == "dead" else "alive"
@@ -3711,6 +3855,7 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #   topology 를 읽으므로 단위가 준다). 한 번이라도 상한에 걸리면(rc=124) 이후 회차는 종전 90s(행 의심).
     _units_view = live
     _restore_hang = False
+    miss_why = {}  # ★(1.1.18 · cysr-1118u-debug) 역할 → 마지막 부활 미달 사유(관측 전용 · fresh 강등 줄·저널에 싣는다)
     while need and attempt <= SPAWN_RETRIES:
         need = _drop_tombstoned(need, "resume %d회차" % attempt)
         if not need:
@@ -3751,6 +3896,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 fe, why = fresh_expected(e)
                 pre_dir, pre_sids = session_inventory(e)
                 fresh_pre[role] = (why, pre_dir, pre_sids, bool(fe))
+                # ★(1.1.18 · cysr-1118u-debug · 윈 관찰 ④) 예상의 근거를 로그에 — 윈 실측(11-23): 세션 파일이 실재하고 CLI 는 「resume 생략」 0회로
+                #   resume 했는데 phoenix 예상만 no_session_file 이었다. 그 순간 무엇을 봤는지(입력·확인한 경로·실재)가 없어 원인을 못 갈랐다(관측 전용).
+                log("F-1 예상 근거 %s: %s" % (role, fresh_expected_evidence(e, fe, why)))
                 # ★리뷰 R3b(codex major): 어댑터 선언을 **읽었는가**(effective/no_effect) vs **못 읽었는가**
                 #   (unknown). 미상은 뒤의 topology 축이 verified 를 내지 못하게 하는 제약이다 —
                 #   결측은 값이 아니다(미상을 '재개했다' 로 읽으면 거짓 verified 가 된다).
@@ -3828,9 +3976,15 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                         jevent(j, role, "spawn", "fresh_expected",
                                "★fresh 각성 예상(F-1·%s): 이어받을 세션 없음 → cys restore 는 무 resume·전문 디렉티브+[RESTORE] 로 기동 — 각성 확정은 verify 의 증거(관문 통과 ∧ 이 기동의 주입 ∧ 좌석 결속 새 세션)로만 · 스폰 전 재고=%s" % (why, "판정불가" if pre_sids is None else len(pre_sids)))
                         log("★F-1 fresh 예상(expected · 결과 아님): role=%s reason=%s → %s" % (role, why, ref))
+                    j["roles"][role].pop("poison_why", None)  # ★(1.1.18 · cysr-1118u-debug) 이번엔 resume 로 섰다 — 앞 강등 까닭을 새 verify 에 붙이지 않는다(codex 1R minor)
                     mark_stage(j, role, "spawn", True, "cys restore → %s (attempt %d)" % (ref, attempt))
                 else:
                     still.append(role)
+                    # ★(1.1.18 · cysr-1118u-debug) 판정은 위 그대로 — 왜 부활로 안 셌는지만 남긴다(로그 = phoenix-restore.log 전문 · 저널 = 300자).
+                    miss_why[role] = "attempt %d · %s" % (attempt, spawn_miss_reason(
+                        role, _failed_now, live2.get(role, []), res.get("restore_role_lines"), res.get("rc")))
+                    jevent(j, role, "spawn", "miss", "부활 미달 " + miss_why[role])
+                    log("★부활 미달 사유 %s: %s" % (role, miss_why[role]))
         if not still:
             need = []
             break
@@ -3995,10 +4149,15 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 rr.pop("fresh_held", None)          # (master#26ff3e1f ②) 부활했다 — 지난 회차 보류 표식을 지운다
                 # ★F-1(0.14.31): 세션 부재 예상과 독약 강등을 구분한다.
                 rr["fresh_reason"] = "poison"
+                if role in miss_why:
+                    rr["poison_why"] = miss_why[role][:600]  # ★(1.1.18 · cysr-1118u-debug) 강등 까닭(마지막 부활 미달 사유 · 관측 전용)
+                else:
+                    rr.pop("poison_why", None)               # 앞 실행의 까닭을 이번 강등에 붙이지 않는다
                 mark_stage(j, role, "spawn", True, "★fresh 강등(독약 세션): " + msg)
                 jevent(j, role, "spawn", "fresh_fallback",
                        "resume %d회 소진→fresh 강등(무 resume 재기동): %s" % (SPAWN_RETRIES, msg))
-                log("★독약 세션 fresh 강등: role=%s → %s (resume 불가 → 무 resume 부활)" % (role, ref))
+                log("★독약 세션 fresh 강등: role=%s → %s (resume 불가 → 무 resume 부활) · 까닭: %s"
+                    % (role, ref, miss_why.get(role, "(이번 실행의 resume 회차 사유 없음 — 강제 fresh·stub·앞 실행)")))
             else:
                 fresh_still.append(role)
                 jevent(j, role, "spawn", "fail", "fresh 강등도 실패: %s" % msg)
@@ -4111,6 +4270,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 outcome = "fresh"
                 reason = ("★독약 세션 fresh 강등(원 세션 %r unresumable → 무 resume 새 세션 %r·디렉티브/원장 재주입). "
                           "정직: 세션 보존 아님·의도적 전환(fork/오복원 아님·roster 부활 완료)" % (exp, obs))
+                _pw = j["roles"][role].get("poison_why")
+                if isinstance(_pw, str) and _pw:
+                    reason += " · 강등 까닭: " + _pw  # ★(1.1.18 · cysr-1118u-debug) 관측 전용 · 문자열만(손상 저널 값으로 죽지 않게)
             elif fresh_exp:
                 # ★F-1(0.14.31 · 리뷰 R1 · codex BLOCK): 예상은 결과가 아니다 — 'fresh' 는 **이 기동의 각성 증거**
                 #   (관문 통과 gate_pending=null ∧ agent_alive ∧ reinject ack|injected)가 전부 있을 때만. 관문에 갇힌
@@ -4173,6 +4335,9 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             mark_stage(j, role, "verify", verify_done,
                        "M9: expected=%r observed=%r → %s (%s)" % (exp, obs, outcome, reason))
             jevent(j, role, "verify", outcome, "expected=%r observed=%r [%s]" % (exp, obs, reason))
+            # ★(1.1.18 · TICKET=cysr-1118u-debug · 윈 관찰 ④) 판정 사유를 로그(phoenix-restore.log)에도 — 종전엔 저널에만 있어 윈 실기에서
+            #   「4 좌석이 다 원 대화로 떴는데 UNVERIFIED」 의 까닭을 로그로 못 갈랐다(관측 전용 · 판정 그대로).
+            log("M9 verify %s: expected=%r observed=%r → %s (%s)" % (role, exp, obs, outcome, reason))
             save_journal(socket, ticket, j)
             if f1_retry and f1_pass + 1 < F1_REVERIFY_PASSES:
                 jevent(j, role, "verify", "reobserve",
@@ -4261,6 +4426,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
         honesty += (" ★fresh 강등 역할=%s: 원 세션이 독약(resume 불가)이라 무 resume 로 새 세션을 기동하고 "
                     "디렉티브/원장을 재주입했다(세션 보존 실패를 정직히 밝힘 — roster 는 부활 완료). "
                     "독약 세션이 무한 재시도로 roster 를 막지 않게 유한 강등했다(§15·DRILL_LIVE_4)." % poison_roles)
+        # ★(1.1.18 · cysr-1118u-debug) 왜 resume 을 버렸는가 — 마지막 부활 미달 사유(관측 전용 · 없으면 싣지 않는다).
+        _poison_whys = {r: (j["roles"].get(r) or {}).get("poison_why") for r in poison_roles}
+        _poison_whys = {r: w[:300] for r, w in _poison_whys.items() if isinstance(w, str) and w}
+        if _poison_whys:
+            honesty += " 강등 까닭=%s." % json.dumps(_poison_whys, ensure_ascii=False)
     # ★F-1(0.14.31): 세션 부재로 예상된 fresh 각성은 세션 보존 실패가 아니다.
     if f1_roles:
         honesty += (" ★F-1 fresh 각성 역할=%s: 세션이 없어 fresh 로 각성했다(전문 디렉티브+[RESTORE] · 관문 통과·"

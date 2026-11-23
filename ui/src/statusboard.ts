@@ -116,6 +116,19 @@ export function accountLimitRows(accounts: readonly AccountLike[] | null | undef
   });
 }
 
+/** (TICKET=cysr-1118u-chat ①) 대화 화면 머리의 한도 줄 — 작업 화면 상황판(paintBoard)과 **같은 판정**:
+ *  계정 둘 이상 = accountLimitRows 그대로(계정마다 이름 + 「% · 요일 시각」) · 하나 이하 = limitLine 한 줄(이름 없음 · 전문 = limitTitle).
+ *  7d 관측이 없으면 빈 목록(줄을 그리지 않음). 이름은 accountShortLabel(별명·폴더 라벨) = 이메일 0. 새 조회 0 — 작업 화면 15초 캐시를 그대로 받는다. */
+export function chatLimitRows(accounts: readonly AccountLike[] | null | undefined, nowSecs: number): { name: string | null; pct: number; line: string; title: string }[] {
+  const multi = accountLimitRows(accounts, nowSecs);
+  if (multi.length >= 2) return multi.map((r) => ({ name: r.name, pct: r.pct, line: r.line, title: r.title }));
+  const rows = accountRates([...(accounts ?? [])], nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
+  const line = limitLine(rows, nowSecs);
+  const pct = limitPct(rows);
+  if (line === null || pct === null) return [];
+  return [{ name: null, pct: Math.round(pct), line, title: limitTitle(rows, nowSecs) ?? line }];
+}
+
 export interface BoardPaintOpts {
   variant: Exclude<BoardVariant, "off">;
   limit: string | null;

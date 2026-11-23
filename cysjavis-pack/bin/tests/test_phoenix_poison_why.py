@@ -60,7 +60,7 @@ QUIET_OUT = "· master: claude 재기동…\nrestore 완료: 재기동 1 · 실�
 EMPTY_SEAT = {"surface": "surface:7", "pid": 70, "exited": False, "agent_alive": None, "seat": "empty"}
 
 
-def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False, observed="S-NEW", fresh_pred=(False, "")):
+def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False, observed="S-NEW", fresh_pred=(False, ""), cli_fresh=False):
     """죽은 master 1명 부활 1사이클(생산 경로 · 대역) — 반환 = (restore 수, fresh 수, 저널, 로그 줄, 결과)."""
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
@@ -96,7 +96,7 @@ def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False, observed
         # 실물 spawn_production 과 같은 키: out 은 stdout 800자 절단 · 역할 줄은 stdout+stderr 전량에서(수리 전 소스엔 이 키가 없다 = None)
         err = RC_ERR if FAIL_LINE in out else ""
         return {"rc": 0 if revive else 1, "out": out[:800], "restore_role_lines": m.restore_role_lines(out + "\n" + err)
-                if hasattr(m, "restore_role_lines") else None}
+                if hasattr(m, "restore_role_lines") else None, "fresh_observed": ["master"] if cli_fresh else []}
     m.spawn_production = _restore
     m.spawn_in_seat_production = lambda s, include_master=False, cwd=None, units=None: {"rc": 1, "out": "stub"}
 

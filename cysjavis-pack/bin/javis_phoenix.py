@@ -4149,6 +4149,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             if ref:
                 role_surface[role] = ref
                 rr = j["roles"].setdefault(role, {"stages": {}})
+                # ★(1.1.18 · cysr-1118u-debug · 독립 검증 2396 R1) 독약 강등 갈래도 앞 실행 fresh 표식을 먼저 지운다(아래가 이번 독약 표식을 세움) —
+                #   남으면 앞 실행 fresh_expected·fresh_pre_* 가 resume 관측(좌석 결속 + 낡은 재고) · ACK 관문 · fresh_expected_roles 집계를 오염시킨다.
+                for _stale in ("fresh_expected", "fresh_reason", "fresh_fallback", "fresh_pre_dir", "fresh_pre_sids", "fresh_evidence"):
+                    rr.pop(_stale, None)
                 rr["surface"] = ref
                 rr["expected_sid"] = exp            # 원 세션핀(독약) 보존 기록 — verify 에서 '보존 실패'로 정직 대조
                 rr["fresh_fallback"] = True          # ★정직: resumed→fresh 강등(세션 보존 포기·의도적 전환)

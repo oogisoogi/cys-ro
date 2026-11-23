@@ -2123,24 +2123,78 @@ def _argv_words(cmdline):
     return out
 
 
-def _self_is_agent(cmdline, tokens):
-    """좌석 pid 자신의 명령줄이 에이전트 프로세스인가(순수). 실행 파일 basename(.exe 뗌) ∈ tokens 이거나,
-    node/bun 이고 옵션(-…) 다음 첫 인자가 알려진 에이전트 진입 스크립트(_AGENT_NODE_ENTRY_SUFFIXES)일 때만 True."""
+# ★(1.1.18 · 독립 검증 2390 REVISE ②) node/bun 이 스크립트를 **실행하지 않는** 옵션(구문 검사·인라인 평가·출력) — 있으면 에이전트 아님.
+_NODE_NON_EXEC_OPTS = ("-c", "--check", "-e", "--eval", "-p", "--print")
+# 값을 **다음 낱말로** 받는 옵션 — 그 값을 스크립트로 오해하지 않게 함께 건너뛴다(`--opt=값` 꼴은 한 낱말이라 해당 없음).
+_NODE_VALUE_OPTS = ("-r", "--require", "--import", "--loader", "--experimental-loader", "--title", "-C", "--conditions",
+                    "--env-file", "--input-type", "--inspect-port", "--redirect-warnings", "--watch-path", "--icu-data-dir",
+                    "--openssl-config", "--diagnostic-dir", "--report-dir", "--unhandled-rejections")
+
+
+def _node_entry_script(args):
+    """node/bun 뒤 낱말들 → 실행할 진입 스크립트(없거나 실행 안 하는 옵션이면 None) · 순수."""
+    skip = False
+    for i, w in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if w == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if w.startswith("-") and len(w) > 1:
+            name = w.split("=", 1)[0]
+            if name in _NODE_NON_EXEC_OPTS or (not w.startswith("--") and set(w[1:]) & {"c", "e", "p"}):
+                return None
+            if name in _NODE_VALUE_OPTS and "=" not in w:
+                skip = True
+            continue
+        if w == "run" and i == 0:
+            continue  # `bun run <script>`
+        return w
+    return None
+
+
+def _self_is_agent(cmdline, tokens, self_exe=None):
+    """좌석 pid 자신의 명령줄이 에이전트 프로세스인가(순수). True = 실행 파일 basename ∈ tokens 이거나, node/bun 이고
+    진입 스크립트(_node_entry_script)가 알려진 에이전트 진입점(_AGENT_NODE_ENTRY_SUFFIXES)일 때.
+    ★(독립 검증 2390 REVISE ①) 대소문자: 데몬 `cmdline_matches_agent`(governance.rs)와 같게 — `.exe` 를 **실제로 뗀** 토큰만
+      대소문자 무시, 그 밖은 정확 비교(맥 `/Applications/Claude.app/…/Claude` 데스크톱 앱이 claude 로 뭉개지지 않게).
+    ★(REVISE ③) 공백 경로: 맥 `ps args` 는 공백을 따옴표로 묶지 않아 실행 파일 경계를 잃는다 — 호출부가 그 좌석 pid 하나의
+      `ps -o comm=`(마지막 열 = 공백 보존)를 `self_exe` 로 넘기면 그것이 실행 파일이다. 없으면(윈 · 표 대역) 둘째 낱말이 옵션이
+      아닌 경로(`/` 포함)일 때 경계가 모호하다 → 자기 판정을 하지 않는다(dead 쪽 = 종전 동작 · 공백 경로 CLI 는 거짓 dead 로 남음)."""
     words = _argv_words(cmdline)
-    if not words:
+    if self_exe:
+        rest = cmdline[len(self_exe):] if (cmdline or "").startswith(self_exe) else " ".join(words[1:])
+        exe_path, args, bounded = self_exe, _argv_words(rest), True
+    elif words:
+        exe_path, args, bounded = words[0], words[1:], not (len(words) > 1 and not words[1].startswith("-") and "/" in words[1])
+    else:
         return False
-    base = lambda w: w.replace("\\", "/").rsplit("/", 1)[-1].lower()  # noqa: E731
-    exe = base(words[0])
-    exe = exe[:-4] if exe.endswith(".exe") else exe
-    if exe in tokens:
+    raw = exe_path.replace("\\", "/").rsplit("/", 1)[-1]
+    win = raw.lower().endswith(".exe")
+    exe = raw[:-4].lower() if win else raw
+    if exe in tokens and bounded:
         return True
     if exe in ("node", "bun"):
-        script = next((w for w in words[1:] if not w.startswith("-")), "")
-        return script.replace("\\", "/").lower().endswith(_AGENT_NODE_ENTRY_SUFFIXES)
+        script = _node_entry_script(args) or ""
+        script = script.replace("\\", "/")
+        return (script.lower() if win else script).endswith(_AGENT_NODE_ENTRY_SUFFIXES)
     return False
 
 
-def agent_process_verdict(shell_pid, agent, table):
+def _ps_comm(pid):
+    """★(1.1.18 · 독립 검증 2390 REVISE ③) 좌석 pid 하나의 실행 경로 — `ps -o comm= -p <pid>`(comm 이 마지막이자 유일한 열이라
+    공백 경로가 온전하다 · 뒤에 열이 있으면 잘린다). Windows·실패·빈 출력 = None(호출부는 args 첫 낱말로 내려간다)."""
+    if os.name == "nt" or not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        r = _run_decoded(["ps", "-o", "comm=", "-p", str(pid)], _dec_any, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip("\r\n") if r.returncode == 0 else ""
+    return out.strip() or None
+
+
+def agent_process_verdict(shell_pid, agent, table, self_exe=None):
     """순수 판정: 좌석 셸(shell_pid)의 자손 중 에이전트 프로세스가 있는가 → 'alive'|'dead'|'unknown'.
     unknown = 표 없음·셸 pid 미상·셸이 표에 없음(이미 exited 축 소관). 자손의 인자 문자열에 에이전트
     토큰(AGENT_PROC_TOKENS + 로스터 agent 이름)이 들어 있으면 alive — `node …/claude-code/cli.js` 형태 포함."""
@@ -2153,7 +2207,7 @@ def agent_process_verdict(shell_pid, agent, table):
     #   셸이 에이전트로 바뀐 좌석은 자손이 0 이라 종전엔 dead(같은 대화인데 UNVERIFIED · 다음 회차 재대상)였다. 인자 부분 문자열이 아니라
     #   **실행 파일**(argv[0] basename) 또는 node/bun 의 **진입 스크립트**(옵션 다음 첫 인자)가 알려진 에이전트 진입점일 때만 alive
     #   — `zsh -c 'claude …; exec zsh'`(claude 죽음) · `node /tmp/claude-monitor.js` · `node --require=/tmp/claude-x.js a.js` 는 dead 유지(codex 1R).
-    if _self_is_agent((table.get(shell_pid) or (None, ""))[1], tokens):
+    if _self_is_agent((table.get(shell_pid) or (None, ""))[1], tokens, self_exe):
         return "alive"
     children = {}
     for pid, (ppid, _args) in table.items():
@@ -2184,7 +2238,9 @@ def _surface_shell_pids(socket):
 
 def surface_agent_verdict(socket, surface, agent):
     """좌석 1개의 ps 축 판정(실측 1회) — 'alive'|'dead'|'unknown'."""
-    return agent_process_verdict(_surface_shell_pids(socket).get(surface), agent, _ps_table())
+    pid = _surface_shell_pids(socket).get(surface)
+    table = _ps_table()
+    return agent_process_verdict(pid, agent, table, _ps_comm(pid) if table else None)
 
 
 # ------------------------------------------------------------------ 저널
@@ -3529,8 +3585,8 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
             if aa is True:
                 return "alive"
             return "unknown"
-        v = agent_process_verdict(_ps_cache["p"].get(surface),
-                                  entries.get(role, {}).get("agent", "claude"), _ps_cache["t"])
+        _pid = _ps_cache["p"].get(surface)
+        v = agent_process_verdict(_pid, entries.get(role, {}).get("agent", "claude"), _ps_cache["t"], _ps_comm(_pid))
         if v == "dead":
             log("★ps 축: role=%s %s 좌석 셸 아래 에이전트 프로세스 부재 — 생존 아님(부활 대상)" % (role, surface))
         return "dead" if v == "dead" else "alive"

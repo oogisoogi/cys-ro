@@ -27,3 +27,15 @@
 - 설계: ⑴ Msg.tail = 사슬에 마지막으로 이은 레코드 종류(고리 제외 · assistant/result). 글 있는 user 가 tail=result 인 말의 사슬 끝에 오면 = 턴 안 덧붙임 → 고리로 잇고(tail 비움) 닫지 않음 ⑵ 그 밖(앞 턴 끝 뒤)이면 종전처럼 사슬을 닫고 + `turnClosed` = 전달됨 이상 말의 턴 끝 표지 · replying → 답 있으면 답함 / 없으면 전달됨 ⑶ settleSteps: turnClosed 말은 활동으로 칠하지 않음 ⑷ liveMsg: turnClosed 말엔 진행 줄 안 닮(「과정 N단계」 접힌 줄은 그대로).
 - 시험 `ui/src/views/rcturn.test.ts` 6건(채록 모양 fixture): 기점 1 pass / 5 fail → 고침 6/6 · 전 UI 3999 pass / 0 fail · tsc 0. 원본 세션 기록은 개인 대화라 저장소에 넣지 않음(재생 스크립트는 작업 폴더 밖 · 모양만 fixture 로).
 - 남은 확인: 통합 판 윈 실기에서 맥 master → 윈 master 중계 1회 뒤 앞 말 진행 줄 0.
+
+## ⑤ e2e chat_gate 기점 FAIL → 0 (master#ac1fa52a)
+- ⚠정정: ② 보고의 「기점 FAIL 6 = 고침 FAIL 6」은 **patchright 대역**(python playwright 미설치라 patchright 를 별칭으로 씀)의 수치였다. 진짜 playwright 1.65.2(작업 폴더 밖 임시 venv · chrome-headless-shell 1248)로 다시 잼:
+  | 번들 | 결과 |
+  |---|---|
+  | 1.1.16(bc8156865) | PASS (63 ok) |
+  | 1.1.17 기점(9c46ff6d0) | FAIL 3 |
+  | 이 가지 | FAIL 3 (같은 3항) |
+  patchright 에서만 난 3항(작업 화면 30초 조회 상한 org_status·feed_list 12~13 · 응답 없이 3초 단계)은 대역 차이 = 코드 결함 아님(진짜 playwright 에선 1.1.16·1.1.17·이 가지 모두 통과).
+- 항목별 판정(3항 = 「응답 없이 3초 → 확인 중 · 단추 0」 · 「쓰기 직전 거부 사건 → 확인 중 · 다시 보내기 0」 · 「120초 → 오래 걸려요 · 다시 보내기 0」): **낡은 단언**. 실측 btns = ['•확인 중 · 3초'] 등 = 1.1.17 진행 줄(cysr-1118-ui ①)의 머리 `button.cv-prog-head`(「과정 보기」 펼침 · 단계 없으면 disabled · 누르면 openProg 만 바꿈 = chat/index.ts prog()) — 단언의 뜻(다시 보내기·보내기 단추 0)과 무관. 1.1.16 = 진행 줄 없음 → 통과했던 것.
+- 고침(게이트만 · 앱 코드 0): bubble() 두 곳(I·J 절)의 단추 셈에서 `.cv-prog-head` 제외 + 따로 `prog` 수 · 새 단언 「진행 줄 머리 1개 = 펼침 전용(눌러도 쓰기 0)」(뺀 것이 보내기 단추가 아님을 시험으로 묶음).
+- 결과: 1.1.17 기점 PASS(64 ok) · 이 가지 PASS(64 ok) · 1.1.16 = 새 단언만 FAIL(진행 줄 없는 판 · 예상대로) — 진짜 퇴행 0.

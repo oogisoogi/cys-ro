@@ -294,7 +294,8 @@ def main() -> int:
         pg.click("#view-switch button[data-view=chat]")
         pg.clock.run_for(3_100)
         every_step = lambda pg: pg.evaluate("() => [...document.querySelectorAll('.cv-me')].every((li) => (li.querySelector('.cv-step')?.textContent || '').length > 0)")  # noqa: E731
-        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button')].map((b) => b.textContent) }} : null; }}")  # noqa: E731
+        # (TICKET=cysr-1118u-chat ⑤) 1.1.17 진행 줄(cysr-1118-ui ①) 머리 button.cv-prog-head = 「과정 보기」 펼침 전용(쓰기 0 · 단계 없으면 disabled) — 「단추 0」(다시 보내기·보내기 단추) 셈에서 뺀다.
+        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button:not(.cv-prog-head)')].map((b) => b.textContent), prog: li.querySelectorAll('button.cv-prog-head').length }} : null; }}")  # noqa: E731
         n0 = writes(pg)
         pg.fill(".cv-input", "첫 줄\n둘째 줄")
         pg.press(".cv-input", "Enter")
@@ -318,6 +319,11 @@ def main() -> int:
         pg.clock.run_for(2_100)
         b = bubble(pg, 1)
         check(b["step"] == "확인 중" and b["btns"] == [] and every_step(pg), f"응답 없이 3초 → 확인 중 · 단추 0 · 모든 말 단계 글 ({b})")
+        # (TICKET=cysr-1118u-chat ⑤) 뺀 진행 줄 머리가 정말 보내기 단추가 아닌지 — 눌러도 쓰기 0(펼침만)
+        wpg = writes(pg)
+        pg.evaluate("() => { const li = [...document.querySelectorAll('.cv-me')].at(-1); li?.querySelector('button.cv-prog-head')?.click(); }")
+        pg.clock.run_for(50)
+        check(b["prog"] == 1 and writes(pg) == wpg, f"진행 줄 머리 1개 = 펼침 전용(눌러도 쓰기 0) ({b['prog']} · {wpg}→{writes(pg)})")
         pg.clock.run_for(3_000)
         check(bubble(pg, 1)["step"] == "전달 확인 중" and writes(pg) == n0 + 1, f"응답(written) 도착 → 전달 확인 중 · 쓰기 1 ({bubble(pg, 1)['step']})")
         pg.evaluate("() => { window.__CHAT.hangMs = 0; }")
@@ -377,7 +383,8 @@ def main() -> int:
         ctx, pg, errs = page([seat(BASE, 1, "master")])
         pg.click("#view-switch button[data-view=chat]")
         pg.clock.run_for(3_100)
-        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button')].map((b) => b.textContent) }} : null; }}")  # noqa: E731
+        # (TICKET=cysr-1118u-chat ⑤) 1.1.17 진행 줄(cysr-1118-ui ①) 머리 button.cv-prog-head = 「과정 보기」 펼침 전용(쓰기 0 · 단계 없으면 disabled) — 「단추 0」(다시 보내기·보내기 단추) 셈에서 뺀다.
+        bubble = lambda pg, i: pg.evaluate(f"() => {{ const li = [...document.querySelectorAll('.cv-me')][{i}]; return li ? {{ step: li.querySelector('.cv-step').textContent, note: [...li.querySelectorAll('.cv-note')].map((n) => n.textContent).join(' | '), btns: [...li.querySelectorAll('button:not(.cv-prog-head)')].map((b) => b.textContent), prog: li.querySelectorAll('button.cv-prog-head').length }} : null; }}")  # noqa: E731
         pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'failed', code: 'not_found', message: 'gone' }; }")
         say(pg, "같은 글")
         pg.clock.run_for(100)

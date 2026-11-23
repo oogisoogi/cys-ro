@@ -65,3 +65,8 @@
   3. minor chat_gate — 새 「펼침 전용」 단언이 disabled 단추를 눌러 저절로 통과. 고침 = I 절은 「disabled · 쓰기 0」으로 정직하게 · B 절(과정 있는 말)에서 실제 누름 → aria-expanded true · 과정 1줄 → 다시 누름 → 접힘 · 쓰기 0.
 - 결과: 새 시험 기점(e1874513e) 3 fail → 16/16 · 전 UI 4014 pass / 0 fail · tsc 0 · 진짜 playwright chat_gate 기점·이 가지 65 ok PASS · s79 46 · tickrec 28 · runtime_defer 23 · confirm 37 전부 PASS.
 - codex 2R 은 돌리지 않음(브리프 「codex 호출 = 갈래 끝에 1회」) — 재검토 필요 여부는 master 판단.
+
+## CI 45101212903(e1874513e) 붉음 → 고침 0b44cad72
+- boot-health-full: 171 중 FAIL 1 = H-SECRET-1 secret-scan WIN-PATH — 내가 restorebrief.stale.test.ts:80 주석에 실측 회신의 실제 윈 사용자 경로를 옮겨 적음(공개 저장소 · 계정 이름 1개 노출 · e1874513e·ec7132214 에 들어감). 고침 = ~ · 픽스처 폴더 이름 더미 · secret-scan --all clean(2170 파일).
+- macos-rust-pack cancelled = 「The run was canceled by @oogisoogi」(03:02Z) → 뒤 C8 두 단계 exit 2 는 취소 여파(시험 실패 아님).
+- 이력 처리 = master 결정 대기(권고 A: 빨리감기 고침 + 통합 때 squash 로 main 에서 제외 + 통합 뒤 가지 삭제).

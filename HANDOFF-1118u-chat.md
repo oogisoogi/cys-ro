@@ -70,3 +70,5 @@
 - boot-health-full: 171 중 FAIL 1 = H-SECRET-1 secret-scan WIN-PATH — 내가 restorebrief.stale.test.ts:80 주석에 실측 회신의 실제 윈 사용자 경로를 옮겨 적음(공개 저장소 · 계정 이름 1개 노출 · e1874513e·ec7132214 에 들어감). 고침 = ~ · 픽스처 폴더 이름 더미 · secret-scan --all clean(2170 파일).
 - macos-rust-pack cancelled = 「The run was canceled by @oogisoogi」(03:02Z) → 뒤 C8 두 단계 exit 2 는 취소 여파(시험 실패 아님).
 - 이력 처리 = master 결정 대기(권고 A: 빨리감기 고침 + 통합 때 squash 로 main 에서 제외 + 통합 뒤 가지 삭제).
+- 재발 방지(master#175470d2): **실측 회신 경로·이름을 시험·주석에 옮기기 전 ~·더미로** — 커밋 전 `bash scripts/secret-scan.sh <바꾼 파일>`(로컬 bun 시험·tsc·e2e 는 secret-scan 을 안 돈다 · CI boot-health-full 만 돈다).
+- 이력 처리 = master 판정 A: 통합 때 f1dce04a0(이후 머리) 기준 squash 로 들여 main 이력에 e1874513e·ec7132214 미포함 · 통합 뒤 원격 feat/1118u-chat 삭제(2374 · master 전달).

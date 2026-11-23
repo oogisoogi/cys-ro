@@ -321,7 +321,7 @@ import {
 } from "./toastttl";
 import { paneTitleText, renameCommitTitle, ruleTitleOf } from "./panetitle";
 import { seatNo, visibleNo, approvalRequestCopy, approvalStalledCopy, contextThresholdCopy, paneIdleCopy, masterIdleCopy, agentExitedCopy, deadmanCopy, roleTakeoverCopy, seatFolderDeniedCopy } from "./alertcopy";
-import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
+import { parseBriefSections, recordedAt, localStamp, briefStatePaths, pickBriefText, briefNewerElsewhere, buildBriefCard, unsubmittedSurfaces, friendlyRole, briefTiming, isFirstLaunch, isMasterSeatSignal, BRIEF_RESTORE_GRACE_MS } from "./restorebrief";
 import { nextFollow, shouldShowFoldHint, FOLD_HINT_TITLE, FOLD_HINT_BODY } from "./scrollfollow";
 import { shouldClosePlaceholder } from "./placeholderclose";
 import { placeholderScreenLines } from "./placeholderclose";
@@ -11597,6 +11597,7 @@ async function showRestoreBrief(): Promise<void> {
     const unsubmittedRoles = await readUnsubmittedRoles(seats, home);
     const card = buildBriefCard({
       unsubmittedRoles,
+      newerElsewhere: briefNewerElsewhere(found, text, now), // (TICKET=cysr-1118u-chat ④ · master 판정 A) 고른 요약보다 늦은 손길이 다른 파일에 있으면 알림 한 줄
       sections: text === null ? null : parseBriefSections(text),
       recordedAt: text === null ? null : recordedAt(text, now),
       restoredRoles: seats.filter((s) => !s.exited).map((s) => s.role as string),

@@ -82,6 +82,29 @@ export function recordedAt(text: string, notAfter?: string): string | null {
   return d.length ? (d.sort().at(-1) ?? null) : null;
 }
 
+/** (TICKET=cysr-1118u-chat ④ · master 판정 A) 파일 안에 적힌 가장 늦은 「YYYY-MM-DD HH:MM」(notAfter 보다 늦은 것 = 예정 시각은 뺌) — 그 파일을 마지막으로 고친 때의 하한 증거. 없으면 null. */
+export function latestStamp(text: string, notAfter?: string): string | null {
+  const full = [...text.matchAll(/(20\d{2}-\d{2}-\d{2})[T ](\d{2}:\d{2})/g)].map((m) => `${m[1]} ${m[2]}`).filter((t) => notAfter === undefined || t <= notAfter);
+  return full.length ? (full.sort().at(-1) ?? null) : null;
+}
+
+/**
+ * (TICKET=cysr-1118u-chat ④ · master 판정 A) 카드가 고른 3절보다 **다른 후보 파일**에 더 늦은 손길이 있는가(순수).
+ * 윈 1.1.17 관찰: 「다시 켜졌어요」 카드가 옛 기록(11-22 11:04)을 보임 — 고르기 계약(pickBriefText · 판정 B 후속)은 그대로 두고,
+ * 고른 요약이 낡았음을 카드가 **눈에 띄게** 말하게 한다. 고른 3절의 시각을 모르면(null) 말하지 않는다(모르는 것을 단정하지 않음).
+ */
+export function briefNewerElsewhere(found: { path: string; text: string }[], chosen: string | null, notAfter?: string): boolean {
+  if (chosen === null) return false;
+  const at = recordedAt(chosen, notAfter);
+  if (at === null) return false;
+  return found.some((f) => f.text !== chosen && (latestStamp(f.text, notAfter) ?? "") > at);
+}
+
+/** (TICKET=cysr-1118u-chat ④) 낡은 요약 알림 한 줄 — 처음 쓰는 사람 말투 · 내부 용어 0. */
+export function staleBriefLine(at: string): string {
+  return `이 요약은 ${at} 기준이라 그 뒤 일은 빠졌을 수 있어요.`;
+}
+
 /**
  * 기록 시각 줄 — 줄 전체가 `기록 YYYY-MM-DD HH:MM`(초·꼬리 공백 · 「기록:」 · T 구분자 허용). 목록 표기(`- ` · `1.` · `1)`)와
  * 1칸 들여쓰기는 카드가 목록으로 세는 모양과 같게 허용한다(2칸+ = 하위 항목). ★(agy 3R) 시각 뒤에 말이 이어지면 할 일이다.
@@ -256,6 +279,8 @@ export function buildBriefCard(input: {
   seatCtx?: { role: string; ctxPct: number | null }[];
   /** ★(v112-restore) 복원 안내가 입력창에 남은(미제출 실측) 자리의 역할 — 정직 표기 한 줄. */
   unsubmittedRoles?: string[];
+  /** (TICKET=cysr-1118u-chat ④) 다른 후보 파일에 이 요약보다 늦은 손길이 있다(briefNewerElsewhere) — 요약 앞에 알림 한 줄. */
+  newerElsewhere?: boolean;
 }): BriefCard {
   const uniq = (xs: string[]) => [...new Set(xs.map(friendlyRole))];
   const back = uniq(input.restoredRoles);
@@ -280,6 +305,7 @@ export function buildBriefCard(input: {
   if (input.sections) {
     const s = input.sections;
     const none = "적힌 것이 없습니다.";
+    if (input.newerElsewhere && input.recordedAt) lines.push({ head: "알려 드려요", items: [staleBriefLine(input.recordedAt)] }); // (TICKET=cysr-1118u-chat ④)
     lines.push({ head: "끝난 일", items: s.done.length ? s.done : [none] });
     lines.push({ head: "하던 일", items: s.doing.length ? s.doing : [none] });
     lines.push({ head: "정하셔야 할 일", items: s.decide.length ? s.decide : [none] });

@@ -24,10 +24,11 @@ GRACE = 20
 # ★(1.1.18 · TICKET=cysr-1118u-debug) surface.create 만 상한 20초 + 같은 idempotency_key 1회 재시도. 깜빡이 서명(11-06~ · 29잡 중 4) =
 #   첫 create 가 6초 안에 답하지 못함(PTY 자식은 떴음) · 같은 커밋 재실행 녹 · 로컬 p50 ≈0.2초. 판정은 그대로다.
 #   ⚠데몬 idem 캐시는 create 가 **끝날 때** 기록된다(handlers.rs create_idem) — 첫 요청이 아직 도는 중에 같은 키로 다시 부르면 좌석이
-#   하나 더 생긴다(실측: 첫 create 를 0.05초에 끊으면 역할 없는 좌석 2개). 그래서 상한을 넘기면 먼저 그 첫 요청이 만든 새 좌석을 기다려
-#   채택하고(상한 20초), 그래도 없을 때만 같은 키로 1회 다시 부른다. 재시도는 manifest create_retries 에 남는다(가려진 지연이 증거에
-#   보이게). 다른 RPC 상한은 6초 그대로.
+#   하나 더 생긴다(실측: 첫 create 를 0.05초에 끊으면 역할 없는 좌석 2개). 그래서 상한을 넘기면 그 첫 요청이 만든 새 좌석을 기다려
+#   채택한다(상한 20초 · 전체 시한 안). 다시 부르지 않는다: 40초 뒤에도 첫 요청이 끝났다는 증거가 없어 재요청이 또 중복을 만들 수 있다
+#   (codex 1R major) — 안 나타나면 유계 실패. 채택은 manifest create_retries 에 남는다(가려진 지연이 증거에 보이게). 다른 RPC 상한은 6초 그대로.
 CREATE_TIMEOUT = 20
+DEADLINE = 'S5 body or cleanup deadline'  # SIGALRM 전체 시한의 TimeoutError 문안 — 소켓 타임아웃과 가른다
 
 
 # Reuse the S7-tested kernel sec+usec identity reader; no harness lifecycle calls.
@@ -142,18 +143,25 @@ def main():
             started = time.monotonic()
             try:
                 sid = rpc('surface.create', params, CREATE_TIMEOUT)['surface_id']
-            except TimeoutError:
-                retry = {'role':role,'timed_out_after_secs':round(time.monotonic()-started,3)}
-                create_retries.append(retry)
+            except TimeoutError as exc:
+                if exc.args == (DEADLINE,):
+                    raise  # the 90s body deadline (SIGALRM), not this request's socket timeout
+                late = {'role':role,'timed_out_after_secs':round(time.monotonic()-started,3)}
+                create_retries.append(late)
                 manifest['create_retries'] = create_retries
-                # The daemon records the key only when a create finishes, so a same-key retry while the first is still
-                # in flight makes a second seat (measured). Adopt the seat the late first create made; retry only if none.
-                late = None
+                # The daemon records the key only when a create finishes, so a second create while the first is still in
+                # flight makes a second seat (measured). Adopt the seat the late first create made; never re-send.
+                # until() swallows OSError (TimeoutError included), so the body deadline is re-checked right after it.
+                found = None
                 with contextlib.suppress(AssertionError):
-                    late = until(lambda: next((s['surface_id'] for s in surfaces() if s['surface_id'] not in before
-                                               and (s.get('role') or None) == role), None), CREATE_TIMEOUT)
-                retry['adopted_late_first'] = late is not None
-                sid = late if late is not None else rpc('surface.create', params, CREATE_TIMEOUT)['surface_id']
+                    found = until(lambda: next((s['surface_id'] for s in surfaces() if s['surface_id'] not in before
+                                                and (s.get('role') or None) == role), None),
+                                  min(CREATE_TIMEOUT, max(0.0, body_deadline - time.monotonic())))
+                if time.monotonic() >= body_deadline:
+                    raise TimeoutError(DEADLINE)
+                late['adopted_late_first'] = found is not None
+                assert found is not None, 'S5 create: no reply in %ss and no seat in %ss more (not re-sent)' % (CREATE_TIMEOUT, CREATE_TIMEOUT)
+                sid = found
             record_surface(sid)
             return sid
         def cli(*args):
@@ -172,8 +180,9 @@ def main():
                     if token: body = body.replace(token, '[REDACTED]')
                 (out/'daemon.log').write_text(body)
                 (out/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
-        def timeout(*args): raise TimeoutError('S5 body or cleanup deadline')
+        def timeout(*args): raise TimeoutError(DEADLINE)
         prior = signal.signal(signal.SIGALRM, timeout)
+        body_deadline = time.monotonic() + 90
         signal.alarm(90)
         try:
             with open(root/'daemon.log','wb') as log:

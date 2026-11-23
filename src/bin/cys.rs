@@ -27617,9 +27617,11 @@ fn run_restore_with(cwd: Option<String>, include_master: bool, no_resume: bool, 
                 println!("· {role}: 다른 복원 경로가 먼저 세움 — 건너뜀");
             } else {
                 fail += 1;
-                // ★(1.1.18 · TICKET=cysr-1118u-debug) launch-agent rc 를 줄에 싣는다 — 종전엔 버려져 phoenix 독약 강등의 까닭을 로그로 못 갈랐다
-                //   (윈 1.1.17 관찰 ③). 머리 「· {role}: 기동 실패」 는 그대로(javis_phoenix `· (\S+): 기동 실패` 분류기 · 문안 핀).
-                println!("· {role}: 기동 실패 — 나머지 역할 계속 진행 (launch-agent rc={rc})");
+                // ★(1.1.18 · TICKET=cysr-1118u-debug) launch-agent rc 는 **stderr** 로 — 종전엔 버려져 phoenix 독약 강등의 까닭을 로그로 못 갈랐다
+                //   (윈 1.1.17 관찰 ③). stdout 줄은 바이트 그대로 둔다: phoenix 는 800자로 자른 stdout 에서 「기동 실패」 역할을 찾으므로
+                //   줄이 길어지면 판정 입력이 바뀐다(codex 1R blocking). stderr 는 phoenix-restore.log 에 전문으로 남는다(log_restore_output).
+                eprintln!("[restore] · {role}: 기동 실패 rc={rc}");
+                println!("· {role}: 기동 실패 — 나머지 역할 계속 진행");
             }
         }
         Ok((ok, fail, gated))
@@ -34938,7 +34940,7 @@ mod tests {
         let src = include_str!("cys.rs");
         let body = &src[src.find("fn run_restore_with(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let fail_at = body.find("println!(\"· {role}: 기동 실패 — 나머지 역할 계속 진행 (launch-agent rc={rc})\");").unwrap();
+        let fail_at = body.find("println!(\"· {role}: 기동 실패 — 나머지 역할 계속 진행\");").unwrap();
         let held_at = body.find("role_held_by_live_seat(&t, role)").expect("재실측 분기 없음");
         assert!(held_at < fail_at, "재실측이 실패 계수보다 뒤에 있다");
         let rs = &src[src.find("fn run_launch_agent_resume_saved(").unwrap()..];

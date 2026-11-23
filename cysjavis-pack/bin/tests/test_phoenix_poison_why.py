@@ -14,6 +14,9 @@
      결과 honesty_note 까닭
   V  verify 판정 줄(M9: expected·observed·결과·사유)이 저널뿐 아니라 로그에도(윈 관찰 ④ 원인 판독용)
   Q  좌석 미달 꼴(실패 줄 없음 · agent_alive=None · seat=empty): 사유 = 좌석 사실 원문
+  R  판정 입력 불변(codex 1R blocking): cys.rs stdout 실패 줄 = 기점 바이트 그대로(phoenix 는 800자 절단 stdout 에서 「기동 실패」 를 찾는다) ·
+     rc 는 stderr `[restore] · 역할: 기동 실패 rc=N` → 사유 원문엔 실린다
+  S  앞 강등 까닭(poison_why)이 이번 resume 성공 verify 에 붙지 않는다 · 문자열 아닌 저장값(손상)으로 죽지 않는다
   M  뮤턴트(미달 사유 기록 제거 · 변이 적용 선-assert) → P 적색
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_poison_why.py → 종료 토큰 PHOENIX-POISON-WHY-OK
@@ -49,11 +52,13 @@ def load_src(src, name, d):
 
 FAIL_LINE = "· master: 기동 실패 — 나머지 역할 계속 진행"
 FAIL_OUT = "· master: claude 재기동…\n%s\nrestore 완료: 재기동 0 · 실패 1" % FAIL_LINE
+RC_ERR = "[restore] · master: 기동 실패 rc=1\n"
+REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
 QUIET_OUT = "· master: claude 재기동…\nrestore 완료: 재기동 1 · 실패 0"
 EMPTY_SEAT = {"surface": "surface:7", "pid": 70, "exited": False, "agent_alive": None, "seat": "empty"}
 
 
-def scenario(src, tmp, tag, out, seat_rows):
+def scenario(src, tmp, tag, out, seat_rows, preload=None, revive=False):
     """죽은 master 1명 부활 1사이클(생산 경로 · 대역) — 반환 = (restore 수, fresh 수, 저널, 로그 줄, 결과)."""
     d = tempfile.mkdtemp(prefix=tag + "-", dir=tmp)
     m = load_src(src, "ph_" + tag, d)
@@ -86,8 +91,9 @@ def scenario(src, tmp, tag, out, seat_rows):
     def _restore(s, roles, include_master=False, cwd=None, **_kw):
         calls["restore"] += 1
         st["live"] = {"master": [dict(x) for x in seat_rows]}
-        # 실물 spawn_production 과 같은 키: out 은 800자 절단 · 역할 줄은 전량에서(수리 전 소스엔 이 키가 없다 = .get 이 None)
-        return {"rc": 1, "out": out[:800], "restore_role_lines": m.restore_role_lines(out)
+        # 실물 spawn_production 과 같은 키: out 은 stdout 800자 절단 · 역할 줄은 stdout+stderr 전량에서(수리 전 소스엔 이 키가 없다 = None)
+        err = RC_ERR if FAIL_LINE in out else ""
+        return {"rc": 0 if revive else 1, "out": out[:800], "restore_role_lines": m.restore_role_lines(out + "\n" + err)
                 if hasattr(m, "restore_role_lines") else None}
     m.spawn_production = _restore
     m.spawn_in_seat_production = lambda s, include_master=False, cwd=None, units=None: {"rc": 1, "out": "stub"}
@@ -101,6 +107,14 @@ def scenario(src, tmp, tag, out, seat_rows):
     m.close_surface = lambda *a, **k: None
     m.cys = lambda *a, **k: type("R", (), {"returncode": 1, "stdout": "", "stderr": ""})()
     _save = m.save_journal
+    if preload is not None:
+        _load = m.load_journal
+
+        def _pre(s, t):
+            j = _load(s, t)
+            j["roles"]["master"] = dict(preload, stages={})
+            return j
+        m.load_journal = _pre
 
     def _cap(s, t, j):
         st["journal"] = j
@@ -126,8 +140,9 @@ def axes(src, tmp, tag, sink=None):
     why = ((j or {}).get("roles", {}).get("master", {}) or {}).get("poison_why", "")
     text = "\n".join(logs)
     check("P 판정 불변: restore 4 · fresh 1(수리 전과 같음)", (r, f) == (4, 1), (r, f), sink)
-    check("P 미달 사건 = 회차마다 1건(4) · 사유 기동 실패 · 원문 줄", len(ev) == 4 and all(
-        "cys restore 「기동 실패」" in e["msg"] and FAIL_LINE in e["msg"] and "rc=1" in e["msg"] for e in ev), ev, sink)
+    check("P 미달 사건 = 회차마다 1건(4) · 사유 기동 실패 · 원문 줄 · stderr rc 줄", len(ev) == 4 and all(
+        "cys restore 「기동 실패」" in e["msg"] and FAIL_LINE in e["msg"] and "[restore] · master: 기동 실패 rc=1" in e["msg"] for e in ev),
+          ev, sink)
     check("P roles.master.poison_why = 마지막 회차 사유", why.startswith("attempt 3 · cys restore 「기동 실패」") and FAIL_LINE in why,
           why, sink)
     check("P 로그: 회차별 미달 사유 줄 4 + 강등 줄에 까닭",
@@ -147,6 +162,20 @@ def axes(src, tmp, tag, sink=None):
               "부활 조건 미달(surface:7 exited=False agent_alive=None seat=empty)" in e["msg"] for e in ev), (r, f, ev[:1]), sink)
 
 
+def stale_axes(src, tmp, tag, sink=None):
+    alive = [{"surface": "surface:5", "pid": 50, "exited": False, "agent_alive": True, "seat": "occupied"}]
+    for name, pw in (("S1 앞 강등 까닭(문자열)", "attempt 3 · OLD-REASON"), ("S2 손상 저장값(정수)", 123)):
+        try:
+            r, f, j, logs, res = scenario(src, tmp, tag + name[:2].lower(), QUIET_OUT, alive, revive=True,
+                                          preload={"fresh_fallback": True, "poison_why": pw, "fresh_reason": "poison"})
+            vr = ((j or {}).get("roles", {}).get("master", {}) or {}).get("verify_reason", "")
+            hn = (res or {}).get("honesty_note", "") if isinstance(res, dict) else ""
+            ok = (r, f) == (1, 0) and "강등 까닭" not in vr and "OLD-REASON" not in hn
+            check("%s: 이번 resume 성공 verify·결과에 앞 까닭 없음 · 죽지 않음(restore 1 · fresh 0)" % name, ok, (r, f, vr[-160:]), sink)
+        except Exception as exc:  # noqa: BLE001 — 죽으면 그 자체가 적색
+            check("%s: 이번 resume 성공 verify·결과에 앞 까닭 없음 · 죽지 않음(restore 1 · fresh 0)" % name, False, repr(exc), sink)
+
+
 def main():
     sys.path.insert(0, os.path.dirname(PH))
     with open(PH, encoding="utf-8") as f:
@@ -163,7 +192,13 @@ def main():
           and f("cso", set(), [], {}, 0) == "역할 좌석 없음 · restore rc=0 · 원문: (이 역할 줄 없음)"
           and f("cso", set(), [EMPTY_SEAT], rl, 0).startswith("부활 조건 미달(surface:7 exited=False agent_alive=None seat=empty)"),
           "missing" if f is None else f("worker", {"worker"}, [], rl, 1))
+    rs = open(os.path.join(REPO, "src", "bin", "cys.rs"), encoding="utf-8").read()
+    check("R 판정 입력 불변: cys.rs stdout 실패 줄 = 기점 바이트 그대로(꼬리 0) · rc 는 stderr [restore] 줄",
+          rs.count('println!("· {role}: 기동 실패 — 나머지 역할 계속 진행");') == 1
+          and 'eprintln!("[restore] · {role}: 기동 실패 rc={rc}");' in rs
+          and "나머지 역할 계속 진행 (launch-agent" not in rs)
     axes(src, tmp, "base")
+    stale_axes(src, tmp, "st")
     a = '                    jevent(j, role, "spawn", "miss", "부활 미달 " + miss_why[role])\n'
     n = src.count(a)
     check("M1 미달 사건 기록 제거 변이 적용 선-assert(정확 1곳)", n == 1, "count=%d" % n)

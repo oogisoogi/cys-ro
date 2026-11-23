@@ -2091,6 +2091,43 @@ def _ps_table():
     return table or None
 
 
+_AGENT_NODE_ENTRY_SUFFIXES = ("/@anthropic-ai/claude-code/cli.js", "/@openai/codex/bin/codex.js", "/@google/gemini-cli/dist/index.js")
+
+
+def _argv_words(cmdline):
+    """명령줄 → 낱말(큰따옴표로 묶인 경로 · 역슬래시 보존 · shlex 의 POSIX 이스케이프 해석 없음)."""
+    out, cur, q = [], "", False
+    for ch in cmdline or "":
+        if ch == '"':
+            q = not q
+        elif ch.isspace() and not q:
+            if cur:
+                out.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _self_is_agent(cmdline, tokens):
+    """좌석 pid 자신의 명령줄이 에이전트 프로세스인가(순수). 실행 파일 basename(.exe 뗌) ∈ tokens 이거나,
+    node/bun 이고 옵션(-…) 다음 첫 인자가 알려진 에이전트 진입 스크립트(_AGENT_NODE_ENTRY_SUFFIXES)일 때만 True."""
+    words = _argv_words(cmdline)
+    if not words:
+        return False
+    base = lambda w: w.replace("\\", "/").rsplit("/", 1)[-1].lower()  # noqa: E731
+    exe = base(words[0])
+    exe = exe[:-4] if exe.endswith(".exe") else exe
+    if exe in tokens:
+        return True
+    if exe in ("node", "bun"):
+        script = next((w for w in words[1:] if not w.startswith("-")), "")
+        return script.replace("\\", "/").lower().endswith(_AGENT_NODE_ENTRY_SUFFIXES)
+    return False
+
+
 def agent_process_verdict(shell_pid, agent, table):
     """순수 판정: 좌석 셸(shell_pid)의 자손 중 에이전트 프로세스가 있는가 → 'alive'|'dead'|'unknown'.
     unknown = 표 없음·셸 pid 미상·셸이 표에 없음(이미 exited 축 소관). 자손의 인자 문자열에 에이전트
@@ -2100,6 +2137,12 @@ def agent_process_verdict(shell_pid, agent, table):
     tokens = set(AGENT_PROC_TOKENS)
     if agent:
         tokens.add(str(agent).lower())
+    # ★(1.1.18 · cysr-1118u-debug · master#2c028362 후보 · 따로 되돌릴 수 있는 커밋) 좌석 pid **자신**이 에이전트인 꼴 — 설치기 wake.sh(`bash wake.sh` → `exec claude`)처럼
+    #   셸이 에이전트로 바뀐 좌석은 자손이 0 이라 종전엔 dead(같은 대화인데 UNVERIFIED · 다음 회차 재대상)였다. 인자 부분 문자열이 아니라
+    #   **실행 파일**(argv[0] basename) 또는 node/bun 의 **진입 스크립트**(옵션 다음 첫 인자)가 알려진 에이전트 진입점일 때만 alive
+    #   — `zsh -c 'claude …; exec zsh'`(claude 죽음) · `node /tmp/claude-monitor.js` · `node --require=/tmp/claude-x.js a.js` 는 dead 유지(codex 1R).
+    if _self_is_agent((table.get(shell_pid) or (None, ""))[1], tokens):
+        return "alive"
     children = {}
     for pid, (ppid, _args) in table.items():
         children.setdefault(ppid, []).append(pid)

@@ -21,6 +21,13 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[3]
 CYS, CYSD = [REPO / ('target/debug/' + n) for n in ('cys', 'cysd')]
 GRACE = 20
+# ★(1.1.18 · TICKET=cysr-1118u-debug) surface.create 만 상한 20초 + 같은 idempotency_key 1회 재시도. 깜빡이 서명(11-06~ · 29잡 중 4) =
+#   첫 create 가 6초 안에 답하지 못함(PTY 자식은 떴음) · 같은 커밋 재실행 녹 · 로컬 p50 ≈0.2초. 판정은 그대로다.
+#   ⚠데몬 idem 캐시는 create 가 **끝날 때** 기록된다(handlers.rs create_idem) — 첫 요청이 아직 도는 중에 같은 키로 다시 부르면 좌석이
+#   하나 더 생긴다(실측: 첫 create 를 0.05초에 끊으면 역할 없는 좌석 2개). 그래서 상한을 넘기면 먼저 그 첫 요청이 만든 새 좌석을 기다려
+#   채택하고(상한 20초), 그래도 없을 때만 같은 키로 1회 다시 부른다. 재시도는 manifest create_retries 에 남는다(가려진 지연이 증거에
+#   보이게). 다른 RPC 상한은 6초 그대로.
+CREATE_TIMEOUT = 20
 
 
 # Reuse the S7-tested kernel sec+usec identity reader; no harness lifecycle calls.
@@ -82,10 +89,10 @@ def main():
                     if child in owned: assert owned[child] == child_info[0], 'owned descendant reused'
                     owned[child] = child_info[0]
                     todo.append(child)
-        def rpc(method, params=None):
+        def rpc(method, params=None, timeout=6):
             assert endpoint.parent == root
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                s.settimeout(6)
+                s.settimeout(timeout)
                 s.connect(str(endpoint))
                 s.sendall((json.dumps({'id':'s5-native','method':method,'params':params or {}})+'\n').encode())
                 with s.makefile('rb') as stream:
@@ -128,8 +135,25 @@ def main():
             return any(len(f := line.split(None, 1)) == 2 and f[0] == str(row['pid']) and f[1].strip() == argv for line in ps.stdout.splitlines())
         def record_surface(sid):
             capture([next(s for s in surfaces() if s['surface_id'] == sid)['pid']])
+        create_retries = []
         def create(role, command):
-            sid = rpc('surface.create', {'role':role,'cmd':command,'cwd':str(root)})['surface_id']
+            params = {'role':role,'cmd':command,'cwd':str(root),'idempotency_key':'s5-native-create-%s' % (role or 'live')}
+            before = {s['surface_id'] for s in surfaces()}
+            started = time.monotonic()
+            try:
+                sid = rpc('surface.create', params, CREATE_TIMEOUT)['surface_id']
+            except TimeoutError:
+                retry = {'role':role,'timed_out_after_secs':round(time.monotonic()-started,3)}
+                create_retries.append(retry)
+                manifest['create_retries'] = create_retries
+                # The daemon records the key only when a create finishes, so a same-key retry while the first is still
+                # in flight makes a second seat (measured). Adopt the seat the late first create made; retry only if none.
+                late = None
+                with contextlib.suppress(AssertionError):
+                    late = until(lambda: next((s['surface_id'] for s in surfaces() if s['surface_id'] not in before
+                                               and (s.get('role') or None) == role), None), CREATE_TIMEOUT)
+                retry['adopted_late_first'] = late is not None
+                sid = late if late is not None else rpc('surface.create', params, CREATE_TIMEOUT)['surface_id']
             record_surface(sid)
             return sid
         def cli(*args):

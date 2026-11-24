@@ -22,6 +22,13 @@ import {
   startOutcome,
   NEVER_STARTED_MS,
   wokeUp,
+  AUTH_RULES,
+  LIMIT_LOGIN_BANDS,
+  LIMIT_STALE_SECS,
+  STALL_EVENT_MS,
+  pickStall,
+  resetClock,
+  usageLimit,
   type ReviveFacts,
 } from "./judge/revive";
 
@@ -887,5 +894,172 @@ describe("정적 핀 — 다시 켜기 = 기존 입력줄 쓰기 0 · 깨움 말
     const body = rs.slice(f, rs.indexOf("\n}\n", f));
     for (const k of ['"queued": true', '"machine_origin": true', '"human": false']) expect(body).toContain(k);
     expect(body.includes("operator_token")).toBe(false);
+  });
+});
+
+// ---------- (BA1 · TICKET=cysr-1119-s8) 멈춘 까닭 — 한도 · 로그인(DESIGN §7 BA1 · 카드 BORROW §3-1 A1) ----------
+describe("BA1 멈춘 까닭 — 진리표(judge/revive · 순수)", () => {
+  const T = 1_800_000_000_000; // 기준 시각(ms)
+  const mk = (over: Partial<ReviveFacts>): ReviveFacts => ({ master: null, seenBefore: true, goneMark: false, dead: null, neverSince: null, idle: null, now: T, ...over });
+  const live = (over: Partial<MasterRow> = {}): MasterRow => ({ surface_id: 5, exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: false, idle_secs: 1, agent: "claude", agent_seen: true, seat: "occupied", ...over });
+  const use = (pct: number, resetsAtMs: number | null, age: number | null = 10) => ({ rate: [{ label: "5h", used_pct: pct, resets_at: resetsAtMs === null ? null : resetsAtMs / 1000 }, { label: "7d", used_pct: 40, resets_at: (T + 5 * 86_400_000) / 1000 }], rate_age_secs: age });
+  const lim = (pct: number, r: number | null, age: number | null = 10) => usageLimit(use(pct, r, age), T);
+  const login = { rule: "not_logged_in", at: T - 1000 };
+
+  it("한도 읽기 — 100%∧리셋 미래 = limited · 리셋 지남 = 아님 · 99% = 아님 · 30분 넘게 낡음/나이 모름 = 판정 안 함", () => {
+    expect(lim(100, T + 3_600_000)).toEqual({ state: "limited", resetsAt: T + 3_600_000 });
+    expect(lim(100, T - 1)).toEqual({ state: "fresh" }); // 5h 는 이미 리셋 · 7d 40% 만 남음
+    expect(lim(99, T + 3_600_000)).toEqual({ state: "fresh" });
+    expect(lim(100, T + 3_600_000, LIMIT_STALE_SECS + 1)).toEqual({ state: "none" }); // 거짓 띠 0
+    expect(lim(100, T + 3_600_000, LIMIT_STALE_SECS)).toEqual({ state: "limited", resetsAt: T + 3_600_000 }); // 문턱 = 30분 포함
+    expect(lim(100, T + 3_600_000, null)).toEqual({ state: "none" });
+    expect(usageLimit(null, T)).toEqual({ state: "none" });
+    expect(usageLimit({ rate: [], rate_age_secs: 5 }, T)).toEqual({ state: "none" });
+    expect(lim(100, null)).toEqual({ state: "limited", resetsAt: null }); // 리셋 모름
+    // 둘 다 100% = 늦은 리셋(그때까지 못 움직임)
+    expect(usageLimit({ rate: [{ used_pct: 100, resets_at: (T + 3_600_000) / 1000 }, { used_pct: 100, resets_at: (T + 2 * 86_400_000) / 1000 }], rate_age_secs: 1 }, T)).toEqual({ state: "limited", resetsAt: T + 2 * 86_400_000 });
+  });
+
+  it("까닭 고르기 — 로그인 300초 안/밖 · 로그인 > 한도 · rate_limited 사건은 수치가 없을 때만", () => {
+    const L = lim(100, T + 3_600_000);
+    expect(pickStall(login, { state: "none" }, null, T)).toEqual({ why: "login", rule: "not_logged_in" });
+    expect(pickStall({ rule: "auth_401", at: T - STALL_EVENT_MS + 1 }, { state: "none" }, null, T)).toEqual({ why: "login", rule: "auth_401" });
+    expect(pickStall({ rule: "auth_401", at: T - STALL_EVENT_MS }, { state: "none" }, null, T)).toBe(null); // 300초 = 밖
+    expect(pickStall(login, L, null, T)).toEqual({ why: "login", rule: "not_logged_in" }); // 로그인 + 한도 = 로그인
+    expect(pickStall(null, L, null, T)).toEqual({ why: "limit", resetsAt: T + 3_600_000 });
+    expect(pickStall(null, { state: "fresh" }, T - 1000, T)).toBe(null); // 신선한 수치 99% + rate_limited 사건 = 아님(수치가 이긴다)
+    expect(pickStall(null, { state: "none" }, T - 1000, T)).toEqual({ why: "limit", resetsAt: null }); // 수치 없음 + 사건 = 한도(리셋 모름)
+    expect(pickStall(null, { state: "none" }, T - STALL_EVENT_MS, T)).toBe(null);
+  });
+
+  it("사정 진리표 — 관문 > 꺼짐 > 로그인 > 한도 > 조용함 > 이상 없음", () => {
+    const S_LOGIN = { why: "login", rule: "not_logged_in" } as const;
+    const S_LIMIT = { why: "limit", resetsAt: T + 3_600_000 } as const;
+    const idle = { sid: 5, at: T - 1000 };
+    const cases: Array<[string, Partial<ReviveFacts>, string]> = [
+      ["한도만", { master: live(), stall: S_LIMIT }, "limited"],
+      ["로그인만", { master: live(), stall: S_LOGIN }, "login"],
+      ["조용함 + 한도", { master: live(), stall: S_LIMIT, idle }, "limited"],
+      ["조용함 + 로그인", { master: live(), stall: S_LOGIN, idle }, "login"],
+      ["꺼짐 + 한도", { master: live({ agent_alive: false }), stall: S_LIMIT }, "down"],
+      ["꺼짐(사건) + 로그인", { master: live({ agent_alive: null }), dead: { sid: 5, axis: "agent_dead" }, stall: S_LOGIN }, "down"],
+      ["창 닫힘 + 한도", { master: null, dead: { sid: 5, axis: "surface_gone" }, stall: S_LIMIT }, "down"],
+      ["관문 + 로그인", { master: live({ gate_pending: { kind: "trust" } }), stall: S_LOGIN }, "gate"],
+      ["관문 + 한도", { master: live({ gate_pending: { kind: "trust" } }), stall: S_LIMIT }, "gate"],
+      ["조용함만", { master: live(), idle }, "idle"],
+      ["까닭 없음", { master: live(), stall: null }, "ok"],
+      ["조회 실패 + 한도", { master: undefined, stall: S_LIMIT }, "unknown"],
+    ];
+    for (const [name, f, kind] of cases) expect([name, reviveSituation(mk(f)).kind]).toEqual([name, kind]);
+    expect(reviveSituation(mk({ master: live(), stall: S_LIMIT }))).toEqual({ kind: "limited", sid: 5, resetsAt: T + 3_600_000 });
+    expect(reviveSituation(mk({ master: live(), stall: S_LOGIN }))).toEqual({ kind: "login", sid: 5, rule: "not_logged_in" });
+  });
+
+  it("띠 — 한도 = 깨우기 단추 0 · 리셋 현지 HH:MM(24시간 넘으면 요일) · 로그인 = 작업 화면 단추 · 금지 말 0", () => {
+    const hm = (ms: number) => { const d = new Date(ms); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+    const b1 = reviveBand({ kind: "limited", sid: 5, resetsAt: T + 3_600_000 }, { kind: "rest" }, false, T)!;
+    expect(pick(b1, { key: "limited", tone: "wait", title: "마스터가 사용 한도에 닿아 쉬고 있어요." })).toEqual({ key: "limited", tone: "wait", title: "마스터가 사용 한도에 닿아 쉬고 있어요." });
+    expect(b1.buttons).toEqual([]);
+    expect(b1.buttons.includes("wake")).toBe(false);
+    expect(b1.body).toBe(`${hm(T + 3_600_000)} 쯤 다시 움직여요. 보낸 말은 그때 차례대로 전달돼요.`);
+    const far = T + 3 * 86_400_000;
+    expect(resetClock(far, T)).toBe(`${["일", "월", "화", "수", "목", "금", "토"][new Date(far).getDay()]} ${hm(far)}`);
+    expect(resetClock(T + 86_400_000, T)).toBe(hm(T + 86_400_000)); // 정확히 24시간 = HH:MM
+    const b0 = reviveBand({ kind: "limited", sid: 5, resetsAt: null }, { kind: "rest" }, false, T)!;
+    expect(b0.body).toBe("한도가 풀리면 다시 움직여요.");
+    expect(b0.buttons).toEqual([]);
+    const b2 = reviveBand({ kind: "login", sid: 5, rule: "auth_401" }, { kind: "rest" }, false, T)!;
+    expect([b2.key, b2.tone, b2.title, b2.body, b2.buttons]).toEqual(["login", "err", "마스터가 다시 로그인해야 해요.", "작업 화면의 마스터 창에서 /login 을 입력해 주세요.", ["work"]]);
+    for (const b of [b0, b1, b2]) for (const w of ["좌석", "데몬", "CTX", "surface", "세션", "토큰", "rate", "401"]) expect([w, `${b.title}${b.body}`.includes(w)]).toEqual([w, false]);
+    // 눌러 둔 행동이 사정보다 앞선다(깨우는 중이면 그 띠)
+    expect(reviveBand({ kind: "limited", sid: 5, resetsAt: null }, { kind: "waking", at: T }, false, T)?.key).toBe("waking");
+  });
+
+  it("되돌리기 상수 = 켜짐(판) · 룰 4개 = 데몬 AUTH_INTERLOCK_RULES 글자 그대로 · 창 = AUTH_INTERLOCK_WINDOW_SECS", () => {
+    expect(LIMIT_LOGIN_BANDS).toBe(true);
+    const st = readFileSync(new URL("../../../src/bin/cysd/state.rs", import.meta.url), "utf8");
+    const m = st.match(/pub const AUTH_INTERLOCK_RULES: &\[&str\] =\s*&\[([^\]]*)\]/);
+    expect(m).not.toBe(null);
+    expect([...m![1].matchAll(/"([a-z0-9_]+)"/g)].map((x) => x[1])).toEqual([...AUTH_RULES]);
+    expect(st).toContain(`pub const AUTH_INTERLOCK_WINDOW_SECS: f64 = ${STALL_EVENT_MS / 1000}.0;`);
+    expect(st).toContain('"rate_limited",'); // 보조 룰 이름(내장 룰 표)
+  });
+});
+
+describe("BA1 멈춘 까닭 — 장부(대역 데몬 · org.status usage · health.alert)", () => {
+  const withUsage = (pct: number, resetIn: number | null, age: number | null = 5) => (e: Env) => {
+    base(e);
+    e.rows[0].usage = { rate: [{ label: "5h", used_pct: pct, resets_at: resetIn === null ? null : (e.now + resetIn) / 1000 }], rate_age_secs: age, rate_observed_at: e.now / 1000 - (age ?? 0) };
+  };
+  it("마스터 행 usage 100%∧리셋 미래 → 한도 띠(단추 0) · 다른 좌석 100% 는 무관", () => {
+    const e = new Env(withUsage(100, 3_600_000));
+    e.observe();
+    expect(e.book.situation().kind).toBe("limited");
+    expect(e.band()?.key).toBe("limited");
+    expect(e.band()?.buttons).toEqual([]);
+    const o = new Env(base);
+    o.rows[2].usage = { rate: [{ used_pct: 100, resets_at: (o.now + 3_600_000) / 1000 }], rate_age_secs: 1 };
+    o.observe();
+    expect(o.book.situation().kind).toBe("ok");
+  });
+  it("조용함 사건 + 한도 = 한도 띠(깨우기 헛손 0) · 한도가 풀리면(99%) 조용함 띠로", () => {
+    const e = new Env(withUsage(100, 3_600_000));
+    e.observe();
+    e.emit("master.idle", 5, { role: "master" });
+    expect(e.band()?.key).toBe("limited");
+    (e.rows[0].usage as { rate: Array<{ used_pct: number }> }).rate[0].used_pct = 99;
+    e.observe();
+    expect(e.band()?.key).toBe("idle");
+  });
+  it("알고 남긴 것(ADV D-05) — 한도로 멈춘 마스터는 수치 갱신이 끊겨 30분 뒤 판정 안 함 → 조용함 띠로 돌아감(값으로 고정 · 고치지 않음)", () => {
+    const e = new Env(withUsage(100, 3 * 3_600_000, LIMIT_STALE_SECS + 1));
+    e.observe();
+    e.emit("master.idle", 5, { role: "master" });
+    expect(e.band()?.key).toBe("idle");
+  });
+  it("health.alert 로그인 룰(마스터 좌석) → 로그인 띠 · 300초 뒤 사라짐 · 다른 좌석·다른 룰 = 무관", async () => {
+    const e = new Env(base);
+    e.observe();
+    e.emit("health.alert", 7, { rule: "not_logged_in", line: "x", masked: true }); // 워커 좌석
+    e.emit("health.alert", 5, { rule: "context_overflow", line: "x", masked: true }); // 다른 룰
+    expect(e.book.situation().kind).toBe("ok");
+    const ch = e.changes;
+    e.emit("health.alert", 5, { rule: "not_logged_in", line: "x", masked: true });
+    expect(e.changes).toBe(ch + 1); // 다시 그리기
+    expect(e.book.situation()).toEqual({ kind: "login", sid: 5, rule: "not_logged_in" });
+    expect(e.band()?.key).toBe("login");
+    await e.advance(STALL_EVENT_MS - 1);
+    expect(e.book.situation().kind).toBe("login");
+    await e.advance(1);
+    expect(e.book.situation().kind).toBe("ok");
+  });
+  it("rate_limited 사건 = 수치 없을 때만 한도(리셋 모름 글) · 수치가 신선하면 아님", () => {
+    const e = new Env(base);
+    e.observe();
+    e.emit("health.alert", 5, { rule: "rate_limited", line: "x", masked: true });
+    expect(e.band()?.body).toBe("한도가 풀리면 다시 움직여요.");
+    const f = new Env(withUsage(40, 3_600_000));
+    f.observe();
+    f.emit("health.alert", 5, { rule: "rate_limited", line: "x", masked: true });
+    expect(f.book.situation().kind).toBe("ok");
+  });
+  it("로그인 띠 「작업 화면에서 보기」 → 작업 화면 + 그 마스터 창 포커스 · 다른 띠의 작업 화면 단추는 포커스 0(1.1.18 그대로)", () => {
+    const e = new Env(base);
+    e.observe();
+    e.emit("health.alert", 5, { rule: "token_expired" });
+    e.book.toWork();
+    expect([e.views, e.focused]).toEqual([["work"], [5]]);
+    const g = new Env(base);
+    g.observe();
+    g.book.toWork();
+    expect([g.views, g.focused]).toEqual([["work"], []]);
+  });
+  it("한도·로그인 띠에서 다시 켜기 = 아무것도 안 함(꺼짐 아님 · start_master 0)", async () => {
+    const e = new Env(withUsage(100, 3_600_000));
+    e.observe();
+    await e.book.restart();
+    e.emit("health.alert", 5, { rule: "login_required" });
+    await e.book.restart();
+    expect(e.count("start_master")).toBe(0);
   });
 });

@@ -21,7 +21,7 @@ describe("id 계약 — `getElementById(...)!` 로 조회하는 id 는 index.htm
   const ids = new Set<string>();
   for (const m of code.matchAll(/getElementById\(\s*["']([^"']+)["']\s*\)!/g)) ids.add(m[1]);
   it("검사 대상이 실제로 잡힌다(정규식이 0건이면 핀이 아무것도 지키지 않는다)", () => {
-    expect(ids.size).toBeGreaterThan(50);
+    expect(ids.size).toBeGreaterThan(25); // (1.1.19 · cysr-1119-s10b) CC 12 → 3 · 상담소 화면 삭제로 단언 id 가 줄었다(1.1.18 = 50+)
   });
   it("누락 0", () => {
     const missing = [...ids].filter((id) => !html.includes(`id="${id}"`));

@@ -1,14 +1,29 @@
-// 상담소·아고라 메뉴 **배선** 회귀 핀(TICKET=cysr-119-t4-app) — 소스를 데이터로 읽어 계약을 단언한다
-// (wswiring·feedbackwiring 관례: 런타임 코드 0줄 · DOM/Tauri 불요).
+// 「자동 보고」 배선 회귀 핀 — 소스를 데이터로 읽어 계약을 단언한다(wswiring·feedbackwiring 관례: 런타임 코드 0줄 · DOM/Tauri 불요).
+// ★(1.1.19 · TICKET=cysr-1119-s10b · DESIGN §8-3 AG4·AG5·AG5n) 「상담소」 창·45초 배지·「아고라」 단추·30분 반복 확인은 화면에서 뺐다 —
+//   남은 것 = 화면 설정 「자동 보고」 한 줄 · 첫 안내 창 · 안내 확인 계기(D-11) · 안내문 끝 문장(§8-3-1 정본).
+//   옛 핀(상담소 창 textContent · 글 목록 counsel_room_list · 배지 counsel_unread · 아고라 open_agora_window)은 「없음」 단언으로 바꿨다.
 import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
-import { AGORA_COPY, AUTO_COPY, COUNSEL_COPY, REPORT_NOTICE } from "./counsel";
+import { AUTO_COPY, REPORT_NOTICE } from "./counsel";
 
 const read = (rel: string): string => readFileSync(new URL(rel, import.meta.url), "utf-8");
 const main = read("./main.ts");
 const html = read("../index.html");
 const css = read("./style.css");
 const counselSrc = read("./counsel.ts");
+const topbar = read("./topbarlayout.ts");
+const tauriMain = read("../../src-tauri/src/main.rs");
+const counselRs = read("../../src-tauri/src/counsel.rs");
+
+/** 주석 줄(// · /* · *)을 걷은 코드 — 설명문 속 옛 낱말이 「없음」 단언을 속이지 않게(거꾸로도). */
+const code = (s: string): string =>
+  s
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n")
+    .filter((l) => !/^\s*(\/\/|\*|<!--)/.test(l))
+    .map((l) => l.replace(/\s\/\/.*$/, ""))
+    .join("\n");
+const htmlCode = html.replace(/<!--[\s\S]*?-->/g, "");
 
 /** `function name(` 부터 짝이 맞는 닫는 중괄호까지. */
 function fnBody(src: string, header: string): string {
@@ -22,127 +37,65 @@ function fnBody(src: string, header: string): string {
   throw new Error(`닫힘 없음: ${header}`);
 }
 
-// ★(cysr-menu-top-row · 박사님 2026-10-21 「상담소, 아고라 메뉴 위치가 왼쪽 메뉴바면 애매하다. 상단 피드백과 함께 배치하자.
-//   순서는 피드백 상담소 아고라 순을 제안한다.」) 종전 기대값 = 사이드바 줄(#ws-counsel-row)이 목록(#ws-tabs) 아래 · 사용량 패널 위.
-//   지금 = 상단바에서 피드백 바로 뒤 상담소 → 아고라 → 정렬 · 사이드바 0(한 곳에만).
-describe("상담소 메뉴 자리·라벨", () => {
-  const top = html.slice(html.indexOf('<header id="topbar">'), html.indexOf("</header>"));
-  it("상단바 단추 순서 = 피드백 · 상담소 · 아고라 · 정렬(맨 앞 넷)", () => {
-    const ids = [...top.matchAll(/<button\b[^>]*?\bid="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids.slice(0, 4)).toEqual(["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize"]);
+const NOTICE_TAIL = "끄려면 화면 설정 → ‘자동 보고’를 끄세요.";
+
+describe("AG4 · AG5 — 상담소·아고라 화면 0(단추·창·배지·명령)", () => {
+  it("상단바·사이드바에 상담소·아고라 단추·배지 0 · CSS 규칙 0", () => {
+    for (const id of ["btn-counsel", "btn-agora", "counsel-badge", "ws-counsel-row"]) expect({ id, 있음: htmlCode.includes(id) }).toEqual({ id, 있음: false });
+    const c = css.replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(/#btn-(counsel|agora)\b/.test(c)).toBe(false);
   });
-  it("사이드바(왼쪽 메뉴바)에는 상담소·아고라 0 · 옛 줄(#ws-counsel-row) 0 · 각 id 는 문서에 한 번", () => {
-    const nav = html.slice(html.indexOf('<nav id="wsbar">'), html.indexOf("</nav>"));
-    expect(nav.length).toBeGreaterThan(0);
-    for (const s of ['id="btn-counsel"', 'id="btn-agora"', 'id="counsel-badge"', 'id="ws-counsel-row"', ">상담소", ">아고라<"]) expect(nav.includes(s)).toBe(false);
-    for (const s of ['id="btn-counsel"', 'id="btn-agora"', 'id="counsel-badge"']) expect(html.split(s).length - 1).toBe(1);
-    expect(html.includes("ws-counsel-row")).toBe(false);
+  it("main.ts 에 상담소 창·배지·아고라 배선 0(원천 grep · 주석 제외)", () => {
+    const m = code(main);
+    for (const bad of ["btn-counsel", "btn-agora", "openCounselPanel", "pollCounselUnread", "counsel_room_list", "counsel_unread", "open_agora_window", "AGORA_COPY", "COUNSEL_COPY", "UNREAD_POLL_MS", "REPORT_NOTICE_POLL_MS"])
+      expect({ bad, 있음: m.includes(bad) }).toEqual({ bad, 있음: false });
   });
-  it("단추 글자·툴팁 = counsel.ts 문구 정본과 같다", () => {
-    expect(html).toContain(`<button id="btn-counsel" title="${COUNSEL_COPY.tooltip}">${COUNSEL_COPY.label} <span id="counsel-badge" class="badge" hidden>0</span></button>`);
+  it("45초·30분 반복 타이머 0 — 안내 확인을 setInterval 로 돌리지 않는다", () => {
+    const m = code(main);
+    expect(/setInterval\([^;]{0,80}(maybeShowReportNotice|pollCounsel)/.test(m)).toBe(false);
   });
-  it("공개 문구는 제품명 cysr 만 쓴다(단독 cys 낱말 0) · 위협 표현 0", () => {
-    const all = [...Object.values(COUNSEL_COPY), ...Object.values(AGORA_COPY)].join("\n");
-    expect(/\bcys\b/.test(all)).toBe(false);
-    for (const bad of ["경고", "위험", "금지", "차단", "삭제됩니다", "책임"]) expect(all.includes(bad)).toBe(false);
+  it("D-13 — Rust 명령 counsel_room_list·counsel_unread·open_agora_window 가 이름표(generate_handler!)와 counsel.rs 에서 사라졌다", () => {
+    for (const n of ["counsel_room_list", "counsel_unread", "open_agora_window"]) {
+      expect({ n, 이름표: code(tauriMain).includes(`counsel::${n}`) }).toEqual({ n, 이름표: false });
+      expect({ n, 정의: counselRs.includes(`fn ${n}(`) }).toEqual({ n, 정의: false });
+    }
+    // 남는 명령 셋 = 자동 보고 상태·켜기/끄기·안내 봤음
+    for (const n of ["counsel_auto_status", "counsel_auto_set", "counsel_notice_seen"]) expect(tauriMain).toContain(`counsel::${n},`);
   });
-  it("옛 사이드바 줄 CSS 0 · 상단 두 단추에 자기 크기 규칙 0(글자·여백·높이 = 상단 단추 공통 #topbar button)", () => {
-    const code = css.replace(/\/\*[\s\S]*?\*\//g, "");
-    expect(code.includes("#ws-counsel-row")).toBe(false);
-    expect(/#btn-(counsel|agora)\b/.test(code)).toBe(false);
+  it("저장 배치에 상담소·아고라 id 가 남은 기기도 단추가 보이지 않는다 — 단추 목록은 html 에서 읽고, 상단 단추 파서는 없는 id 를 버린다", () => {
+    expect(main).toContain('const TOPBAR_DOM_IDS: readonly string[] = [...topbarEl.querySelectorAll<HTMLButtonElement>(":scope > button[id]")].map((b) => b.id);');
+    expect(topbar).toContain("if (seen.has(id) || !domIds.includes(id)) continue;");
   });
 });
 
-describe("상담소 창 — 남의 글자는 textContent 로만", () => {
-  const panel = fnBody(main, "function openCounselPanel(");
-  const item = fnBody(main, "function counselItemEl(");
-  const post = fnBody(main, "function counselPostEl(");
-  const load = fnBody(main, "async function loadCounselList(");
-  it("틀(innerHTML)은 openCounselPanel 한 곳 · 고정 문자열뿐(보간 0)", () => {
-    const tpl = panel.slice(panel.indexOf("ov.innerHTML ="), panel.indexOf(";", panel.indexOf("ov.innerHTML =")));
-    expect(tpl.includes("${")).toBe(false);
-    for (const f of [item, post, load]) expect(f.includes("innerHTML")).toBe(false);
-    expect(counselSrc.includes("innerHTML =")).toBe(false);
+describe("AG5 — 「자동 보고」 켜기/끄기 = 화면 설정 한 줄", () => {
+  const row = fnBody(main, "function screenSettingsAutoRow(");
+  const load = fnBody(main, "async function loadReportAutoRow(");
+  it("자리 = S9 틀의 screenSettingsAutoRow(전문가 구획 앞 최상위 한 줄) · 줄을 만들 때 상태를 1회 읽는다(화면 설정 열 때만)", () => {
+    expect(row).toContain('row.className = "theme-pop-row sp-auto-row";');
+    expect(row).toContain("void loadReportAutoRow(row, state, btn);");
+    expect(row.includes("return null;")).toBe(false);
+    expect(main).toContain("pop.append(look.sec, bar.sec, ...(autoRow ? [autoRow] : []), expert.sec, all.sec);");
   });
-  it("글쓴이·본문·시각은 textContent 로 넣는다", () => {
-    expect(item).toContain("who.textContent = it.from;");
-    expect(item).toContain("text.textContent = it.text;");
-    expect(item).toContain("when.textContent = fmtWhen(it.ts);");
+  it("상태 = counsel_auto_status · 바꾸기 = counsel_auto_set 하나(앱이 설정 파일을 직접 쓰지 않는다 · 1.1.18 set_auto 그대로)", () => {
+    expect(load).toContain('res = next === undefined ? await invoke("counsel_auto_status") : await invoke("counsel_auto_set", { on: next });');
+    expect(load).toContain("state.textContent = autoLine(st.auto);");
+    expect(load).toContain("const t = autoToggle(st.auto);");
+    expect(load).toContain("btn.onclick = () => void loadReportAutoRow(row, state, btn, t.next);");
+    expect(/localStorage|writeFile|config\.json/.test(load)).toBe(false);
   });
-  it("글 목록은 Rust counsel_room_list 하나에서만 온다(앱이 릴레이 주소를 부르지 않는다)", () => {
-    expect(load).toContain('invoke("counsel_room_list")');
-    expect(main.includes("agora.godmeyou.kr/rooms")).toBe(false);
-    expect(/fetch\(\s*["'`]https:\/\/agora/.test(main)).toBe(false);
-  });
-  it("단추 배선", () => {
-    expect(main).toContain('document.getElementById("btn-counsel")!.addEventListener("click", () => openCounselPanel());');
+  it("켜기 실패 = 1.1.18 글 notTurnedOn · 안내문(개인정보) = 줄 툴팁(꺼짐이면 「다시 켜려면」)", () => {
+    expect(load).toContain('if (next === true && st.auto !== true) state.textContent += " " + AUTO_COPY.notTurnedOn;');
+    expect(load).toContain("row.title = autoNotice(st.auto);");
+    expect(AUTO_COPY.notTurnedOn).toBe("지금은 켜지 못했어요. 잠시 뒤 다시 눌러 주세요.");
   });
 });
 
-describe("상담소 뱃지 배선(§11 — 읽기만 · 판독 = parseUnread)", () => {
-  const poll = fnBody(main, "async function pollCounselUnread(");
-  const render = fnBody(main, "function renderCounselBadge(");
-  it("unread.json 은 Rust counsel_unread 로 읽고 상태 전이는 stepUnread 하나(판정 끝난 수정 시각만 기억)", () => {
-    expect(poll).toContain('invoke("counsel_unread")');
-    expect(poll).toContain("const next = stepUnread(counselUnreadCache, res);");
-    expect(poll).toContain("if (next === counselUnreadCache) return;");
-  });
-  it("숫자는 textContent 로 · 0 이면 숨김", () => {
-    expect(render).toContain("b.hidden = t === null;");
-    expect(render).toContain("b.textContent = t ?? \"0\";");
-  });
-  it("주기 = UNREAD_POLL_MS(45초 · §11 30~60초 안)", () => {
-    expect(main).toContain("setInterval(() => void pollCounselUnread(), UNREAD_POLL_MS);");
-  });
-  it("앱은 읽음 처리를 하지 않는다(master 판정 Q1) — ack·read 쓰기 명령 0", () => {
-    expect(/invoke\("counsel_(ack|seen|mark|read)/.test(main)).toBe(false);
-    expect(main.includes("mail_ack")).toBe(false);
-  });
-});
-
-describe("아고라 메뉴 배선", () => {
-  it("단추 글자·툴팁 = AGORA_COPY · 상담소 단추 바로 뒤", () => {
-    expect(html).toContain(`</span></button><button id="btn-agora" title="${AGORA_COPY.tooltip}">${AGORA_COPY.label}</button>`);
-  });
-  it("단추는 Rust open_agora_window 만 부른다(UI 가 주소를 열지 않는다)", () => {
-    expect(main).toContain('void invoke("open_agora_window").catch(');
-    expect(main.includes('open_url", { url: "https://agora')).toBe(false);
-  });
-});
-
-// ★(1.1.10 · TICKET=cysr-1110-counsel-off) 안내문이 가리키는 「상담소 끄기」 단추가 앱에 없었고, 안내문도 기기 화면에 한 번도
-//   안 떴다(Fable 적대 검토 2건 · cysr-1110.md ① · fleet-report F1·F2). 단추 = 상담소 창 · 안내 = 첫 전송 전 1회 창.
-describe("상담소 끄기/켜기 · 첫 안내", () => {
-  const pack = read("../../cysjavis-pack/bin/javis_counsel.py");
-  const panel = fnBody(main, "function openCounselPanel(");
-  const toggle = fnBody(main, "async function loadCounselAuto(");
+describe("AG5 · D-11 — 첫 안내 창과 안내 확인 계기(반복 타이머 0)", () => {
   const notice = fnBody(main, "async function maybeShowReportNotice(");
-  it("안내문 = 팩 HELP_NOTICE 와 글자 그대로(박사님 승인 문구 · 11-12 칸에 맞춰 고침) · 단추 이름이 안내문 속 이름과 같다", () => {
-    // HELP_NOTICE = ("…" "…" …) — 이어 붙은 문자열 조각 전부(cysr-counsel-notice 에서 2조각 → 4조각)
-    const m = pack.match(/HELP_NOTICE = \(((?:\s*"[^"]*")+)\s*\)/);
-    expect(m).not.toBeNull();
-    const parts = [...m![1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
-    expect(parts.length).toBeGreaterThan(1);
-    expect(REPORT_NOTICE).toBe(parts.join(""));
-    expect(REPORT_NOTICE).toContain(`‘${AUTO_COPY.turnOff}’`);
-    expect(AUTO_COPY.turnOff).toBe("상담소 끄기");
-  });
-  it("공개 문구 규칙(cysr · 위협 표현 0)", () => {
-    const all = Object.values(AUTO_COPY).join("\n");
-    expect(/\bcys\b/.test(all + REPORT_NOTICE)).toBe(false);
-    for (const bad of ["경고", "위험", "금지", "차단", "삭제됩니다", "책임"]) expect(all.includes(bad)).toBe(false);
-  });
-  it("상담소 창에 켜짐/꺼짐 줄과 단추 — 단추는 Rust counsel_auto_set 하나로만 바꾼다(앱이 설정 파일을 직접 쓰지 않는다)", () => {
-    expect(panel).toContain('<p class="counsel-auto"><span class="counsel-auto-state"></span><button class="counsel-auto-toggle"></button></p>');
-    expect(panel).toContain("void loadCounselAuto(ov);");
-    expect(toggle).toContain('invoke("counsel_auto_status")');
-    expect(toggle).toContain('invoke("counsel_auto_set", { on: next })');
-    expect(toggle).toContain("state.textContent = autoLine(st.auto);");
-    // 꺼진 창에 「끄려면 ‘상담소 끄기’」가 남던 것(master#5a04ba60 눈 검수) — 상태가 바뀔 때마다 안내문도 같이 바꾼다.
-    expect(toggle).toContain('(ov.querySelector(".counsel-auto-notice") as HTMLElement).textContent = autoNotice(st.auto);');
-  });
-  it("첫 안내 = 팩이 원할 때만(needs_notice) · 문구 그대로 · 「상담소 끄기」 단추 · 끈 게 확인된 뒤에만 「봤음」 표식", () => {
-    expect(notice).toContain('parseAutoStatus(await invoke("counsel_auto_status"))');
+  const load = fnBody(main, "async function loadReportAutoRow(");
+  it("첫 안내 = 팩이 원할 때만(needs_notice) · 문구 그대로 · 「자동 보고 끄기」 · 끈 게 확인된 뒤에만 「봤음」 표식", () => {
+    expect(notice).toContain('st = parseAutoStatus(await invoke("counsel_auto_status"));');
     expect(notice).toContain("if (!st.needsNotice) return;");
     expect(notice).toContain("confirmModal(AUTO_COPY.noticeTitle, REPORT_NOTICE, AUTO_COPY.turnOff, AUTO_COPY.ok)");
     const off = notice.indexOf('invoke("counsel_auto_set", { on: false })');
@@ -151,8 +104,46 @@ describe("상담소 끄기/켜기 · 첫 안내", () => {
     expect(seen).toBeGreaterThan(off);
     expect(notice).toContain("parseAutoStatus(res).auto !== false");
   });
-  it("앱이 뜬 뒤 곧 한 번 + 그 뒤 주기 확인(팩이 판 중간에 새로 깔려도 다음 확인 때 뜬다)", () => {
+  it("계기 ① 앱이 뜬 뒤 5초 1회(D-04 · 지우지 않음)", () => {
+    expect(main).toContain("const REPORT_NOTICE_FIRST_MS = 5_000;");
     expect(main).toContain("setTimeout(() => void maybeShowReportNotice(), REPORT_NOTICE_FIRST_MS);");
-    expect(main).toContain("setInterval(() => void maybeShowReportNotice(), REPORT_NOTICE_POLL_MS);");
+  });
+  it("계기 ② 화면 설정을 열 때 — 자동 보고 줄이 읽은 상태를 그대로 넘긴다(두 번 묻지 않음)", () => {
+    expect(load).toContain("if (next === undefined) void maybeShowReportNotice(st);");
+  });
+  it("계기 ③ 대화 화면·작업 화면 첫 진입마다 1회 — 화면마다 실행당 한 번(집합) · 대화 = #view-host 가 처음 보일 때 · 작업 = onWorkShown", () => {
+    const entry = fnBody(main, "function noteViewEntryForReportNotice(");
+    expect(entry).toContain("if (reportNoticeViewsSeen.has(view)) return;");
+    expect(entry).toContain("void maybeShowReportNotice();");
+    expect(main).toContain('noteViewEntryForReportNotice("chat");');
+    // (TICKET=cysr-1119-integ1 · S10b×S12 풀이) 작업 화면 진입 = S12 보기 칸 닫기 먼저 + S10b 안내 계기 — 두 조각 한 줄
+    expect(main).toContain('onWorkShown: () => { closePeek("leave"); retryFailedRuntimes(); render(); noteViewEntryForReportNotice("work"); },');
+    expect(main).toContain('mo.observe(viewHost, { attributes: true, attributeFilter: ["hidden"] });');
+  });
+});
+
+describe("AG5n — 안내문 끝 문장 정본(DESIGN §8-3-1) · 단추 이름 = 자동 보고", () => {
+  const pack = read("../../cysjavis-pack/bin/javis_counsel.py");
+  it("안내문 = 팩 HELP_NOTICE 와 글자 그대로 · 끝 문장 = 정본 바이트", () => {
+    const m = pack.match(/HELP_NOTICE = \(((?:\s*"[^"]*")+)\s*\)/);
+    expect(m).not.toBeNull();
+    const parts = [...m![1].matchAll(/"([^"]*)"/g)].map((x) => x[1]);
+    expect(parts.length).toBeGreaterThan(1);
+    expect(REPORT_NOTICE).toBe(parts.join(""));
+    // (cysr-1119-s10b AG5n) 끝 문장 = DESIGN §8-3-1 정본 문자열 바이트 그대로(팩 HELP_NOTICE·모듈 설명과 같은 바이트 = 팩 시험) · 단추 이름 = 자동 보고.
+    expect(REPORT_NOTICE.endsWith(NOTICE_TAIL)).toBe(true);
+    expect(REPORT_NOTICE.includes("상담소")).toBe(false);
+    expect([AUTO_COPY.noticeTitle, AUTO_COPY.turnOff, AUTO_COPY.turnOn]).toEqual(["자동 보고 안내", "자동 보고 끄기", "자동 보고 켜기"]);
+    expect(AUTO_COPY.offNotice).toBe("지금은 보내지 않습니다. 다시 켜려면 화면 설정 → ‘자동 보고’를 켜세요.");
+  });
+  it("원천 grep — 화면 글(counsel.ts 문자열·index.html 보이는 글)에 「상담소」 0 · 주석·옛 판 이행 설명은 제외(주석을 걷고 잰다)", () => {
+    const strs = [...code(counselSrc).matchAll(/"([^"]*)"/g)].map((x) => x[1]).join("\n");
+    expect(strs.includes("상담소")).toBe(false);
+    expect(htmlCode.includes("상담소")).toBe(false);
+  });
+  it("공개 문구 규칙(cysr · 위협 표현 0)", () => {
+    const all = Object.values(AUTO_COPY).join("\n");
+    expect(/\bcys\b/.test(all + REPORT_NOTICE)).toBe(false);
+    for (const bad of ["경고", "위험", "금지", "차단", "삭제됩니다", "책임"]) expect(all.includes(bad)).toBe(false);
   });
 });

@@ -46,8 +46,20 @@ export interface TaskCard {
   status: CardStatus;
   /** 마지막 소식 뒤 초(모르면 null) */
   newsSecs: number | null;
-  helpers: number;
+  /** (TICKET=cysr-1119-s12 · CV-PEEK ① · C-07) 이 카드의 좌석들 — 보기 칸 열기 대상. label = 여럿이면 「도우미 N · 상태」 · 하나면 좌석 이름표(번호·CTX 0 · FR-P1). */
+  helpers: Helper[];
 }
+
+export interface Helper {
+  sid: number;
+  name: string;
+  label: string;
+  /** 이 좌석이 막혀 있다(승인 창·입력 대기) — 보기 칸 「작업 화면에서 답하기」 단추 */
+  need: boolean;
+}
+
+/** 도우미 한 명의 상태 글(보기 칸 이름 목록) — 막힘 = 승인 기다림(설계 §4-3 ① 예시 글). */
+export const HELPER_STATUS: Record<CardStatus, string> = { need: "승인 기다림", run: "일하는 중", wait: "기다림", quiet: "조용함", unknown: "소식 모름" };
 
 export interface TeamBlock {
   /** null = 팀 머리 없음(묶음 1개 이하) */
@@ -264,7 +276,8 @@ function cardsOf(rows: readonly SeatRow[], news: ReadonlyMap<number, number | nu
     const sts = c.sids.map((sid) => seatCardStatus(rows.find((r) => r.sid === sid)!, news.get(sid) ?? null, orgRows.has(sid)));
     const status = rank.find((k) => sts.includes(k)) ?? "unknown";
     const ages = c.sids.map((sid) => news.get(sid)).filter((x): x is number => typeof x === "number");
-    out.push({ key: c.title, title: c.title, status, newsSecs: ages.length ? Math.min(...ages) : null, helpers: c.sids.length });
+    const helpers: Helper[] = c.sids.map((sid, i) => ({ sid, name: c.title, label: c.sids.length > 1 ? `도우미 ${i + 1} · ${HELPER_STATUS[sts[i]]}` : c.title, need: sts[i] === "need" }));
+    out.push({ key: c.title, title: c.title, status, newsSecs: ages.length ? Math.min(...ages) : null, helpers });
   }
   return out;
 }

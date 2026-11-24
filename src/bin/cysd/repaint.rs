@@ -122,28 +122,62 @@ pub(crate) struct RepaintEcho {
     pub(crate) last_output: Option<Instant>,
     /// 창 안에 들어온 줄 번호 구간(`[start, end)` · 오름차순 · 상한 [`REPAINT_ECHO_RANGES_MAX`]).
     pub(crate) ranges: Vec<(u64, u64)>,
+    /// ★(TICKET=cysr-1119-obs3 · 정적 1R BLOCK 고침) GUI 크기 변경 창 — 위 세 칸(데몬 흔들기 창 = [`EchoMode::Full`])과 **수명을 따로** 둔다.
+    /// GUI 변경은 이 칸만 고친다 — 흔들기 창의 상한·되돌린 시각·마지막 출력·구간 기록을 1ms 도 바꾸지 않는다(불변식).
+    pub(crate) gui: GuiEcho,
+}
+
+/// ★(TICKET=cysr-1119-obs3) GUI 크기 변경 창의 칸 — 끝 규칙은 흔들기 창과 같은 꼴([`echo_window_open`]): 되돌린 시각 = 크기를 바꾼 시각.
+/// 줄 구간은 기록하지 않는다(wait_for·델타 read 무접촉) · 건강 룰은 줄마다 [`EchoMode::Gui`] 판정 · 회상 색인은 가리지 않는다(색인은 흔들기 창 = Full 일 때만 건너뜀 · 507 F8).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GuiEcho {
+    pub(crate) cap_until: Option<Instant>,
+    pub(crate) restored_at: Option<Instant>,
+    pub(crate) last_output: Option<Instant>,
+}
+
+impl GuiEcho {
+    pub(crate) fn active_at(&self, now: Instant) -> bool {
+        echo_window_open(self.cap_until, self.restored_at, self.last_output, now)
+    }
+}
+
+/// 순수: 창의 끝 규칙(흔들기·GUI 공통) — 상한 전이고, 되돌리기 전이면 열림 · 되돌린 뒤엔 '되돌린 시각 + 바닥 3초' 와 '되돌린 뒤 마지막 출력 + 1초' 중 늦은 쪽 전까지.
+fn echo_window_open(cap: Option<Instant>, restored_at: Option<Instant>, last_output: Option<Instant>, now: Instant) -> bool {
+    let Some(cap) = cap else {
+        return false;
+    };
+    if now >= cap {
+        return false;
+    }
+    match restored_at {
+        None => true,
+        Some(restored) => {
+            // 바닥(되돌린 뒤 3초) 위에 '되돌린 뒤 도착한 마지막 출력 + 1초' 를 얹는다 — 되돌리기 전 출력은 재방송이 아니라 세지 않는다.
+            let mut end = restored + Duration::from_millis(REPAINT_ECHO_GRACE_MS);
+            if let Some(o) = last_output.filter(|o| *o >= restored) {
+                end = end.max(o + Duration::from_millis(REPAINT_ECHO_QUIET_MS));
+            }
+            now < end
+        }
+    }
+}
+
+/// ★(TICKET=cysr-1119-obs3) 지금 반향 창의 종류 — 건강 룰이 부른다([`echo_mode`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EchoMode {
+    /// 창 없음 — 종전 그대로.
+    Off,
+    /// GUI 크기 변경 창만 열림 — 담화 아닌 매치는 같은 룰 묶음의 판정 기록(`Surface::health_verdict_line`)이 줄 버퍼 안 ∧ 이 배치보다 앞일 때만 거른다(state.rs run_health_rules).
+    Gui,
+    /// 데몬 흔들기 창이 **자기 조건으로** 열림(GUI 창이 함께 열려 있어도) — 배치째 건너뛴다(A2 종전). 흔들기 창이 닫히면 남은 GUI 창은 Gui 로 이어진다.
+    Full,
 }
 
 impl RepaintEcho {
     /// 순수: `now` 에 창이 열려 있는가. 되돌린 뒤에는 '되돌린 시각 + 바닥 3초' 와 '되돌린 뒤 마지막 출력 + 1초' 가운데 늦은 쪽 전까지만 열려 있고, 어느 경우든 상한을 넘기면 닫힌다.
     pub(crate) fn active_at(&self, now: Instant) -> bool {
-        let Some(cap) = self.cap_until else {
-            return false;
-        };
-        if now >= cap {
-            return false;
-        }
-        match self.restored_at {
-            None => true,
-            Some(restored) => {
-                // 바닥(되돌린 뒤 3초) 위에 '되돌린 뒤 도착한 마지막 출력 + 1초' 를 얹는다 — 되돌리기 전 출력은 재방송이 아니라 세지 않는다.
-                let mut end = restored + Duration::from_millis(REPAINT_ECHO_GRACE_MS);
-                if let Some(o) = self.last_output.filter(|o| *o >= restored) {
-                    end = end.max(o + Duration::from_millis(REPAINT_ECHO_QUIET_MS));
-                }
-                now < end
-            }
-        }
+        echo_window_open(self.cap_until, self.restored_at, self.last_output, now)
     }
 
     /// 창 표식을 지운다(구간은 남긴다 — 닫힌 창의 재방송 줄도 계속 건너뛴다).
@@ -153,8 +187,14 @@ impl RepaintEcho {
         self.last_output = None;
     }
 
-    /// 순수: 출력이 `now` 에 도착했다 — 창이 열려 있으면 마지막 출력 시각을 찍고 true, 닫혔으면(정적 하한·상한) 표식을 지우고 false.
+    /// 순수: 출력이 `now` 에 도착했다 — 흔들기 창이 열려 있으면 마지막 출력 시각을 찍고 true(이 청크의 완성 줄은 반향 = 구간 기록),
+    /// 닫혔으면(정적 하한·상한) 표식을 지우고 false(종전 그대로). ★(obs3) GUI 창은 따로 — 열려 있으면 자기 마지막 출력만 찍고(정적 연장) 구간 기록에는 끼지 않는다.
     pub(crate) fn note_output(&mut self, now: Instant) -> bool {
+        if self.gui.active_at(now) {
+            self.gui.last_output = Some(now);
+        } else if self.gui.cap_until.is_some() {
+            self.gui = GuiEcho::default();
+        }
         if !self.active_at(now) {
             if self.cap_until.is_some() {
                 self.clear_window();
@@ -163,6 +203,51 @@ impl RepaintEcho {
         }
         self.last_output = Some(now);
         true
+    }
+
+    /// 순수(obs3): `now` 의 창 종류 — 흔들기 창이 자기 조건으로 열려 있으면 Full, 아니고 GUI 창이 열려 있으면 Gui, 둘 다 아니면 Off.
+    pub(crate) fn mode_at(&self, now: Instant) -> EchoMode {
+        if self.active_at(now) {
+            EchoMode::Full
+        } else if self.gui.active_at(now) {
+            EchoMode::Gui
+        } else {
+            EchoMode::Off
+        }
+    }
+
+    /// 순수(obs3): 지난 창의 표식을 지운다(흔들기·GUI 각각 · 구간은 남긴다).
+    fn clear_expired(&mut self, now: Instant) {
+        if !self.active_at(now) && self.cap_until.is_some() {
+            self.clear_window();
+        }
+        if !self.gui.active_at(now) && self.gui.cap_until.is_some() {
+            self.gui = GuiEcho::default();
+        }
+    }
+
+    /// 순수(obs3): 흔들기 창을 연다(상한 = 지금 + 60초 · 되돌린 시각·마지막 출력 지움) — [`open_echo_window`] 의 본문. GUI 칸은 안 건드린다.
+    pub(crate) fn open_full_at(&mut self, now: Instant) {
+        self.cap_until = Some(now + Duration::from_secs(REPAINT_ECHO_CAP_SECS));
+        self.restored_at = None;
+        self.last_output = None;
+    }
+
+    /// 순수(obs3): 흔들기를 되돌렸다(창이 있을 때만) — [`InFlightGuard`] Drop 의 본문.
+    pub(crate) fn mark_restored_at(&mut self, now: Instant) {
+        if self.cap_until.is_some() {
+            self.restored_at = Some(now);
+        }
+    }
+
+    /// 순수(obs3): GUI 크기 변경이 `now` 에 일어났다 — GUI 칸만 새로 맞춘다(되돌린 시각 = 지금 · 상한 = 지금 + 60초 · 마지막 출력 지움 — 되돌린 시각 앞 출력은
+    /// 어차피 세지 않으므로 열린 창 연장과 새 창 열기가 같은 식이다). 흔들기 칸은 안 건드린다.
+    pub(crate) fn open_resize_at(&mut self, now: Instant) {
+        self.gui = GuiEcho {
+            cap_until: Some(now + Duration::from_secs(REPAINT_ECHO_CAP_SECS)),
+            restored_at: Some(now),
+            last_output: None,
+        };
     }
 
     /// 순수: 창 안에 들어온 줄 번호 구간 `[start, end)` 를 기억한다 — 직전 구간과 맞닿으면 잇고, 스크롤백에서 이미 밀려난 구간(`end <= oldest` · 2차 검토 MINOR)을 먼저 잊고,
@@ -213,14 +298,23 @@ pub(crate) fn echo_record_lines(s: &Surface, start: u64, end: u64, oldest: u64) 
     s.repaint_echo.lock().unwrap_or_else(|e| e.into_inner()).record_lines(start, end, oldest);
 }
 
-/// 지금 창이 열려 있는가(순수 판정의 지금 판 — 지났으면 표식을 지워 둔다). 건강 룰·회상 색인이 부른다.
-pub(crate) fn echo_active(s: &Surface) -> bool {
+/// ★(TICKET=cysr-1119-obs3) 지금 창의 종류(지난 창은 표식을 지워 둔다) — 건강 룰이 부른다(leaf 락 한 번). 판정 시각 = **평가 시각**(청크 도착 시각이 아니다).
+pub(crate) fn echo_mode(s: &Surface) -> EchoMode {
     let mut e = s.repaint_echo.lock().unwrap_or_else(|e| e.into_inner());
-    let active = e.active_at(Instant::now());
-    if !active && e.cap_until.is_some() {
-        e.clear_window();
-    }
-    active
+    let now = Instant::now();
+    let mode = e.mode_at(now);
+    e.clear_expired(now);
+    mode
+}
+
+/// ★(TICKET=cysr-1119-obs3) GUI 크기 변경 창을 연다([`RepaintEcho::open_resize_at`]) — [`apply_resize`] 가 크기가 실제로 바뀔 때만 부른다(PTY 변경이 실패해도 되돌리지 않는다).
+pub(crate) fn open_resize_echo_window(s: &Surface) {
+    s.repaint_echo.lock().unwrap_or_else(|e| e.into_inner()).open_resize_at(Instant::now())
+}
+
+/// 지금 창(흔들기·GUI 어느 쪽이든)이 열려 있는가(지난 창은 표식을 지워 둔다). `Daemon::repaint_echo_active`(시험이 쓴다)가 부른다 — 회상 색인은 [`echo_mode`] == Full · 건강 룰은 [`echo_mode`].
+pub(crate) fn echo_active(s: &Surface) -> bool {
+    echo_mode(s) != EchoMode::Off
 }
 
 /// 요청 사유 — 이벤트 `screen.repaint_requested` 의 `reason`.
@@ -410,10 +504,7 @@ pub(crate) fn note_queue_screen(daemon: &Arc<Daemon>, s: &Arc<Surface>, obs: Scr
 /// (A2) 반향 제외 창을 상한([`REPAINT_ECHO_CAP_SECS`])으로 연다 — 흔들기가 어떤 이유로 오래 끌려도 이 시간 뒤에는 룰·색인이 되살아난다.
 /// 되돌린 시각·마지막 출력은 지운다(새 흔들기) · 종전 반향 줄 구간은 남긴다.
 pub(crate) fn open_echo_window(s: &Surface) {
-    let mut e = s.repaint_echo.lock().unwrap_or_else(|e| e.into_inner());
-    e.cap_until = Some(Instant::now() + Duration::from_secs(REPAINT_ECHO_CAP_SECS));
-    e.restored_at = None;
-    e.last_output = None;
+    s.repaint_echo.lock().unwrap_or_else(|e| e.into_inner()).open_full_at(Instant::now());
 }
 
 /// (A6) 흔들기 스레드의 수명 가드 — 떨어질 때(정상·오류·**패닉 unwinding 포함**) 진행 중 표식을 내리고 반향 창에 '되돌린 시각' 을 찍는다
@@ -423,10 +514,7 @@ pub(crate) struct InFlightGuard<'a>(pub(crate) &'a Surface);
 impl Drop for InFlightGuard<'_> {
     fn drop(&mut self) {
         {
-            let mut e = self.0.repaint_echo.lock().unwrap_or_else(|e| e.into_inner());
-            if e.cap_until.is_some() {
-                e.restored_at = Some(Instant::now());
-            }
+            self.0.repaint_echo.lock().unwrap_or_else(|e| e.into_inner()).mark_restored_at(Instant::now());
         }
         self.0.repaint_in_flight.store(false, Ordering::Release);
     }
@@ -465,6 +553,15 @@ pub(crate) fn current_size_for_resize(s: &Surface) -> (u16, u16) {
 /// (파서는 패닉 시 새 파서로 갈아 PTY 크기에 맞춘다 · `set_parser_size`).
 pub(crate) fn apply_resize(s: &Surface, rows: u16, cols: u16) -> Result<(), String> {
     let mut gate = s.resize_gate.lock().unwrap_or_else(|e| e.into_inner());
+    // ★(TICKET=cysr-1119-obs3) 크기가 실제로 바뀌면 TUI 가 대화를 다시 그린다(옛 줄 재방송) — PTY 를 바꾸는 호출보다 **앞에서** GUI 창을 연다(호출 순서상 앞 · 시간 보장은 아님).
+    //   같은 크기 재전송(맞춤·포커스)은 창 0 — 커널이 SIGWINCH 를 안 보내 다시 그리기도 없다. 흔들기 중이면 파서가 rows-1 이라 정식 크기는 「다름」(창 열림 · 의도).
+    //   락: resize_gate → parser(비교 뒤 놓음) → repaint_echo(leaf · 놓음) → master → parser — nudge_resize 와 같은 순서.
+    let cur = s.parser.lock().unwrap_or_else(|e| e.into_inner()).screen().size();
+    //   (obs3 고침 2 · 정적 2R MINOR · master 번복) `resize_pty` 가 실패해도 이 호출이 연 GUI 창은 되돌리지 않는다 — 되돌림은 그 사이 수신 스레드가 찍은
+    //   앞선 창의 출력 관측을 덮었다(경합). 실패한 변경이 연 창은 3초 바닥·60초 상한으로 스스로 닫히고, 그동안 하는 일은 판정 기록이 버퍼에 있는 룰 묶음의 재방송 거름뿐이다.
+    if cur != (rows, cols) {
+        open_resize_echo_window(s);
+    }
     resize_pty(s, rows, cols)?;
     gate.gen = gate.gen.wrapping_add(1);
     gate.nudge_origin = None; // 바깥 크기가 새 정식 크기다 — 흔들기는 되돌리지 않는다
@@ -883,6 +980,108 @@ mod tests {
         e.cap_until = Some(t0 + Duration::from_secs(REPAINT_ECHO_CAP_SECS));
         assert!(!e.active_at(t0 + Duration::from_secs(REPAINT_ECHO_CAP_SECS)));
         assert!(!e.note_output(t0 + Duration::from_secs(REPAINT_ECHO_CAP_SECS + 1)) && e.cap_until.is_none());
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
+    }
+
+    /// ★(obs3 · 정적 1R BLOCK 반례 시각표 그대로) 흔들기 복원 0초 → 2초 GUI 변경 → 2.1초까지 짧은 재방송 → 4초.
+    /// 기준판 흔들기 창 끝 = max(0+3, 2.1+1) = 3.1초 — GUI 변경이 이 끝을 1ms 도 바꾸지 않는다: 4초 = Gui(배치째 건너뛰지 않음) · 구간 기록 0.
+    /// (고치기 전 판: GUI 변경이 흔들기의 되돌린 시각을 2초로 밀어 끝 = 5초 → 4초가 Full · 첫 실패·완료 줄이 가려짐.)
+    #[test]
+    fn obs3_gui_after_nudge_restore_does_not_extend_full_suppression() {
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let mut e = RepaintEcho::default();
+        e.open_full_at(t0 - Duration::from_secs(1));
+        e.mark_restored_at(t0);
+        e.open_resize_at(t0 + ms(2_000));
+        assert!(e.note_output(t0 + ms(2_100)), "2.1초 = 기준판에서도 흔들기 창 안(구간 기록)");
+        assert_eq!(e.mode_at(t0 + ms(3_099)), EchoMode::Full, "기준판 끝 3.1초 직전 = Full");
+        assert_eq!(e.mode_at(t0 + ms(3_100)), EchoMode::Gui, "기준판 끝 3.1초 = 흔들기 창 닫힘 → 남은 GUI 창");
+        assert_eq!(e.mode_at(t0 + ms(4_000)), EchoMode::Gui, "4초 = Gui 여야 한다(Full 이면 GUI 변경이 흔들기 창을 늘린 것)");
+        assert!(!e.note_output(t0 + ms(4_000)), "4초 출력은 구간 기록 대상이 아니다(wait_for·델타 read 가 건너뛰면 안 됨)");
+        assert_eq!(e.mode_at(t0 + ms(5_000)), EchoMode::Off, "GUI 창 끝 = max(2+3, 4+1) = 5초");
+    }
+
+    /// (obs3 정적 1R) 흔들기 중(되돌리기 전) 원래 상한 60초 직전에 GUI 변경이 와도 흔들기 상한은 그대로 — 60초 뒤 = Gui(Full 아님).
+    #[test]
+    fn obs3_gui_burst_cannot_extend_original_full_cap() {
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let cap = Duration::from_secs(REPAINT_ECHO_CAP_SECS);
+        let mut e = RepaintEcho::default();
+        e.open_full_at(t0);
+        for k in 0..20u64 {
+            e.open_resize_at(t0 + Duration::from_secs(41) + ms(k * 900));
+            e.note_output(t0 + Duration::from_secs(41) + ms(k * 900 + 100));
+        }
+        assert_eq!(e.cap_until, Some(t0 + cap), "GUI 변경이 흔들기 상한을 바꿨다");
+        assert!(e.restored_at.is_none(), "GUI 변경이 흔들기의 되돌린 시각(None)을 바꿨다");
+        assert_eq!(e.mode_at(t0 + cap - ms(1)), EchoMode::Full);
+        assert_eq!(e.mode_at(t0 + cap), EchoMode::Gui, "흔들기 원래 상한 뒤엔 Full 이 아니다 — 남은 GUI 창");
+        assert!(!e.note_output(t0 + cap + ms(1)), "흔들기 상한 뒤 출력은 구간 기록 대상이 아니다");
+    }
+
+    /// (obs3 정적 1R · T6 보강) 고정 시각 GUI 변경 3회(0·1·2초) — 마지막 변경 + 3초 직전 열림 · 정확히 3초에 닫힘(출력 0) · 상한 = 마지막 변경 + 60초.
+    /// (열린 창 연장을 빼고 첫 변경 기준에 머무는 구현은 3초 경계·상한 단언에서 붉다.) 출력이 0.9초 간격으로 이어져도 마지막 변경 + 60초에 닫힌다.
+    #[test]
+    fn obs3_gui_burst_extends_grace_and_cap_from_last_resize() {
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let g = ms(REPAINT_ECHO_GRACE_MS);
+        let cap = Duration::from_secs(REPAINT_ECHO_CAP_SECS);
+        let mut e = RepaintEcho::default();
+        for k in 0..3u64 {
+            e.open_resize_at(t0 + ms(k * 1_000));
+        }
+        let last = t0 + ms(2_000);
+        assert_eq!(e.gui.cap_until, Some(last + cap), "상한은 마지막 변경 + 60초");
+        assert_eq!(e.gui.restored_at, Some(last));
+        assert_eq!(e.mode_at(last + g - ms(1)), EchoMode::Gui);
+        assert_eq!(e.mode_at(last + g), EchoMode::Off, "출력 없으면 마지막 변경 + 3초에 닫힌다");
+        // 끊이지 않는 출력 — 상한에서 닫힌다. (obs3 고침 2 · 정적 2R MINOR) 상태가 살아 있는 순서로 경계를 묻는다: cap−1ms 출력 → 정확히 cap → 그 뒤 출력.
+        let mut e = RepaintEcho::default();
+        e.open_resize_at(t0);
+        let mut t = t0;
+        while t + ms(900) < t0 + cap - ms(1) {
+            t += ms(900);
+            e.note_output(t);
+            assert_eq!(e.mode_at(t), EchoMode::Gui, "{:?}", t - t0);
+        }
+        e.note_output(t0 + cap - ms(1));
+        assert_eq!(e.gui.cap_until, Some(t0 + cap), "전제: 상한 직전까지 GUI 칸이 살아 있다");
+        assert_eq!(e.mode_at(t0 + cap - ms(1)), EchoMode::Gui, "상한 1ms 전 = 열림");
+        assert_eq!(e.mode_at(t0 + cap), EchoMode::Off, "출력이 이어져도 마지막 변경 + 60초(정확히)에 닫힌다");
+        e.note_output(t0 + cap + ms(1));
+        assert_eq!(e.gui, GuiEcho::default(), "상한 뒤 출력은 GUI 칸을 지운다(연장하지 않는다)");
+        assert_eq!(e.mode_at(t0 + cap + ms(1)), EchoMode::Off);
+        assert_eq!(e.cap_until, None, "GUI 창은 흔들기 칸을 쓰지 않는다");
+    }
+
+    /// (obs3 정적 1R · T8 다시) 실제 복원 경계를 지나는 겹침 — 흔들기 시작 0 → GUI 변경 0.5초(흔들기 중) → 흔들기 복원 1초 → 출력 1.1초(구간 기록) →
+    /// GUI 변경 3초(복원 뒤 · 흔들기 창 안) → 흔들기 끝 = max(1+3, 1.1+1) = 4초 그대로 → 4초 출력 = 구간 기록 0 · 모드 Gui(GUI 끝 = max(3+3, 4+1) = 6초) → 6초 Off.
+    #[test]
+    fn obs3_overlap_real_restore_boundary_ranges_follow_full_only() {
+        let t0 = Instant::now() + Duration::from_secs(100);
+        let mut e = RepaintEcho::default();
+        e.open_full_at(t0);
+        e.open_resize_at(t0 + ms(500));
+        assert!(e.restored_at.is_none(), "GUI 변경이 흔들기 중(None)을 덮었다");
+        e.mark_restored_at(t0 + ms(1_000));
+        assert!(e.note_output(t0 + ms(1_100)), "흔들기 창 안 = 구간 기록");
+        e.open_resize_at(t0 + ms(3_000));
+        assert_eq!(e.restored_at, Some(t0 + ms(1_000)), "복원 뒤 GUI 변경이 흔들기의 되돌린 시각을 바꿨다");
+        assert_eq!(e.mode_at(t0 + ms(3_999)), EchoMode::Full);
+        assert!(!e.note_output(t0 + ms(4_000)), "흔들기 창이 자기 조건(4초)으로 닫힌 뒤 = 구간 기록 0");
+        assert_eq!(e.mode_at(t0 + ms(4_000)), EchoMode::Gui, "남은 GUI 창은 Gui 로 이어진다");
+        assert_eq!(e.mode_at(t0 + ms(5_999)), EchoMode::Gui);
+        assert_eq!(e.mode_at(t0 + ms(6_000)), EchoMode::Off);
+        // 반대 순서(GUI 먼저 · 흔들기 뒤) — 흔들기 칸은 흔들기가 연 그대로.
+        let mut e = RepaintEcho::default();
+        e.open_resize_at(t0);
+        e.open_full_at(t0 + ms(500));
+        assert_eq!(e.cap_until, Some(t0 + ms(500) + Duration::from_secs(REPAINT_ECHO_CAP_SECS)));
+        assert!(e.note_output(t0 + ms(600)));
+        assert_eq!(e.mode_at(t0 + ms(600)), EchoMode::Full);
     }
 
     /// ★(성찰 2회차 M1-a · 순수) 반향 줄 구간 — 맞닿은 구간은 잇고 · 겹치면 끝을 늘리고 · 빈 구간은 무시 · 스크롤백에서 밀려난 구간은 먼저 잊고 · 그래도 상한 64 를 넘으면

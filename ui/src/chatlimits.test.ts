@@ -72,14 +72,16 @@ describe("② act.limits — 원천 그대로 · 없거나 던지면 빈 목록(
 describe("③ 배선 — main.ts → bootViews → ChatCore → 대화 화면 머리", () => {
   test("main.ts 가 상황판과 같은 캐시(accountsCache)·같은 판정(chatLimitRows)을 넘긴다 · 새 invoke 0", () => {
     expect(MAIN).toContain("limits: () => chatLimitRows(accountsCache, Date.now() / 1000)");
-    expect(MAIN.split('invoke("usage_accounts_all")').length - 1).toBe(2); // 조회 자리 = 기점(9c46ff6d0) 그대로 2곳(15초 폴러 · Control Center) — 대화 화면 몫 새 조회 0
+    expect(MAIN.split('invoke("usage_accounts_all")').length - 1).toBe(1); // 조회 자리 = 15초 폴러 1곳(1.1.19 · cysr-1119-s10b: Control Center Live 조회는 Live 와 함께 빠졌다) — 대화 화면 몫 새 조회 0
   });
   test("views/index.ts 가 ChatCore 에 limits 를 건넨다", () => {
     expect(INDEX).toContain("limits: () => deps.limits?.() ?? []");
   });
   test("대화 화면 머리에 cv-limits(act.limits 로 그림 · 5초 들여다봄)", () => {
     expect(CHAT).toContain('el("div", "cv-limits")');
-    expect(CHAT).toContain("head.append(health, confirms, errors, limits, guideBtn);");
+    // (TICKET=cysr-1119-s5 · V3) 자리 = 넓은 창 왼쪽 칸 아래 · 600px 이하 머리(같은 요소 옮겨 붙임 · master#ef0385eb)
+    expect(CHAT).toContain("if (narrowMq?.matches) head.insertBefore(limits, guideBtn);");
+    expect(CHAT).toContain("else rail.foot.append(limits);");
     expect(CHAT).toContain("const rows = act.limits();");
     expect(CHAT).toContain("ctx.timers.every(5_000, paintLimits);");
   });

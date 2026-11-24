@@ -91,7 +91,7 @@ cysr send --to worker "상태 보고해줘"            # 역할 주소로 push
 cysr send-key --to worker Return               # 전송 확정
 cysr status --json                             # 전 노드 1콜 스냅샷
 cysr events --reconnect                        # 이벤트 푸시 구독 (폴링 대체)
-cysr run -- python -m http.server              # 생명주기 관리되는 스코프드 실행
+cysr run -- python -m http.server --bind 127.0.0.1   # 생명주기 관리되는 스코프드 실행(루프백만 · 방화벽 팝업 없음)
 cysr boot                                      # 표준 노드 세트 일괄 기동(설치된 CLI 자동 감지)
 ```
 
@@ -109,8 +109,9 @@ pack     cysjavis-pack/: 절대지침 10·결정론 도구 90+·훅 25+·스킬 
 ```
 
 모든 pane 프로세스에 `CYS_SURFACE_ID`·`CYS_SURFACE_REF`·`CYS_SOCKET` 자동 주입 —
-pane 안의 AI는 `cysr identify`로 자기 주소를 즉시 안다. PTY는 데몬 소유라서 앱을
-재시작·재설치·갱신해도 세션은 살아 있다(재attach).
+pane 안의 AI는 `cysr identify`로 자기 주소를 즉시 안다. PTY는 데몬 소유라서 앱(화면)만
+다시 켜면 세션이 그대로 살아 있다(재attach). 데몬이 바뀌는 갱신·재설치는 PTY 를 잃고, 대신 조직
+복원(phoenix)이 같은 대화를 이어 붙인다.
 
 ## cysr 팩 — 내장 멀티에이전트 운영체계
 
@@ -497,7 +498,7 @@ bun x @tauri-apps/cli build                   # 배포 번들
 ```
 
 주의: ui/ 수정 후 앱 재빌드 필요(프런트엔드가 바이너리에 임베드됨). 세션(PTY)은 데몬 소유 —
-UI 재시작·앱 재설치에도 세션 유지(재attach).
+앱(화면)만 다시 켜면 세션 유지(재attach) · 데몬이 바뀌는 갱신·재설치는 PTY 를 잃고 조직 복원(phoenix)이 이어 붙인다.
 
 ## 보안 모델
 

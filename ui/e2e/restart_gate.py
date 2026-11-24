@@ -3,7 +3,7 @@
 
 실제 번들 + __TAURI__ 대역(statusboard_gate SHIM). 1회차: 좌석 W7 · lms 탭 → 934 넓게 보기 · 931 을 video 로 옮김(이벤트) → 저장소(localStorage)만
 들고 새 창을 연다(= 앱 종료 → 재실행). 2회차 데몬은 재부팅한 셈 = 같은 좌석(역할·폴더)에 **번호를 새로 발급**(sid +100 · 목록 group 칸 없음).
-단언: 탭 강조 = 1회차와 같음 · 넓게 보기 = 같은 좌석(역할 worker-4 = 새 번호 106) · 931(역할 worker)은 video 묶음 그대로 · 탭 순서 그대로 · 콘솔 오류 0.
+단언: 탭 강조 = 1회차와 같음(넓게 보기 중 = 그 좌석 든 탭 active zoomed · 1.1.19 SEL-3) · 넓게 보기 = 같은 좌석(역할 worker-4 = 새 번호 106) · 931(역할 worker)은 video 묶음 그대로 · 탭 순서 그대로 · 콘솔 오류 0.
 ★헤드리스 브라우저 장면이다 — 실제 앱(Tauri) 창·격리 프로필 실측이 아니다(박사님 화면에 창을 띄우지 않기 위해).
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/restart_gate.py [캡처폴더]
 """
@@ -25,6 +25,7 @@ def js_of(seats, bump: int):
 
 STATE = r"""
 () => ({ tab: document.querySelector('#root .group-tab.active .group-tab-name')?.textContent ?? null,
+  zoomed: document.querySelectorAll('#root .group-tab.active.zoomed').length,
   tabs: [...document.querySelectorAll('#root .group-tab .group-tab-name')].map((e) => e.textContent),
   panes: [...document.querySelectorAll('#root .pane')].map((p) => +p.dataset.sid).sort((a, b) => a - b),
   groups: (() => { const host = document.querySelector('.ws-seats[data-seat-host]:not([data-seat-host="board"]):not([data-seat-host^="n"])'); const out = {}; let cur = null;
@@ -66,7 +67,9 @@ def main() -> int:
             p1.screenshot(path=str(OUT / "before-1920.png"))
             storage = c1.storage_state()
             c1.close()
-            sbg.check(s1["tab"] is None and s1["panes"] == [1, 2, 6], f"1회차 = 934 넓게 보기(넓게 보는 동안 탭 강조 없음 = 원래 동작) {s1['tab']} {s1['panes']}")
+            # (1.1.19 · S7 SEL-3 · DESIGN §5 바꿈 3 · TICKET=fix-1119-e2e-red3) 넓게 보기 중 = 그 좌석이 든 탭(934 = lms)을 `active zoomed` 로 표시(표시용 인자 · 동작용 active 는 그대로 null).
+            #   옛 기대 「넓게 보는 동안 탭 강조 없음」 = 1.1.18 동작 → 설계 값으로 바꿈.
+            sbg.check(s1["tab"] == "lms" and s1["zoomed"] == 1 and s1["panes"] == [1, 2, 6], f"1회차 = 934 넓게 보기 · 위 탭 강조 = 그 좌석이 든 lms 하나 + zoomed(SEL-3) {s1['tab']} zoomed={s1['zoomed']} {s1['panes']}")
             # 2회차 — 저장소만 들고 새 창 · 데몬 재부팅(번호 +100)
             c2 = br.new_context(viewport={"width": 1920, "height": 1200}, storage_state=storage)
             p2 = c2.new_page()
@@ -79,7 +82,7 @@ def main() -> int:
             p2.screenshot(path=str(OUT / "after-restart-renumbered-1920.png"))
             c2.close()
             print(f"  1회차 {s1}\n  2회차 {s2}")
-            sbg.check(s2["tab"] == s1["tab"], f"재실행 뒤 탭 강조 = 1회차와 같음(넓게 보는 중 = 강조 없음) ({s1['tab']} → {s2['tab']})")
+            sbg.check(s2["tab"] == s1["tab"] and s2["zoomed"] == s1["zoomed"], f"재실행 뒤 탭 강조 = 1회차와 같음(넓게 보는 중 = 그 좌석 든 탭 zoomed) ({s1['tab']}/{s1['zoomed']} → {s2['tab']}/{s2['zoomed']})")
             sbg.check(s2["tabs"] == s1["tabs"], f"탭 순서 그대로 {s1['tabs']} → {s2['tabs']}")
             sbg.check(s2["panes"] == [101, 102, 106], f"넓게 보기 = 같은 좌석(역할 worker-4 · 새 번호 106) + 고정 101·102 {s2['panes']}")
             sbg.check("1031" in s2["groups"].get("video", []), f"옮긴 좌석(역할 worker · 새 번호 1031) = video 그대로 {s2['groups']}")

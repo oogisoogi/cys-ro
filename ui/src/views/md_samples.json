@@ -1,0 +1,82 @@
+[
+ [
+  "01 제목",
+  "# 큰 제목\n## 중간 제목\n### 작은 제목 ###\n#### 넷째는 글 그대로\n#붙은 샵은 글"
+ ],
+ [
+  "02 문단·줄바꿈",
+  "첫 줄\n둘째 줄\n\n새 문단입니다"
+ ],
+ [
+  "03 굵게·기울임",
+  "**굵게** 와 *기울임* 과 __밑줄 굵게__ 와 _밑줄 기울임_ · snake_case_name 그대로 · 2 * 3 * 4 = 24 · *a **b** c*"
+ ],
+ [
+  "04 인라인 코드",
+  "`npm install` 과 ``a`b`` 그리고 닫히지 않은 `백틱 하나"
+ ],
+ [
+  "05 울타리",
+  "```js\nconst a = '<b>x</b>';\n**굵게 아님** [링크 아님](https://example.invalid)\n```\n뒤 문단"
+ ],
+ [
+  "06 닫히지 않은 울타리",
+  "앞 문단\n```\n코드 1\n코드 2"
+ ],
+ [
+  "07 점 목록·들여쓰기",
+  "- 하나\n- 둘 **굵게**\n  - 들여쓴 셋\n      - 더 깊은 넷\n* 별 다섯\n+ 더하기 여섯\n이어진 줄"
+ ],
+ [
+  "08 순서 목록",
+  "1. 첫째\n2. 둘째\n\n10) 열째"
+ ],
+ [
+  "09 표",
+  "| 이름 | 값 |\n|---|:---:|\n| a | `1` |\n| **b** | 2 \\| 3 |"
+ ],
+ [
+  "10 깨진 표(구분 줄 없음)",
+  "| a | b |\n| c | d |"
+ ],
+ [
+  "11 깨진 표(칸 수 다름)",
+  "| a | b |\n|---|---|\n| 1 | 2 | 3 |\n| 4 |\n뒤 글"
+ ],
+ [
+  "12 섞임",
+  "## 결과\n다음과 같습니다:\n- **파일** `a.ts` 고침\n- 시험 3개\n\n| 항목 | 수 |\n|---|---|\n| 통과 | 10 |\n\n```\ncargo test\n```\n끝."
+ ],
+ [
+  "13 스크립트 꼴",
+  "<script>window.__pwn = 1</script>\n<script src=\"https://example.invalid/x.js\"></script>"
+ ],
+ [
+  "14 이벤트 속성 꼴",
+  "<img src=x onerror=\"window.__pwn=1\"> 와 <svg onload=\"window.__pwn=1\"></svg> 와 <div onclick=\"window.__pwn=1\">눌러</div>"
+ ],
+ [
+  "15 javascript: 링크",
+  "[눌러 보세요](javascript:window.__pwn=1) 와 [대문자](JaVaScRiPt:alert(1)) 와 [vb](vbscript:msgbox(1))"
+ ],
+ [
+  "16 데이터 주소·그림",
+  "[데이터](data:text/html;base64,PHNjcmlwdD4=) 와 ![그림](https://example.invalid/a.png) 와 ![d](data:image/svg+xml,<svg onload=alert(1)>)"
+ ],
+ [
+  "17 보통 링크",
+  "[문서](https://example.invalid/docs?a=1&b=(2)) 와 <https://example.invalid/auto> 와 맨 주소 https://example.invalid/bare"
+ ],
+ [
+  "18 HTML 링크·스타일 꼴",
+  "<a href=\"https://example.invalid\" onclick=\"window.__pwn=1\">링크</a>\n<style>body{display:none}</style><iframe src=\"https://example.invalid\"></iframe>"
+ ],
+ [
+  "19 인용·가로줄 = 글 그대로",
+  "> 인용 줄\n---\n***\n> **굵게는 그림**"
+ ],
+ [
+  "20 탈출 문자·실체",
+  "\\*별표 그대로\\* &lt;b&gt; &amp; D:\\work\\a.txt"
+ ]
+]

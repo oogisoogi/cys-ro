@@ -84,7 +84,7 @@ describe("공통층 배선 — 대화 화면이 켜져 있을 때만", () => {
     const m = h.core.rail.model;
     expect(m.loading).toBe(false);
     const c0 = m.blocks[0].cards[0];
-    expect([c0.title, c0.status, c0.helpers]).toEqual(["사이트 고치기", "wait", 1]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
+    expect([c0.title, c0.status, c0.helpers.length]).toEqual(["사이트 고치기", "wait", 1]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
   });
   it("좌석 목록이 멈춰도 조회 고리가 묶이지 않는다(상한 뒤 직전 값)", async () => {
     const h = harness({ listHang: true });

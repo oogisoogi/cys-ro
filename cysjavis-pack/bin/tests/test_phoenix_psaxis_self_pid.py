@@ -10,9 +10,11 @@ wake.sh 끝 = `exec "$CLAUDE" …`)은 셸이 claude 로 바뀌어 **좌석 pid 
 
   T  진리표 12칸(설치기 wake · node 진입점 · 셸 잔존 · 보통 좌석 · 표 밖 · codex 1R 반례 X1~X3·Q1~Q3)
      + 독립 검증 2390 칸(V1~V8 · C1~C5 · codex 생존 변이 칸 K1~K3 · comm 으로 넘긴 실행 경로 P1~P3) — REVISE ①대소문자 ②node 옵션 ③공백 경로
+     + 1.1.19 PH-NIT 칸(X4 짧은 옵션 묶음 · X5 `--` 뒤 `-` 로 시작하는 진입점 경로 · VERIFY-628e4ce28 §5-4 x3·x4)
   M1 뮤턴트(자기 판정 제거 · 변이 적용 선-assert) → W·N·Q1·Q2 적색
   M2 뮤턴트(실행 파일 대신 인자 부분 문자열) → D·X1·Q3 적색
   M3~M15 뮤턴트(검증자 M3~M11 · codex 3종 · REVISE 고침 되돌리기 4종) → 전부 KILLED
+  M19 짧은 묶음 판정 제거(x3) → X4 적색 · M20 `--` 처리 제거(x4) → X5 적색 · P0 소스 핀 `if w == "--":` 정확 1곳(ADV-FIX B-NIT-1)
   ⚠알려진 한계(막지 않음 · 2390 기록): pid 재사용 결속 없음(C6) · `exec -a claude` 위장(R4) · comm 없는 표에서 공백 경로 CLI = 거짓 dead(C2)
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_psaxis_self_pid.py → 종료 토큰 PHOENIX-PSAXIS-SELF-PID-OK
@@ -61,6 +63,9 @@ CASES = [
     ("P2 comm 실행 경로 = /tmp/claude tools/helper(C1)", {100: (1, "/tmp/claude tools/helper --watch")}, "dead", "/tmp/claude tools/helper"),
     ("P3 comm 실행 경로 = Claude Helper", {100: (1, "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper --type=gpu-process")}, "dead",
      "/Applications/Claude.app/Contents/Frameworks/Claude Helper.app/Contents/MacOS/Claude Helper"),
+    # ── 1.1.19 PH-NIT(DESIGN §11-2 · VERIFY-628e4ce28 §5-4 x3·x4) ──
+    ("X4 node -pe 짧은 옵션 묶음(인라인 평가+출력)", {100: (1, "node -pe /x/@anthropic-ai/claude-code/cli.js")}, "dead"),
+    ("X5 node -- 뒤 `-` 로 시작하는 진입점 경로(-- 다음 = 스크립트)", {100: (1, "node -- --check-me/node_modules/@anthropic-ai/claude-code/cli.js")}, "alive"),
 ]
 
 
@@ -135,7 +140,14 @@ def main():
          '        exe_path, args, bounded = words[0], words[1:], True\n'),
         ("M17 comm(self_exe) 무시", '    if self_exe:\n        rest =', '    if False:\n        rest ='),
         ("M18 bun run 건너뛰기 제거", '        if w == "run" and i == 0:\n            continue  # `bun run <script>`\n', ''),
+        ("M19 짧은 옵션 묶음 판정 제거(x3)", ' or (not w.startswith("--") and set(w[1:]) & {"c", "e", "p"})', ''),
+        ("M20 -- 처리 제거(x4)", '        if w == "--":\n            return args[i + 1] if i + 1 < len(args) else None\n', ''),
     ]
+    # P0 소스 핀(ADV-FIX B-NIT-1 · x4): `--` 갈래가 진입 스크립트 판정 안에 정확히 1곳
+    n = src.count('        if w == "--":\n            return args[i + 1] if i + 1 < len(args) else None\n')
+    print("%s P0 소스 핀 `--` 갈래 정확 1곳 — count=%d" % ("PASS" if n == 1 else "FAIL", n))
+    if n != 1:
+        fails.append("P0 소스 핀")
     for name, a2, b2 in MUT:
         n = src.count(a2)
         if n != 1:

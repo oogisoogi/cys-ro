@@ -71,6 +71,8 @@ _mounted() {  # 매체가 아직 마운트돼 있는가(장치가 부모와 다�
 
 # offline_sign <purpose> <doc> <key> <media> <keyring> <expect_key_id> <out_sig> <trusted_comment> <wait_eject_secs>
 #   purpose = release(U) | root(R). wait_eject_secs ≥ 1(실 의식 · 0 은 시험 대역 lib/offline-sign-dev.sh 에서만).
+#   ★1.1.19 CO-L3: 호출부가 `if ! offline_sign …`·`offline_sign … || exit` 꼴이라 이 함수 안에서는 set -e 가 꺼진다 —
+#     실패할 수 있는 명령(mktemp·cp·mv)마다 명시 검사로 치우고 2 를 돌려준다(set -e 의존 0) · 거부 갈래는 매체 작업 폴더를 남기지 않는다.
 offline_sign() {
   local purpose="$1" doc="$2" key="$3" media="$4" keyring="$5" kid="$6" out_sig="$7" tc="$8" wait="$9"
   local here mini
@@ -83,7 +85,7 @@ offline_sign() {
   offline_media_guard "$media" "$key" || return 2
   # 내장 키링에서 같은 용도·같은 key_id 공개키를 먼저 꺼낸다(⑥ 준비 — 매체를 꽂기 전에 실패할 것은 먼저 실패).
   local pub
-  pub="$(mktemp)"
+  pub="$(mktemp)" || { echo "거부: 임시 파일을 못 만든다" >&2; return 2; }
   python3 - "$here" "$keyring" "$purpose" "$kid" "$pub" <<'PY' || { rm -f "$pub"; return 2; }
 import sys
 sys.path.insert(0, sys.argv[1])
@@ -98,7 +100,7 @@ PY
   local mw doc_sha
   mw="$(_realpath "$media")/.cys-sign-$$"
   mkdir "$mw" || { rm -f "$pub"; echo "거부: 매체에 작업 폴더를 못 만든다(읽기 전용?)" >&2; return 2; }
-  cp "$doc" "$mw/doc"
+  cp "$doc" "$mw/doc" || { rm -f "$mw/doc"; rmdir "$mw" 2>/dev/null; rm -f "$pub"; echo "거부: 서명 대상을 매체로 옮기지 못했다(cp 실패)" >&2; return 2; }
   doc_sha="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$doc")"
   # 비밀번호는 minisign 이 터미널에서 직접 묻는다(이 스크립트는 비밀번호도 만지지 않는다 · 재시도 0).
   if ! "$mini" -S -s "$key" -m "$mw/doc" -x "$mw/doc.minisig" -t "$tc"; then
@@ -106,10 +108,11 @@ PY
     echo "거부: minisign 서명 실패" >&2; return 2
   fi
   local tmp_sig
-  tmp_sig="$(mktemp)"
-  cp "$mw/doc.minisig" "$tmp_sig"
+  tmp_sig="$(mktemp)" || { rm -f "$mw/doc" "$mw/doc.minisig"; rmdir "$mw" 2>/dev/null; rm -f "$pub"; echo "거부: 임시 파일을 못 만든다" >&2; return 2; }
+  cp "$mw/doc.minisig" "$tmp_sig" \
+    || { rm -f "$mw/doc" "$mw/doc.minisig"; rmdir "$mw" 2>/dev/null; rm -f "$tmp_sig" "$pub"; echo "거부: 매체에서 서명을 꺼내지 못했다(cp 실패)" >&2; return 2; }
   [ "$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$mw/doc")" = "$doc_sha" ] \
-    || { echo "거부: 매체 쪽 서명 대상이 바뀌었다" >&2; rm -f "$tmp_sig" "$pub"; return 2; }
+    || { echo "거부: 매체 쪽 서명 대상이 바뀌었다" >&2; rm -f "$mw/doc" "$mw/doc.minisig"; rmdir "$mw" 2>/dev/null; rm -f "$tmp_sig" "$pub"; return 2; }
   rm -f "$mw/doc" "$mw/doc.minisig"; rmdir "$mw" 2>/dev/null
   # ⑤ 매체를 뺀다(사람 손 1단계) — 기다린다.
   if [ "$wait" -gt 0 ]; then
@@ -128,7 +131,7 @@ PY
   if ! "$mini" -V -p "$pub" -m "$doc" -x "$tmp_sig" >/dev/null; then
     echo "거부: 내장 $purpose 공개키 검증 실패" >&2; rm -f "$tmp_sig" "$pub"; return 2
   fi
-  mv "$tmp_sig" "$out_sig"
+  mv "$tmp_sig" "$out_sig" || { rm -f "$tmp_sig" "$pub"; echo "거부: 서명을 산출 자리로 옮기지 못했다(mv 실패) — 산출물 0" >&2; return 2; }
   rm -f "$pub"
   return 0
 }

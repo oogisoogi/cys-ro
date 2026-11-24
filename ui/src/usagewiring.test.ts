@@ -328,12 +328,14 @@ describe("0.14.43 UI1 — 숨김 저장소(main.ts 만 · try/catch 안 · 값 �
     expect(code.includes("sanitizeHiddenKeys(JSON.parse(")).toBe(true);
     expect(fnBody("toggleUsageAcctHidden")).toContain("USAGE_HIDDEN_MAX");
   });
-  // (1.1.8 병합 U1 사이드바 미배선 · X9) 우리 판에는 원작자 사이드바 renderUsageBar 최상위 호출이 없다 — 숨김 목록을 읽는 최상위 배선은
-  //   Control Center 계정 표의 클릭 위임(ccAcctHost) 하나다. TDZ 방어의 목적(선언이 첫 최상위 사용보다 앞)을 그 배선 기준으로 단언한다.
-  it("usageHidden 선언은 첫 최상위 사용(CC 계정 표 클릭 위임)보다 앞(TDZ 면 그 배선이 던진다) · 사이드바 renderUsageBar 최상위 호출은 없다(U1 미배선)", () => {
-    const decl = code.indexOf("let usageHidden:");
-    const firstTop = code.indexOf('\nconst ccAcctHost = document.getElementById("cc-accounts");');
-    expect({ 선언: decl >= 0, 선언이_먼저: decl >= 0 && firstTop > 0 && decl < firstTop }).toEqual({ 선언: true, 선언이_먼저: true });
+  // (1.1.8 병합 U1 사이드바 미배선 · X9) 우리 판에는 원작자 사이드바 renderUsageBar 최상위 호출이 없다.
+  //   ★(1.1.19 · cysr-1119-s10b) 숨김 목록을 읽던 최상위 배선(CC 계정 표의 클릭 위임 ccAcctHost)은 Live 와 함께 빠졌다 — 이제 읽는 곳은
+  //   함수 안(사이드바 계정 꼬리표 wsAcctIndex · 화면 설정 「전문가」 의 계정 숨기기 줄)뿐이라 TDZ 걱정이 없다(최상위 사용 0 을 단언).
+  it("usageHidden 선언은 있고 최상위(들여쓰기 0) 사용은 0(함수 안에서만 읽는다) · 사이드바 renderUsageBar 최상위 호출은 없다(U1 미배선)", () => {
+    expect(code.indexOf("let usageHidden:")).toBeGreaterThanOrEqual(0);
+    const topUses = code.split("\n").filter((l) => /^\S/.test(l) && /\busageHidden\b/.test(l) && !l.startsWith("let usageHidden") && !l.startsWith("  "));
+    expect(topUses.filter((l) => !/^(\/\/|function |\}|try|usageHidden = )/.test(l))).toEqual([]);
+    expect(code.includes('getElementById("cc-accounts")')).toBe(false);
     expect(code.includes("\nrenderUsageBar();")).toBe(false);
   });
   it("usagebar.ts 에는 저장소 접근 표면이 0 — 숨김 목록은 main.ts 가 읽어 인자로 넘긴다", () => {
@@ -341,122 +343,6 @@ describe("0.14.43 UI1 — 숨김 저장소(main.ts 만 · try/catch 안 · 값 �
     const m = stripComments(read("./usagebar.ts").replace(/\/\*[\s\S]*?\*\//g, ""));
     for (const bad of ["localStorage", "sessionStorage", "indexedDB", "document.", "window."])
       expect({ 표면: bad, 있음: m.includes(bad) }).toEqual({ 표면: bad, 있음: false });
-  });
-});
-
-describe("0.14.43 UI1 — Control Center Live 계정 섹션·KPI 배선", () => {
-  it("KPI 후보는 순수 함수 kpiCandidates 로 거른다(숨김 목록 포함) — 계정을 직접 순회해 최댓값을 고르지 않는다", () => {
-    const b = fnBody("ccAcctMax");
-    // (1.1.8 합성) 후보 판정은 원작자 kpiCandidates · 창 판정은 우리(stale) — 행 타입에 stale 칸이 없어 any[] 로 읽는다
-    expect(b.includes("for (const a of kpiCandidates(ccAccounts, label, Date.now() / 1000, usageHidden) as any[]) {")).toBe(true);
-    expect(/of ccAccounts\b/.test(b)).toBe(false);
-  });
-  it("후보가 없으면 null — renderLiveBody 는 null 을 종전 '없음' 경로(ccAggRate 폴백 → 0%)로 그린다(경로 불변 핀)", () => {
-    const b = fnBody("renderLiveBody");
-    expect(b.includes("const used = m ? Math.round(m.used) : w ? Math.round(w.used) : 0;")).toBe(true);
-    expect(b.includes("const sub = m ? ccAcctLabel(m.acct) : w ? ccReset(lab, w.reset) : \"\";")).toBe(true);
-  });
-  it("행 라벨 — 별명이 있으면 `별명 (이메일/해시)` · 둘 다 ccEsc · 이메일은 기존 ccAcctLabel 가림을 거친다", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes("const who = ccEsc(ccAcctLabel(String(a.label ?? a.account_id ?? \"?\")));")).toBe(true);
-    expect(b.includes("const alias = acctAlias(a);")).toBe(true);
-    expect(b.includes("alias ? `${ccEsc(alias)} (${who})` : who")).toBe(true);
-  });
-  it("배지 문구 — '● 사용 중' · '이전 로그인' · '오래됨' · '관측 전'(종전 '관측 없음' 폐기 · 사이드바·설명서와 통일)", () => {
-    const b = fnBody("renderAccounts");
-    for (const needle of ["● 사용 중", "이전 로그인", ">오래됨<", ">관측 전<", "a.in_use === true", "isPreviousLogin(a)", "isOldObservation(a, nowSec)"])
-      expect({ 문구: needle, 있음: b.includes(needle) }).toEqual({ 문구: needle, 있음: true });
-    expect(b.includes(">관측 없음<")).toBe(false);
-    expect(code.includes('<span class="cc-acct-badge">관측 없음</span>')).toBe(false);
-    // 종전 'N분 전 관측' 배지는 유지
-    expect(b.includes("분 전 관측")).toBe(true);
-  });
-  // (1.1.8 · master#114e0c71 ⑧) CC 계정 게이지에 windowView 를 배선했다 — 휴면 레인에서 일반 레인으로 되돌림
-  it("게이지는 windowView 규칙(리셋 지남 → 폭 0·'리셋됨'·경고색 없음) — 종전 sevClass(used, 70, 90) 직접 판정을 쓰지 않는다", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes("windowView(a, lab, nowSec)")).toBe(true);
-    expect(b.includes('v.state === "ok" ?')).toBe(true);
-    expect(b.includes("sevClass(")).toBe(false);
-    expect(b.includes("ccEsc(v.text)") && b.includes("ccEsc(v.resetText)")).toBe(true);
-  });
-  // (1.1.8 · master#114e0c71 ⑧) 게이지 함수를 실제로 돌린다 — 리셋 지난 창 = 폭 0·「리셋됨」·경고색 없음 / 살아 있는 창 = 종전(폭·숫자·ccReset·임계색) / 죽은 창 = 사유 우선
-  describe("CC 계정 게이지 실행 — 리셋 지남 규칙 · 살아 있는 창은 종전 · 죽은 창·미관측 불변", () => {
-    const NOW = 1_800_000_000;
-    const gaugeSrc = (() => {
-      const i = code.indexOf("const gauge = (a: any, lab: string, observedAt: number) => {");
-      expect(i).toBeGreaterThan(0);
-      const end = code.indexOf("\n      };", i);
-      return code.slice(i, end + "\n      };".length);
-    })();
-    const esc = (s: string) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    const ccReset = (label: string, epoch: number | null) => (epoch ? `R(${label},${epoch})` : "");
-    const js = new Bun.Transpiler({ loader: "ts" }).transformSync(`${gaugeSrc}\nreturn gauge;`);
-    const gauge = new Function("windowView", "usedPctOf", "ccEsc", "ccReset", "windowStaleText", "nowSec", js)(
-      windowView,
-      usedPctOf,
-      esc,
-      ccReset,
-      (reason: string | null) => `STALE(${reason})`,
-      NOW,
-    ) as (a: unknown, lab: string, observedAt: number) => string;
-    const row = (w: Record<string, unknown>) => ({ rate: [{ label: "5h", ...w }] });
-    it("리셋이 이미 지난 창(옛 95%) → 채움 없음(폭 0) · 「리셋됨」 · 「재관측 대기」 · 경고색(warn/crit) 없음", () => {
-      const h = gauge(row({ used_pct: 95, resets_at: NOW - 1 }), "5h", NOW);
-      expect(h.includes("cc-tbar-fill")).toBe(false);
-      expect(h.includes('<span class="cc-tbar-pct">리셋됨</span>')).toBe(true);
-      expect(h.includes('<span class="cc-tbar-reset">재관측 대기</span>')).toBe(true);
-      expect(/\b(warn|crit)\b/.test(h)).toBe(false);
-      expect(h.includes("95%")).toBe(false);
-    });
-    it("살아 있는 창 → 종전 그대로(폭 = 값 · 「N%」 · ccReset 리셋 시각 · 70/90 임계색)", () => {
-      const r = NOW + 3600;
-      expect(gauge(row({ used_pct: 95, resets_at: r }), "5h", NOW)).toBe(
-        `<div class="cc-tbar"><span class="cc-tbar-lab">5h</span><span class="cc-tbar-track"><span class="cc-tbar-fill crit" style="width:95%"></span></span><span class="cc-tbar-pct">95%</span><span class="cc-tbar-reset">R(5h,${r})</span></div>`,
-      );
-      expect(gauge(row({ used_pct: 72, resets_at: r }), "5h", NOW).includes('class="cc-tbar-fill warn" style="width:72%"')).toBe(true);
-      expect(gauge(row({ used_pct: 12, resets_at: null }), "5h", NOW).includes('class="cc-tbar-fill " style="width:12%"')).toBe(true);
-      expect(gauge(row({ used_pct: 12, resets_at: null }), "5h", NOW).includes('<span class="cc-tbar-reset"></span>')).toBe(true);
-    });
-    it("모델 스코프 게이지(「7d·모델」)도 같은 규칙 — 리셋 지남이면 「리셋됨」 · 살아 있으면 값", () => {
-      const scoped = (resets_at: number) => ({ rate: [{ model: "Fable", used_pct: 91, resets_at, label: "7d·Fable" }] });
-      expect(gauge(scoped(NOW - 10), "7d·Fable", NOW).includes(">리셋됨<")).toBe(true);
-      expect(gauge(scoped(NOW + 10), "7d·Fable", NOW).includes('class="cc-tbar-fill crit" style="width:91%"')).toBe(true);
-    });
-    it("죽은 창(stale) = 사유 우선(리셋 지났어도 「—」+사유 · .dead) · 미관측(null·창 없음) = 「—」", () => {
-      const dead = gauge(row({ used_pct: 95, resets_at: NOW - 1, stale: true, stale_reason: "x" }), "5h", NOW);
-      expect(dead.startsWith('<div class="cc-tbar dead">')).toBe(true);
-      expect(dead.includes('<span class="cc-tbar-pct">—</span>') && dead.includes("STALE(x)")).toBe(true);
-      for (const a of [row({ used_pct: null, resets_at: null }), { rate: [] }, {}])
-        expect(gauge(a, "5h", NOW)).toBe('<div class="cc-tbar"><span class="cc-tbar-lab">5h</span><span class="cc-tbar-track"></span><span class="cc-tbar-pct">—</span><span class="cc-tbar-reset"></span></div>');
-    });
-  });
-  it("행 흐림 — 오래된 관측(30분 초과·스냅샷)·숨긴 계정 → .dim", () => {
-    const b = fnBody("renderAccounts");
-    // (1.1.8 합성) 우리 판은 창이 전부 죽은 계정의 .dead(데몬 stale 판정)를 앞에 함께 싣는다 — 흐림 조건(old || hiddenNow)은 그대로
-    expect(b.includes('class="cc-acct-row${allDead ? " dead" : ""}${old || hiddenNow ? " dim" : ""}"')).toBe(true);
-  });
-  it("숨기기/보이기 단추(.cc-acct-hide · data-acct-key) — 키는 ccEsc · 문구는 숨김 상태에 따라", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes('class="cc-acct-hide" data-acct-key="${ccEsc(key)}"')).toBe(true);
-    expect(b.includes('hiddenNow ? "보이기" : "숨기기"')).toBe(true);
-    expect(b.includes("const key = acctKey(a);")).toBe(true);
-  });
-  it("클릭은 호스트 하나에 위임(행은 5초마다 innerHTML 로 다시 그려진다) — 저장소 갱신 뒤 사이드바·CC 를 다시 그린다", () => {
-    expect(fnBody("renderAccounts").includes("addEventListener")).toBe(false); // 행마다 리스너를 달지 않는다
-    const i = code.indexOf('ccAcctHost.addEventListener("click"');
-    expect(i).toBeGreaterThan(0);
-    const h = code.slice(i, code.indexOf("\n  });", i));
-    // (1.1.8 병합 X9 · master#36f48cf7 ⑤) 사이드바 사용량 패널(우리 wsusage)은 숨김을 보지 않는다 — 사이드바를 다시 그리는 호출(renderUsageBar)은 없다
-    for (const needle of ['.closest(".cc-acct-hide")', 'getAttribute("data-acct-key")', "toggleUsageAcctHidden(key);", "renderAccounts();", "void refreshControlCenter();"])
-      expect({ 핸들러: needle, 있음: h.includes(needle) }).toEqual({ 핸들러: needle, 있음: true });
-    expect(h.includes("renderUsageBar(")).toBe(false);
-    expect(h.includes("renderSidebarUsage(")).toBe(false);
-    expect(h.includes("refreshAccountsShared")).toBe(false); // 조회 호출 지점 핀(사이드바 틱·CC 두 곳뿐)을 건드리지 않는다
-  });
-  it("renderAccounts 의 데이터 보간은 ccEsc — 별명·이메일·키·source_error·plan 은 로컬 파일·IPC 에서 온다", () => {
-    const b = fnBody("renderAccounts");
-    for (const needle of ["ccEsc(alias)", "ccEsc(ccAcctLabel(", "ccEsc(key)", "ccEsc(a.source_error)", "ccEsc(String(a.plan))", "ccEsc(String(a.provider ?? \"?\"))"])
-      expect({ 이스케이프: needle, 있음: b.includes(needle) }).toEqual({ 이스케이프: needle, 있음: true });
   });
 });
 
@@ -488,69 +374,6 @@ describe("0.14.43 UI1 — style.css(기존 강조색 재사용 · 사이드바 �
   it("흐린 행은 opacity 로(오래된 관측·숨긴 계정) · 단추는 flex:none", () => {
     expect(rule(".cc-acct-row.dim")).toContain("opacity:");
     expect(rule(".cc-acct-hide")).toContain("flex: none");
-  });
-});
-
-// ═════════ 0.14.43 (티켓 UI2 · 추가 과제) — Control Center Live KPI 전 좌석 폴백 배선 ═════════
-// 순수 집계(경보 부적격·리셋 지난 창 제외 · 오염값 무해 · 종전 동치)는 usagebar.test.ts 의 aggSeatRates 가 표로 잡는다 — 여기는 main.ts 의 ccAggRate 가
-// 그것을 **실제로 부르는가**(옛 좌석 값을 되살리는 직접 순회를 되살리지 않았는가)만 기계로 못박는다.
-describe("0.14.43 UI2 — Control Center KPI 전 좌석 폴백 배선(ccAggRate → aggSeatRates)", () => {
-  it("ccAggRate 본문은 aggSeatRates(fleet, Date.now() / 1000) 를 돌려주는 한 줄 — 좌석 순회·usage.rate 직접 집계를 되살리지 않는다", () => {
-    const b = fnBody("ccAggRate");
-    expect(b.includes("return aggSeatRates(fleet, Date.now() / 1000);")).toBe(true);
-    for (const old of ["for (", "usage?.rate", ".resets_at", ".used_pct"]) expect({ 금지: old, 있음: b.includes(old) }).toEqual({ 금지: old, 있음: false });
-  });
-  it("main.ts 가 aggSeatRates 를 ./usagebar 에서 가져온다", () => {
-    const from = code.indexOf('} from "./usagebar"');
-    const open = code.lastIndexOf("import {", from);
-    expect(open >= 0 && from > open).toBe(true);
-    expect(code.slice(open, from).includes("  aggSeatRates,\n")).toBe(true);
-  });
-  it("renderLiveBody 는 여전히 ccAggRate(fleet) 로 폴백 값을 얻고 계정 병합 값(ccAcctMax)이 우선이다 — 경로 불변", () => {
-    const b = fnBody("renderLiveBody");
-    expect(b.includes("const agg = ccAggRate(fleet);")).toBe(true);
-    expect(b.includes("const m = ccAcctMax(lab);")).toBe(true);
-    expect(b.includes("const used = m ? Math.round(m.used) : w ? Math.round(w.used) : 0;")).toBe(true);
-  });
-  it("ccAggRate 호출 지점은 renderLiveBody 하나뿐 — 다른 곳이 옛 좌석 값을 다시 쓰지 않는다", () => {
-    expect(enclosingFns("ccAggRate(").filter((f) => f !== "ccAggRate")).toEqual(["renderLiveBody"]);
-  });
-});
-
-// ═════════ 성찰 1회차 R1F-UB (S2 m-4 · m-1 ⓑ) — Control Center 계정 행의 문구·배지 배선 ═════════
-describe("R1F-UB(S2 m-4) — 숨기기 단추 툴팁은 사실대로 말한다(동작은 그대로 · 문구만)", () => {
-  // (1.1.8 병합 X9 · master#36f48cf7 ⑤) 숨기기는 사이드바 패널(우리 wsusage)에 적용하지 않는다 — 툴팁은 실제로 바뀌는 곳(위 KPI)만 말한다(사실대로 · 목적 동일).
-  const HIDE_TIP = "위 KPI 의 계정 후보에서 이 계정을 뺍니다(계정 후보가 하나도 남지 않으면 KPI 는 좌석 값으로 표시됩니다)";
-  const SHOW_TIP = "위 KPI 에 이 계정을 다시 넣습니다";
-  it("★숨기기 툴팁 전문 — 후보에서 뺀다는 것과 후보가 비면 좌석 값으로 간다는 것을 함께 적는다 · 옛 문구('위 KPI 에서 이 계정을 뺍니다')는 없다", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes(`"${HIDE_TIP}"`)).toBe(true);
-    expect(b.includes("위 KPI 에서 이 계정을 뺍니다")).toBe(false);
-    expect(b.includes("이 표에는 흐리게 남습니다")).toBe(false);
-    expect(b.includes("사이드바 사용량 패널")).toBe(false); // X9 — 사이드바는 숨김과 무관하니 그렇게 말하지 않는다
-  });
-  it("보이기 툴팁은 종전 그대로 · 두 문구는 숨김 상태(hiddenNow)로 갈린다", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes(`"${SHOW_TIP}"`)).toBe(true);
-    const i = b.indexOf("const hideTip = hiddenNow");
-    expect(i).toBeGreaterThan(0);
-    const seg = b.slice(i, b.indexOf(";", b.indexOf(HIDE_TIP, i)) + 1);
-    expect(seg.indexOf(SHOW_TIP)).toBeGreaterThan(0);
-    expect(seg.indexOf(SHOW_TIP)).toBeLessThan(seg.indexOf(HIDE_TIP)); // hiddenNow ? 보이기 : 숨기기
-    expect(b.includes('title="${hideTip}"')).toBe(true);
-  });
-});
-
-describe("R1F-UB(S2 m-1 ⓑ) — Control Center '이전 로그인' 배지는 순수 판정(isPreviousLogin)만 따른다 · 요약 줄 색 주석은 사실대로", () => {
-  it("배지는 isPreviousLogin(a) 로만 — 화면이 current_profiles 를 직접 보고 따로 판정하지 않는다(in_use 모순 방어가 한 곳에 있다)", () => {
-    const b = fnBody("renderAccounts");
-    expect(b.includes("if (isPreviousLogin(a)) badges.push(")).toBe(true);
-    expect(b.includes("current_profiles")).toBe(false);
-    expect(code.includes("current_profiles")).toBe(false);
-  });
-  itDormant("요약 줄 색 주석은 약식 요약의 실제(요약에 실린 값들)를 말한다 — 주 계정 창들뿐이라고 적지 않는다", () => {
-    expect(src.includes("제공자별 약식이면 요약에 실린 값들")).toBe(true);
-    expect(src.includes("요약 줄 색 = 주 계정 창들의 최고 심각도(headlineSev")).toBe(false);
   });
 });
 

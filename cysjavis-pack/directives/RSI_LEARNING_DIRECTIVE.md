@@ -53,7 +53,7 @@ ceiling 같은 **자동 트리거는 건별 feed 승인 요청을 발행하지 �
 `javis_learn {propose|search|extract|evaluate|store|harness|status}` (cysjavis-pack/bin/).
 - ③평가 → `javis_rsi` 위임(producer≠evaluator·rollback) · ④저장 → `javis_memory` 위임(원자적·audit)
 - 강제자 = `rsi-gate.sh`(복구수단·격리실행 불변)
-- 가시화 = Control Center '학습' 탭(라운드·채택/rollback·발견 누적)
+- 가시화 = `javis_learn status`(마스터에게 말로 — 라운드·채택/rollback·발견 누적)
 
 ## 6. 할루시네이션 원천 봉쇄장치 (불가침 · 제품 기본 절차)
 

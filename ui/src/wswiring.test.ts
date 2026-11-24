@@ -551,7 +551,9 @@ describe("ⓑ′ 전문가 모드 — 기본 꺼짐 판정이 순수 모듈을 �
     expect(a).toBeGreaterThan(0);
     const fn = code.slice(a, code.indexOf("\n}", a));
     expect(fn).toContain("expertBox.hidden = !on");
-    expect(fn).toContain("expertToggle.checked = on");
+    // (1.1.19 · cysr-1119-s10b) Control Center Live 의 체크(#cc-expert-toggle)는 Live 와 함께 빠졌다 — 입구 = 화면 설정 「전문가」 줄(setExpertMode).
+    expect(fn.includes("expertToggle")).toBe(false);
+    expect(code.includes("cc-expert-toggle")).toBe(false);
   });
 });
 

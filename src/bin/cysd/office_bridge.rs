@@ -39,6 +39,17 @@ pub const REPLACE_PORT_FREE_SECS: u64 = 3;
 // ── B1: 주인 · 스폰 환경 ───────────────────────────────────────────────────────
 
 /// 이 데몬이 브리지를 띄워도 되는가 — 본부 데몬만(`ANY_OWNER` 손잡이가 켜져 있으면 종전처럼 어느 데몬이든). 판별은 데몬 자신의 소켓 경로 하나(`cys::is_dept_socket`).
+/// ★(1.1.19 · TICKET=cysr-1119-s10b · DESIGN §8-5 MD-OFFICE · D-10) 오피스 브리지를 띄우는가 — `CYS_NO_OFFICE_BRIDGE` 값이 정확히 `"0"` 일 때만(시연).
+///   없음·`"1"`·그 밖 모든 값 = 띄우지 않음(1.1.19 기본 · 화면의 오피스 탭 없음). 이름·값 고정(되돌리기 = 환경 변수 하나).
+pub fn bridge_enabled(no_office_bridge: Option<&str>) -> bool {
+    no_office_bridge == Some("0")
+}
+
+/// (윈 · D-10) 꺼진 기동에서 옛 판 서버가 포트를 쥐고 있을 때 원장 1줄 — 끄지 않는다(재부팅이 정리).
+pub const LEFTOVER_NOTE: &str = "옛 오피스 서버가 남아 있음(재부팅 뒤 사라짐)";
+/// (윈 · D-10) 시연(`CYS_NO_OFFICE_BRIDGE=0`)인데 옛 서버가 포트를 쥐어 새 서버가 못 뜰 때 원장 1줄.
+pub const PORT_HELD_NOTE: &str = "옛 오피스 서버가 포트를 쥐고 있음 — 재부팅 뒤 다시";
+
 pub fn owner_may_spawn(socket: &Path, any_owner: bool) -> bool {
     any_owner || !cys::is_dept_socket(socket)
 }
@@ -782,6 +793,110 @@ mod tests {
         std::fs::write(dir.join(".pack-version"), "  \n").expect("w");
         assert_eq!(installed_pack_version(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── (1.1.19 · cysr-1119-s10b) MD-OFFICE 기본 끔 ─────────────────────────────
+
+    /// 깃발 판정표 — 정확히 "0" 일 때만 띄운다(없음·"1"·빈 값·그 밖 = 끔 · 1.1.18 의 「=1 이면 끔」 기기도 그대로 끔).
+    #[test]
+    fn office_bridge_off_by_default_only_zero_turns_it_on() {
+        assert!(!bridge_enabled(None), "기본(변수 없음) = 끔");
+        assert!(!bridge_enabled(Some("1")));
+        assert!(!bridge_enabled(Some("")));
+        assert!(!bridge_enabled(Some("true")));
+        assert!(!bridge_enabled(Some("00")));
+        assert!(!bridge_enabled(Some(" 0")));
+        assert!(bridge_enabled(Some("0")), "시연 = CYS_NO_OFFICE_BRIDGE=0");
+    }
+
+    /// 감독 함수 머리 = 판정 함수 하나로 가르고 · 끈 기동은 원장 1줄 뒤 곧바로 돌아간다(스폰 0) · 윈 원장 줄 두 개는 상수 그대로.
+    #[test]
+    fn office_bridge_skip_path_spawns_nothing_and_notes_leftover_on_windows() {
+        let main = include_str!("main.rs");
+        let a = main.find("fn spawn_office_bridge(").expect("감독 함수");
+        let b = main.find("/// ★B3: 동봉 runtime python3 절대경로").expect("끝");
+        let sup = &main[a..b];
+        assert!(sup.contains(r#"crate::office_bridge::bridge_enabled(cys::env_compat("CYS_NO_OFFICE_BRIDGE").as_deref())"#));
+        let off = sup.find("if !enabled {").expect("끈 갈래");
+        let off_end = off + sup[off..].find("\n        return;\n    }").expect("끈 갈래 끝");
+        let off_body = &sup[off..off_end];
+        assert!(!off_body.contains(&["Command", "::new("].concat()), "끈 갈래에서 프로세스를 띄운다");
+        assert!(off_body.contains("cfg!(windows)") && off_body.contains("LEFTOVER_NOTE"));
+        assert!(sup.find("if !enabled {").expect("끈 갈래") < sup.find("javis_hud_bridge.py").expect("스크립트"), "끈 판정이 스폰 준비보다 앞");
+        assert!(sup.contains("PORT_HELD_NOTE") && sup.contains("held_noted = true;"), "시연 중 포트를 쥔 옛 서버 원장 줄(수명당 1)");
+        assert_eq!(LEFTOVER_NOTE, "옛 오피스 서버가 남아 있음(재부팅 뒤 사라짐)");
+        assert_eq!(PORT_HELD_NOTE, "옛 오피스 서버가 포트를 쥐고 있음 — 재부팅 뒤 다시");
+    }
+
+    /// codex 1R C1(TICKET=fix-1119-codex-r1) — 옛 서버가 수명줄 없이 남을 수 있는 경우 = 윈 + 맥 `Legacy`(환경 변수·정책 파일 되돌림 손잡이).
+    /// 끈 기동의 「남아 있음」 원장 줄은 그 모든 경우에 찍혀야 하고(끄는 코드는 여전히 0), 머리 주석의 「맥 = 할 일 없음」은 Managed 일 때만이다.
+    #[test]
+    fn office_bridge_leftover_note_covers_every_lifeline_less_case() {
+        use crate::knobs::{bridge_mode_from, BridgeMode};
+        // 맥에서도 Legacy 로 돌 수 있다(= 1.1.18 서버가 수명줄 없이 떴을 수 있다).
+        assert_eq!(bridge_mode_from(Some("legacy"), None, false).mode, BridgeMode::Legacy);
+        assert_eq!(bridge_mode_from(None, Some(&serde_json::json!({"CYS_OFFICE_BRIDGE_MODE": "legacy"})), false).mode, BridgeMode::Legacy);
+        assert_eq!(bridge_mode_from(None, None, false).mode, BridgeMode::Managed);
+        let main = include_str!("main.rs");
+        let a = main.find("fn spawn_office_bridge(").expect("감독 함수");
+        let b = main.find("/// ★B3: 동봉 runtime python3 절대경로").expect("끝");
+        let sup = &main[a..b];
+        let off = sup.find("if !enabled {").expect("끈 갈래");
+        let off_end = off + sup[off..].find("\n        return;\n    }").expect("끈 갈래 끝");
+        let off_body = &sup[off..off_end];
+        assert!(
+            off_body.contains("if cfg!(windows) || matches!(crate::knobs::bridge_mode(), crate::knobs::BridgeMode::Legacy) {"),
+            "끈 갈래의 남음 확인이 윈에서만 돈다(맥 Legacy 빠짐): {off_body}"
+        );
+        assert!(!off_body.contains(&["Command", "::new("].concat()) && !off_body.contains("kill"), "끄는 코드가 생겼다(D-10 범위 밖)");
+        let head = &main[main[..a].rfind("/// 수동 python3 기동 없이").expect("머리 주석")..a];
+        assert!(!head.contains("맥(관리 방식) = 수명줄로 옛 데몬과 함께 끝남(할 일 없음)"), "머리 주석이 맥 전부를 「할 일 없음」으로 적는다");
+        assert!(head.contains("Managed 일 때만"), "{head}");
+    }
+
+    /// codex 1R C2(TICKET=fix-1119-codex-r1) — 깃발은 `env_compat` 로 읽는다 = `CYS_NO_OFFICE_BRIDGE` 가 없거나 비면 옛 이름
+    /// `JAVIS_NO_OFFICE_BRIDGE`·`AITERM_NO_OFFICE_BRIDGE` 를 본다(1.1.18 과 같은 이행기 호환 · 동작 그대로). 그 폴백이 있음을 주석과 이 시험으로 못 박는다.
+    #[test]
+    fn office_bridge_flag_keeps_legacy_name_fallback() {
+        let main = include_str!("main.rs");
+        let a = main.find("fn spawn_office_bridge(").expect("감독 함수");
+        let head = &main[main[..a].rfind("/// 수동 python3 기동 없이").expect("머리 주석")..a];
+        assert!(head.contains("JAVIS_NO_OFFICE_BRIDGE") && head.contains("AITERM_NO_OFFICE_BRIDGE"), "옛 이름 폴백이 주석에 없다: {head}");
+        assert!(main[a..].contains(r#"crate::office_bridge::bridge_enabled(cys::env_compat("CYS_NO_OFFICE_BRIDGE").as_deref())"#));
+        // 같은 함수(`cys::env_compat`)의 폴백 순서를 이 시험 전용 이름으로 실측(다른 시험·데몬이 읽는 이름과 겹치지 않게).
+        let (p, j, ai) = ("CYS_T_FIX1119_NO_OFFICE_BRIDGE", "JAVIS_T_FIX1119_NO_OFFICE_BRIDGE", "AITERM_T_FIX1119_NO_OFFICE_BRIDGE");
+        for k in [p, j, ai] {
+            std::env::remove_var(k);
+        }
+        assert!(!bridge_enabled(cys::env_compat(p).as_deref()), "셋 다 없음 = 끔");
+        std::env::set_var(j, "0");
+        assert!(bridge_enabled(cys::env_compat(p).as_deref()), "CYS_ 없음 + JAVIS_=0 = 켬(옛 이름 폴백)");
+        std::env::set_var(p, "");
+        assert!(bridge_enabled(cys::env_compat(p).as_deref()), "CYS_ 빈 값은 건너뛴다 → JAVIS_=0 = 켬");
+        std::env::remove_var(j);
+        std::env::set_var(ai, "0");
+        assert!(bridge_enabled(cys::env_compat(p).as_deref()), "AITERM_=0 = 켬");
+        std::env::set_var(p, "1");
+        assert!(!bridge_enabled(cys::env_compat(p).as_deref()), "CYS_ 값이 있으면 그 값이 이긴다(=1 끔)");
+        for k in [p, j, ai] {
+            std::env::remove_var(k);
+        }
+    }
+
+    /// PLAN §5-2 「no_pidfile_kill」 — 새 코드에서 pid 파일로 프로세스를 끄는 자리 0(윈 pid 재사용에 무관한 프로세스를 죽인다 · D-10 2회 고침).
+    #[test]
+    fn no_pidfile_kill() {
+        let me = include_str!("office_bridge.rs");
+        let prod = &me[..me.find("\n#[cfg(test)]\n#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]\nmod tests {").expect("앵커")];
+        let main = include_str!("main.rs");
+        let a = main.find("fn spawn_office_bridge(").expect("감독 함수");
+        let b = main.find("/// ★B3: 동봉 runtime python3 절대경로").expect("끝");
+        for (name, code) in [("office_bridge.rs", prod), ("spawn_office_bridge", &main[a..b])] {
+            let low = code.to_lowercase();
+            for bad in [".pid\"", "pidfile", "pid_file", "bridge.pid", "office.pid"] {
+                assert!(!low.contains(bad), "{name}: pid 파일 자리 `{bad}`");
+            }
+        }
     }
 
     // ── 기계 강제(소스 고정) ──────────────────────────────────────────────────

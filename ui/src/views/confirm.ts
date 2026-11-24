@@ -44,6 +44,8 @@ export interface ConfirmDeps {
   store: { get(k: string): string | null; set(k: string, v: string): void };
   /** (s79 · codex 3R ②) 지금 대화 화면인가 — core 의 한 도우미(onChatScreen · deliver 와 같은 판정) · 없으면 늘 대화 화면(시험·단독). */
   onChat?(): boolean;
+  /** (TICKET=cysr-1119-s2 · F36) `chat_transcript` IPC 인자 — core 의 한 함수(ChatCore.transcriptArgs · 순환 import 를 피해 deps 로 받음). */
+  transcriptArgs(surfaceId: number, afterOffset: number, fromEnd: boolean): Record<string, unknown>;
 }
 
 /** (s79 · codex 3R ②) feed·org 를 기다리는 사이 작업 화면으로 옮겨 처리하지 않았을 때의 안내. */
@@ -144,7 +146,7 @@ export class ConfirmBook {
     if (!s || this.priorDone || this.scanning) return;
     this.scanning = true;
     try {
-      const r = (await this.d.invoke("chat_transcript", { socket: null, surfaceId: s.surface, afterOffset: s.next, fromEnd: false }).catch(() => null)) as {
+      const r = (await this.d.invoke("chat_transcript", this.d.transcriptArgs(s.surface, s.next, false)).catch(() => null)) as {
         status?: unknown;
         next_offset?: unknown;
         records?: unknown;

@@ -2467,8 +2467,10 @@ class CsoDirectiveRevision(unittest.TestCase):
         #   ⑥ 2026-11-20 상향(같은 티켓 · 독립 검증 V-3 · master#afc55645): light 일 때 빠지는 것 4가지 + CSO 여는 명령 + 진실원 = 데몬 — ④ 줄 수 유지(§2 줄 번호 핀) · MASTER 86,949 · CEO 102,435
         #   ⑧ 2026-11-20 통합(TICKET=cysr-1116-integ-1120): b23 ⑥(86,949 / 102,435) + s6 「★ 대화 화면 표식」 +1,185 B(s6 갈래 86,625 → 87,810 · 103,296) —
         #     두 문단이 겹치지 않아 합 = 실측 MASTER 88,134 · CEO 103,620(gen_ceo_template --check GREEN · 103620 bytes)
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 88134, "MASTER_DIRECTIVE.md 바이트 예산(88,134) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103620, "CEO_TEMPLATE.md 바이트 예산(103,620) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        #   ⑨ 2026-11-24 래칫 하향(1.1.19 · TICKET=cysr-1119-s14 · PK-DRAIN): 드레인 절 마커 줄에 「상태 = ① 이 이름 대는 정본」을 넣고 같은 줄 실기 서술을 줄여 −5 B —
+        #     MASTER 88,134 → 88,129 · CEO 103,620 → 103,615(gen_ceo_template --check GREEN · 103615 bytes)
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 88129, "MASTER_DIRECTIVE.md 바이트 예산(88,129) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103615, "CEO_TEMPLATE.md 바이트 예산(103,615) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

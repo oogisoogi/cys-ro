@@ -409,39 +409,8 @@ function sliceBody(start: string, end: string): string {
   return code.slice(a, b);
 }
 
-describe("배선 핀 — main.ts · 경보", () => {
-  test("probefail 을 들여온다", () => {
-    expect(/from "\.\/probefail"/.test(code)).toBe(true);
-  });
-  test("계수기는 최상위 한 개 · setCcOpen 보다 위(첫 호출 전 초기화)", () => {
-    const decl = "const alertsTracker = makeAlertsTracker();";
-    expect(count(code, decl)).toBe(1);
-    expect(code.indexOf(decl)).toBeLessThan(code.indexOf("function setCcOpen("));
-  });
-  test("refreshControlCenter: readAlerts 로 조회 → 계수기 step 결과를 그대로 그린다", () => {
-    const body = ns(sliceBody("async function refreshControlCenter", "function updateCcStale"));
-    expect(body.includes(ns('const alerts = await readAlerts(() => invoke("control_alerts"));'))).toBe(true);
-    expect(body.includes(ns("renderAlerts(alertsTracker.step(alerts));"))).toBe(true);
-  });
-  test("계수기 step 은 main.ts 전체에서 한 번(이중 계수 금지) · 판정 함수를 main.ts 가 직접 부르지 않는다", () => {
-    expect(count(code, "alertsTracker.step(")).toBe(1);
-    expect(code.includes("alertsView(")).toBe(false);
-    expect(code.includes("nextAlertsFailStreak(")).toBe(false);
-    expect(/\balertsFailStreak\b/.test(code)).toBe(false); // 옛 main.ts 지역 계수기 부재
-    expect(code.includes(j("a?.alerts ?", "? []"))).toBe(false);
-  });
-  test("renderAlerts 는 표시 값만 받는다", () => {
-    expect(code.includes("function renderAlerts(v: AlertsView | null)")).toBe(true);
-  });
-  test("setCcOpen(true): 계수기 reset 이 refreshControlCenter() 보다 먼저(리뷰1 #7)", () => {
-    const openBranch = sliceBody("function setCcOpen(", "} else {");
-    const r = openBranch.indexOf("alertsTracker.reset();");
-    const f = openBranch.indexOf("refreshControlCenter();");
-    expect(r).toBeGreaterThan(0);
-    expect(f).toBeGreaterThan(r);
-  });
-});
-
+// ★(1.1.19 · cysr-1119-s10b MD-CC) 「배선 핀 — main.ts · 경보」 는 지웠다 — 경보 띠(E6)는 Control Center Live 안에 있었고 Live 와 함께 화면에서 빠졌다
+//   (readAlerts·makeAlertsTracker 순수 함수와 그 단위 시험은 그대로 · 데몬 control_alerts RPC 도 그대로 = 마스터가 말로 읽는다).
 describe("배선 핀 — main.ts · 승인 전환", () => {
   test("스케줄러는 makeFeedSwitchScheduler 하나 — 실제 의존성을 꽂는다", () => {
     expect(count(code, "makeFeedSwitchScheduler(")).toBe(1);

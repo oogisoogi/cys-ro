@@ -3586,7 +3586,11 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
                 return "alive"
             return "unknown"
         _pid = _ps_cache["p"].get(surface)
-        v = agent_process_verdict(_pid, entries.get(role, {}).get("agent", "claude"), _ps_cache["t"], _ps_comm(_pid))
+        # ★(1.1.19 PH-NIT · VERIFY-628e4ce28 §5-4 효율) comm 도 표·좌석 pid 와 같은 회차 스냅샷 — 좌석 pid 당 ps 1번
+        #   (종전: _role_liveness 가 좌석마다 이 함수를 2번 · 역할마다 _role_liveness 최대 3번 → 부를 때마다 ps).
+        if _pid not in _ps_cache.setdefault("c", {}):
+            _ps_cache["c"][_pid] = _ps_comm(_pid)
+        v = agent_process_verdict(_pid, entries.get(role, {}).get("agent", "claude"), _ps_cache["t"], _ps_cache["c"][_pid])
         if v == "dead":
             log("★ps 축: role=%s %s 좌석 셸 아래 에이전트 프로세스 부재 — 생존 아님(부활 대상)" % (role, surface))
         return "dead" if v == "dead" else "alive"

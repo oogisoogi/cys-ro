@@ -1994,5 +1994,24 @@ class TestPrecedent(Base):
         self.assertIn("설치된 앱(카카오톡", d["report"])
 
 
+
+class TestSkillDoc(unittest.TestCase):
+    """★1.1.19 SD ㈎-3(DESIGN §11-7 · TICKET=cysr-1119-s14) — 크롬 절 제목이 「/chrome 실행」 을 시키는 꼴로 읽히지 않는다.
+    마스터가 좌석에 /chrome 을 보내면 설정 창이 떠 배달이 멈출 수 있다(박사님 11-24 보고) — 크롬은 chrome-enable 도구로만."""
+
+    TITLE = "## 크롬 — 마스터가 직접 켠다 · 사용자에게 /chrome 을 치게 하지 않는다 · 마스터도 좌석에 /chrome 을 보내지 않는다 — 크롬은 chrome-enable 도구로만"
+    QUOTE = "- 박사님 10-26 원문: 「/chrome 실행, 크롬 껐다켜기 같은 작업을 주인에게 시키지 말라」."
+
+    def test_computer_control_skill_no_slash_chrome_imperative(self):
+        with open(os.path.join(os.path.dirname(BIN), "skills", "computer-control", "SKILL.md"), encoding="utf-8") as f:
+            lines = f.read().split("\n")
+        heads = [l for l in lines if l.startswith("#")]
+        for h in heads:
+            self.assertNotIn("/chrome 실행", h, "제목이 「/chrome 실행」 꼴을 담는다: %s" % h)
+        self.assertIn(self.TITLE, lines, "크롬 절 새 제목이 글자 그대로가 아니다")
+        i = lines.index(self.TITLE)
+        self.assertEqual(lines[i + 1], self.QUOTE, "제목 바로 아래 첫 줄 = 박사님 원문 인용(뜻 보존)")
+
+
 if __name__ == "__main__":
     unittest.main()

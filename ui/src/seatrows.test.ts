@@ -238,3 +238,85 @@ test("(cysr-1116-s6 · 검증 i7) ceo·ceo-* = 마스터 계열 고정 좌석(�
   expect(m.fixed.map((r) => r.sid)).toEqual([2, 3]);
   expect(m.groups.map((g) => g.key)).toEqual(["site", "other"]);
 });
+
+// ── TICKET=cysr-1119-s7 BA5 · W5 — 좌석 줄 경과 · 막힌 창 알약(같은 agoText · 같은 반올림) ──
+import { agoText } from "./views/judge/rail";
+import { blockedPillText, SEAT_AGE_SHOW, seatAgeText, seatAgeTip, stateAgeSecs } from "./seatrows";
+import type { ActivityRecord } from "./roleactivity";
+
+test("BA5 7값 — seatAgeText = 대화 화면 agoText 그대로(두 화면 같은 말 · BORROW A5)", () => {
+  const want = ["소식 모름", "방금", "방금", "1분 전", "59분 전", "1시간 전", "24시간 전"];
+  [null, 0, 59, 60, 3599, 3600, 86400].forEach((s, k) => {
+    expect(seatAgeText("idle", s)).toBe(want[k]);
+    expect(seatAgeText("idle", s)).toBe(agoText(s));
+  });
+  expect(SEAT_AGE_SHOW).toBe(true);
+});
+
+test("BA5 작업 중 = 빈칸 · 막힘·모름·끝남 = 경과(BORROW A5 · master#e78fbc98 ③)", () => {
+  expect(seatAgeText("working", 600)).toBe("");
+  expect(seatAgeText("blocked", 2400)).toBe("40분 전");
+  expect(seatAgeText("unknown", 120)).toBe("2분 전");
+  expect(seatAgeText("exited", 7200)).toBe("2시간 전");
+  expect(seatAgeTip(2400)).toBe("40분째");
+  expect(seatAgeTip(30)).toBe("방금");
+  expect(seatAgeTip(null)).toBe("");
+});
+
+test("BA5 줄 모델에 ageText — 이름 보고자 줄은 빈칸 · 입력 ageSecs 가 없으면 소식 모름", () => {
+  const m = buildSeatRows([base({ sid: 1, dot: "waiting", ageSecs: 125 }), base({ sid: 2, dot: "working", ageSecs: 125 }), base({ sid: 3, dot: "waiting" })]);
+  const rows = m.groups.flatMap((g) => g.rows);
+  expect(rows.map((r) => r.ageText)).toEqual(["2분 전", "", "소식 모름"]);
+});
+
+const rec = (state: string, o: Record<string, unknown> = {}): ActivityRecord =>
+  ({
+    lifetime: 1, startMs: 1000, receivedMs: 1000, epoch: "e", seq: 1, retired: [],
+    parsed: { kind: "observation", state, raw: "idle", reason: "r", family: "claude", grammarRevision: null, observedAgeSecs: 2, lastPositiveAgeSecs: null,
+      stableAgeSecs: 100, seq: 1, epoch: "e", retained: false, consecutiveRejections: 0, meaning: null, source: "screen", programStatus: null, ...o },
+  }) as unknown as ActivityRecord;
+
+test("W5·BA5 나이 = stable_age_secs + 요청 시작 뒤 흐른 시간 · 모름 = 관측 나이 · 다른 출처의 상태 = 모름(null)", () => {
+  expect(stateAgeSecs(rec("waiting_for_input"), 6000, "input")).toBe(105);
+  expect(stateAgeSecs(rec("waiting"), 1000, "waiting")).toBe(100);
+  expect(stateAgeSecs(rec("waiting"), 1000, "unknown")).toBe(2); // 만료·지연 = 마지막 관측 나이
+  expect(stateAgeSecs(rec("waiting"), 1000, "stale")).toBe(2);
+  expect(stateAgeSecs(rec("waiting"), 1000, "input")).toBeNull(); // 승인 피드로 막힘 = 화면 상태 나이가 아니다
+  expect(stateAgeSecs(rec("working", { stableAgeSecs: null }), 1000, "working")).toBeNull();
+  expect(stateAgeSecs(undefined, 1000, "unknown")).toBeNull();
+  expect(stateAgeSecs({ ...rec("waiting"), parsed: { kind: "unknown", reason: "x", malformed: false } } as ActivityRecord, 1000, "unknown")).toBeNull();
+});
+
+test("W5 알약 문구 = 「승인 기다림 · N분」 · 반올림 = agoText 와 같음 · 나이 모르면 「승인 기다림」만", () => {
+  expect(blockedPillText(null)).toBe("승인 기다림");
+  expect(blockedPillText(59)).toBe("승인 기다림 · 방금");
+  expect(blockedPillText(60)).toBe("승인 기다림 · 1분");
+  expect(blockedPillText(2400)).toBe("승인 기다림 · 40분");
+  expect(blockedPillText(3599)).toBe("승인 기다림 · 59분");
+  expect(blockedPillText(3600)).toBe("승인 기다림 · 1시간");
+});
+
+// (BA1 · TICKET=cysr-1119-s8) 좌석 줄 멈춘 까닭 꼬리표 — 대화 화면 띠와 같은 판정(judge/revive usageLimit · 로그인 300초 = main.ts 가 넘김).
+test("BA1 좌석 꼬리표 — 「한도 · HH:MM」(행 usage · 데몬 시각) · 「로그인 필요」 > 한도 · 승인 창이 먼저 · 끝난 좌석 0 · 99%·낡음 = 없음", async () => {
+  const { seatInputOf } = await import("./seatrows");
+  const { resetClock } = await import("./views/judge/revive");
+  const obs = 1_800_000_000; // 데몬 관측 시각(초)
+  const u = (pct: number, resetInSecs: number | null, age = 4) => ({ ctx_pct: 30, rate: [{ label: "5h", used_pct: pct, resets_at: resetInSecs === null ? null : obs + age + resetInSecs }], rate_observed_at: obs, rate_age_secs: age });
+  const row = (usage: unknown, over: Record<string, unknown> = {}) => ({ display_no: 931, role: "worker", title: "931 · Opus · site", cwd: "/w/site", exited: false, usage, ...over });
+  const tagOf = (i: ReturnType<typeof seatInputOf>) => seatTag(i, seatState(i));
+  const lim = seatInputOf(5, row(u(100, 3600)), "waiting", undefined, false);
+  expect(tagOf(lim)).toBe(`한도 · ${resetClock((obs + 4 + 3600) * 1000, (obs + 4) * 1000)}`);
+  expect(tagOf(seatInputOf(5, row(u(100, null)), "waiting", undefined, false))).toBe("한도");
+  expect(tagOf(seatInputOf(5, row(u(99, 3600)), "waiting", undefined, false))).toBe(null);
+  expect(tagOf(seatInputOf(5, row(u(100, -1)), "waiting", undefined, false))).toBe(null); // 리셋 지남
+  expect(tagOf(seatInputOf(5, row(u(100, 3600, 1801)), "waiting", undefined, false))).toBe(null); // 30분 넘게 낡음 = 판정 안 함
+  expect(tagOf(seatInputOf(5, row(u(100, 3600)), "waiting", undefined, false, true))).toBe("로그인 필요"); // 로그인 > 한도
+  expect(tagOf(seatInputOf(5, row({ ctx_pct: 30 }), "working", undefined, false, true))).toBe("로그인 필요");
+  expect(tagOf(seatInputOf(5, row(u(100, 3600)), "input", undefined, true, true))).toBe("승인 창"); // 막힘이 먼저
+  expect(tagOf(seatInputOf(5, row(u(100, 3600), { exited: true }), "waiting", undefined, false, true))).toBe(null); // 끝난 좌석
+  // 까닭 없는 줄 = 입력 꼴 그대로(stall 칸 없음 · 1.1.18 과 같은 값)
+  expect("stall" in seatInputOf(5, row({ ctx_pct: 30 }), "waiting", undefined, false)).toBe(false);
+  // 줄 모델·다시 그리기 서명에 실림(HH:MM 은 리셋이 바뀔 때만 바뀜)
+  const m = buildSeatRows([lim]);
+  expect(m.groups[0].rows[0].tag).toBe(tagOf(lim));
+});

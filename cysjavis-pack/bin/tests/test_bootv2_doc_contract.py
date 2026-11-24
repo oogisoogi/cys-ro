@@ -445,6 +445,18 @@ try:
     check("7d MASTER_DIRECTIVE 무변경(착수 게이트 절이 새지 않았다 — master 는 §0-C 임무 게이트가 별도)",
           "착수 게이트" not in master, "MASTER 문서에 착수 게이트 절이 발견됐다 — 대상 확산")
 
+    # ─────────── ⑦′ 1.1.19 MD-RSI · PK-DRAIN 지침 문장(TICKET=cysr-1119-s14 · DESIGN §8-5 · §10-3) ───────────
+    rsi_md = read(os.path.join(DIRECTIVES, "RSI_LEARNING_DIRECTIVE.md"))
+    check("7e MD-RSI 워커 지침 = 작업 화면 좌석 줄(머리말·본문) · 「Tasks Control Center」 0",
+          "(작업 화면 좌석 줄 실시간 가시성)" in worker and "작업 화면 왼쪽 좌석 줄에 실시간 표시된다" in worker
+          and "Tasks Control Center" not in worker, "워커 지침 가시성 문장")
+    check("7f MD-RSI 학습 가시화 = `javis_learn status`(마스터에게 말로) · 「'학습' 탭」 0",
+          "- 가시화 = `javis_learn status`(마스터에게 말로" in rsi_md and "'학습' 탭" not in rsi_md, "RSI 지침 가시화 문장")
+    check("7g PK-DRAIN 드레인 절 상태 저장 자리 = master 팩 정본 · 워커 자기 TODO(CEO 는 합성으로 같음)",
+          "상태는 ① 이 이름 대는 정본 `<팩>/round/SESSION_STATE.md` 에 쓴다." in master
+          and "상태는 ① 이 이름 대는 자기 TODO 에 쓴다." in worker
+          and "round/SESSION_STATE.md` 에 쓴다" not in worker, "드레인 절 저장 자리")
+
     # ─────────── ⑥ ★음성 대조(계측 타당성) ───────────
     # 각 축을 무력화한 변조 사본이 **같은 판정 함수**에서 실패해야 한다.
     m_rev = re.sub(r"## 1-1\..*?(?=## 2\. 엄격 제약)", "", reviewer, flags=re.S)

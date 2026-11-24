@@ -9,16 +9,18 @@ import { roleDotColor } from "./appearance";
 import {
   SEAT_STATE_ACT,
   SEAT_STATE_LABEL,
+  seatAgeTip,
   showGroupHeaders,
   type SeatRow,
   type SeatRowsModel,
 } from "./seatrows";
 import { sevClassFor } from "./wsusage";
 
-/** 값이 같으면 같은 문자열 — 다시 그릴지 판정(나이·툴팁 문구는 넣지 않는다 · 순수). */
+/** 값이 같으면 같은 문자열 — 다시 그릴지 판정(툴팁 문구·포커스는 넣지 않는다 · 순수).
+ *  (cysr-1119-s7 BA5 · C-20) 경과는 **글(분 단위)** 로만 넣는다 — 초가 흘러도 같은 분이면 다시 그리지 않고, 분이 바뀌면 글이 굳지 않는다. */
 export function seatRowsSignature(m: SeatRowsModel): string {
   const row = (r: SeatRow) =>
-    [r.sid, r.no, r.name, r.state, r.tag ?? "", r.ctxPct == null ? "" : Math.round(r.ctxPct), r.ctxSrc, r.named ? 1 : 0].join("\u0001");
+    [r.sid, r.no, r.name, r.state, r.tag ?? "", r.ctxPct == null ? "" : Math.round(r.ctxPct), r.ctxSrc, r.named ? 1 : 0, r.ageText ?? ""].join("\u0001");
   return JSON.stringify([
     m.fixed.map(row),
     m.groups.map((g) => [g.key, g.label, g.rows.map(row)]),
@@ -36,7 +38,8 @@ export function seatRowTitle(r: SeatRow): string {
         : "CTX 아직 관측 없음(0% 라는 뜻이 아니다)"
       : `CTX ${Math.round(r.ctxPct)}%${r.ctxSrc === "self" ? " · 자기보고" : ""}`;
   const tag = r.tag ? ` · ${r.tag}` : "";
-  return `${who} · ${r.name || "(이름 없음)"}\n상태: ${SEAT_STATE_LABEL[r.state]}${tag}\n${ctx}`;
+  const tip = r.ageText ? seatAgeTip(r.ageSecs ?? null) : ""; // (cysr-1119-s7 BA5) 접근 이름에 「N분째」
+  return `${who} · ${r.name || "(이름 없음)"}\n상태: ${SEAT_STATE_LABEL[r.state]}${tag}${tip ? ` · ${tip}` : ""}\n${ctx}`;
 }
 
 export interface SeatRowsDomOpts {
@@ -46,6 +49,37 @@ export interface SeatRowsDomOpts {
 
 const SEAT_HOSTS = new Map<string, HTMLElement>();
 const SEAT_SIGS = new WeakMap<HTMLElement, string>();
+
+// ── (cysr-1119-s7 SEL-2) 고른 좌석 줄 표시 — 설계 1119-DESIGN §5 바꿈 2 ──
+// 줄 열쇠가 data-sid 뿐이라(부서마다 번호가 겹친다 · C-09) 표시 대상 = **지금 작업공간 호스트 열쇠 + sid** 의 줄 하나.
+// 서명에 넣지 않는다(포커스 이동이 3초 고리 다시 그리기를 낳지 않게) — 다시 그린 뒤 paintSeatRows 가 그 자리에서 다시 붙인다.
+export interface SeatSelection {
+  key: string;
+  sid: number;
+}
+let seatSel: SeatSelection | null = null;
+
+/** 줄 하나가 고른 줄인가(순수) — 호스트 열쇠·sid 둘 다 같고 이름 보고자 줄이 아닐 때만. */
+export function seatRowSelected(hostKey: string, sid: number, named: boolean, sel: SeatSelection | null): boolean {
+  if (hostKey === "board" || hostKey.startsWith("n")) return false; // 상황판·부서별 수 호스트 = 좌석 줄이 아니다
+  return sel !== null && !named && hostKey === sel.key && sid === sel.sid;
+}
+
+function applySeatSelection(host: HTMLElement): void {
+  const key = host.dataset.seatHost ?? "";
+  for (const el of host.querySelectorAll<HTMLElement>(".ws-seat")) {
+    const on = seatRowSelected(key, Number(el.dataset.sid), el.classList.contains("named"), seatSel);
+    if (el.classList.contains("sel") !== on) el.classList.toggle("sel", on);
+    if (on) el.setAttribute("aria-current", "true");
+    else if (el.hasAttribute("aria-current")) el.removeAttribute("aria-current");
+  }
+}
+
+/** 고른 좌석을 바꾼다(null = 표시 없음) — 모든 호스트를 그 자리에서 고친다(다시 그리기 0). */
+export function setSeatSelection(key: string | null, sid: number | null): void {
+  seatSel = key === null || sid === null ? null : { key, sid };
+  for (const h of SEAT_HOSTS.values()) applySeatSelection(h);
+}
 
 /** 부서 하나의 호스트(같은 열쇠면 같은 노드). */
 export function seatHost(key: string): HTMLElement {
@@ -96,6 +130,7 @@ export function paintSeatRows(host: HTMLElement, m: SeatRowsModel, opts: SeatRow
     for (const r of g.rows) frag.appendChild(rowEl(r, false, opts));
   }
   host.replaceChildren(frag);
+  applySeatSelection(host); // (cysr-1119-s7 SEL-2) 다시 그린 줄에도 고른 표시를 다시 붙인다
 }
 
 function rowEl(r: SeatRow, fixed: boolean, opts: SeatRowsDomOpts): HTMLElement {
@@ -114,6 +149,13 @@ function rowEl(r: SeatRow, fixed: boolean, opts: SeatRowsDomOpts): HTMLElement {
   name.className = "ws-seat-name";
   name.textContent = r.name;
   row.append(shape, no, name);
+  // (cysr-1119-s7 BA5) 경과 = 작은 글 · 꼬리표 줄은 둘째 줄(꼬리표 옆)로 — 첫 줄 이름 폭을 더 줄이지 않는다.
+  let age: HTMLElement | null = null;
+  if (r.ageText) {
+    age = document.createElement("span");
+    age.className = "ws-seat-age";
+    age.textContent = r.ageText;
+  }
   const pct = document.createElement("span");
   const sev = r.ctxPct == null ? "" : sevClassFor(r.ctxPct, 60, 80);
   pct.className = `ws-seat-ctx${sev ? " " + sev : ""}`;
@@ -127,9 +169,21 @@ function rowEl(r: SeatRow, fixed: boolean, opts: SeatRowsDomOpts): HTMLElement {
     tag.textContent = r.tag;
     const sub = document.createElement("span");
     sub.className = "ws-seat-sub";
-    sub.append(tag, pct);
+    sub.append(tag);
+    if (age) sub.appendChild(age);
+    sub.appendChild(pct);
     row.appendChild(sub);
-  } else row.appendChild(pct);
+  } else if (age) {
+    // (1.1.19 · S7 BA5 · TICKET=fix-1119-e2e-red3) 경과 칸도 꼬리표와 같은 규칙(1c · master#6ecef1a2 ①) — 첫 줄에 넣으면 216px 에서 이름이 2자 남짓으로 줄었다
+    //   (seatrows_gate 「이름이 잘리면 최소 6글자 폭」 붉음 · axdev 26px). 경과 + CTX 를 둘째 줄(오른쪽)로 · 막대 폭은 늘리지 않는다.
+    row.classList.add("tagged");
+    const sub = document.createElement("span");
+    sub.className = "ws-seat-sub";
+    sub.append(age, pct);
+    row.appendChild(sub);
+  } else {
+    row.appendChild(pct);
+  }
   row.title = seatRowTitle(r);
   if (!r.named) {
     row.addEventListener("click", (e) => {

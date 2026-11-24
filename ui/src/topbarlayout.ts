@@ -24,10 +24,25 @@ export const TOPBAR_PINNED: readonly string[] = ["btn-theme"];
 
 // 기본으로 꺼 두는 단추(처음 쓰는 사람·저장이 없거나 깨진 경우) — 박사님 확정 2026-10-12 09:1x 「최적안대로 한다」(A안 5개):
 // + New · Split → · Split ↓ · 창 닫기 · 완전 초기화. 켜진 채 남는 것 = 피드백 · 상담소 · 아고라(cysr-menu-top-row 2026-10-21 사이드바에서 옮김) ·
-// 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정.
+// 정렬 · 파일 · Control Center · ↻ 재시작 · 화면 설정. (1.1.19: 정렬·파일 = 아래 두 상수 · 박사님 11-24 결정)
 // ⛔이 집합을 바꾸는 것은 박사님 결정 사항이다. 윈에서는 터미널에 초점이 있을 때 단축키를 xterm 이 먹으므로, 창 만들기 세 단추의
 //   보이는 길은 「화면 설정 → 상단 단추」 토글 하나다(index.html v116-recut-newsplit 주석) — 그 길(토글·「화면 설정」 고정)을 먼저 없애지 마라.
-export const TOPBAR_DEFAULT_OFF: readonly string[] = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset", "btn-cc"];
+// ★(cysr-1119-s10b · DESIGN §2-3 · §8-3 MD-T7 · §8-4 MD-T4 · 박사님 11-24 09:4x 「결제하고 권고대로 한다.」) 정렬·파일 두 단추는 빌드 상수
+//   **값**으로 갈린다(두 안 모두 동작 · 바꾸려면 상수 한 줄). 정렬: keep = 1.1.18 그대로 · dim = 켬 + 흐린 글자 · fold = 기본 끔(⌘K 「패널 균등화」 그대로).
+//   파일: on = 1.1.18 그대로 · off = 기본 끔 + 순서를 저장한 기기도 한 번만 끔(FILES_BTN_OFF_ONCE_KEY · 다시 켜면 유지).
+export type SortButtonMode = "keep" | "dim" | "fold";
+export type FilesButtonDefault = "on" | "off";
+export const SORT_BUTTON_MODE: SortButtonMode = "fold";
+export const FILES_BUTTON_DEFAULT: FilesButtonDefault = "off";
+const TOPBAR_DEFAULT_OFF_BASE: readonly string[] = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset", "btn-cc"];
+export function topbarDefaultOff(sort: SortButtonMode, files: FilesButtonDefault): string[] {
+  return [...TOPBAR_DEFAULT_OFF_BASE, ...(sort === "fold" ? ["btn-equalize"] : []), ...(files === "off" ? ["btn-files"] : [])];
+}
+export const TOPBAR_DEFAULT_OFF: readonly string[] = topbarDefaultOff(SORT_BUTTON_MODE, FILES_BUTTON_DEFAULT);
+// (MD-T9) ↻ 재시작 = 마지막 밸브라 남기되 무게만 낮춘다(흐린 글자 · 확인 창 그대로) · 정렬은 dim 일 때만 흐림.
+export function topbarDimIds(sort: SortButtonMode): string[] {
+  return [...(sort === "dim" ? ["btn-equalize"] : []), "btn-restart-daemon"];
+}
 
 // (1e) 저장된 배치가 있는 사람(1.1.14 이하에서 순서를 고친 사람)에게도 Control Center 를 한 번 끈다 — 표지 열쇠로 1회만.
 //   그 뒤 사람이 다시 켜면 그대로 둔다(표지가 있으니 다시 끄지 않는다).
@@ -37,11 +52,18 @@ export function ccButtonOffOnce(items: readonly TopbarItem[], done: boolean): { 
   return { items: items.map((it) => (it.id === "btn-cc" ? { id: it.id, on: false } : { ...it })), changed: true };
 }
 
+// (MD-T7) 파일 단추 한 번만 끄기 — CC 1e 와 같은 꼴(표지 1회 · 그 뒤 사람이 켜면 그대로). on 이면 언제나 무변경.
+export const FILES_BTN_OFF_ONCE_KEY = "cys-files-btn-off-119";
+export function filesButtonOffOnce(items: readonly TopbarItem[], done: boolean, mode: FilesButtonDefault = FILES_BUTTON_DEFAULT): { items: TopbarItem[]; changed: boolean } {
+  if (mode !== "off" || done || !items.some((it) => it.id === "btn-files" && it.on)) return { items: items.map((it) => ({ ...it })), changed: false };
+  return { items: items.map((it) => (it.id === "btn-files" ? { id: it.id, on: false } : { ...it })), changed: true };
+}
+
 export const isTopbarPinned = (id: string): boolean => TOPBAR_PINNED.includes(id);
 
 // 기본 배치 — 순서 = index.html 의 단추 순서(domIds), 켬끔 = TOPBAR_DEFAULT_OFF 만 끔.
-export function defaultTopbarLayout(domIds: readonly string[]): TopbarItem[] {
-  return domIds.map((id) => ({ id, on: isTopbarPinned(id) || !TOPBAR_DEFAULT_OFF.includes(id) }));
+export function defaultTopbarLayout(domIds: readonly string[], off: readonly string[] = TOPBAR_DEFAULT_OFF): TopbarItem[] {
+  return domIds.map((id) => ({ id, on: isTopbarPinned(id) || !off.includes(id) }));
 }
 
 // 저장 문자열 → 배치. domIds = 지금 화면(index.html)에 실제로 있는 단추 id(그 순서).

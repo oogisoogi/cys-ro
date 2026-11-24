@@ -55,8 +55,8 @@ test("창 머리 배지(renderUsage): 미관측 창을 걸러 낸 목록으로 �
 });
 // (1.1.8 병합 X11 = 원작자 aggSeatRates · usagebar.ts) 문자열 핀을 새 출처로 옮긴다 — 목적(미관측 null 창은 합산 후보가 아니다)은
 // 실제 집계 함수에 null 창을 넣어 행동으로 단언한다.
-test("Control Center 합산(ccAggRate): 미관측 창은 후보가 아니다", () => {
-  expect(fnBody("function ccAggRate(").includes("return aggSeatRates(fleet, Date.now() / 1000);")).toBe(true);
+// ★(1.1.19 · cysr-1119-s10b MD-CC) 화면 쪽 ccAggRate·ccAcctMax·renderAccounts(CC Live)는 Live 와 함께 빠졌다 — 순수 집계 함수의 행동 단언만 남긴다.
+test("좌석 합산(aggSeatRates): 미관측 창은 후보가 아니다", () => {
   const agg = aggSeatRates(
     [
       { usage: { rate: [{ label: "5h", used_pct: null, resets_at: null }, { label: "7d", used_pct: undefined, resets_at: null }] } },
@@ -66,13 +66,4 @@ test("Control Center 합산(ccAggRate): 미관측 창은 후보가 아니다", (
   );
   expect(agg["5h"]).toEqual({ used: 12, reset: null }); // null 이 0% 후보로 끼지 않는다(관측값 12 그대로)
   expect("7d" in agg).toBe(false); // 미관측만 있는 창은 행 자체가 없다(0% 행 금지)
-});
-test("Control Center 최고 사용 계정(ccAcctMax): usedPctOf 로 읽는다", () => {
-  const f = fnBody("function ccAcctMax(");
-  expect(f.includes("const used = usedPctOf(r.used_pct);")).toBe(true);
-  expect(f.includes("Number(r.used_pct)")).toBe(false);
-});
-test("Control Center 계정 게이지(renderAccounts gauge): 미관측 = 창 없음(「—」)", () => {
-  // (opus 결함 5) 데몬이 죽었다고 판정한 창(stale)은 사유 표시가 우선 — null 판정보다 먼저 거른다
-  expect(fnBody("function renderAccounts(").includes("if (r && r.stale !== true && !Number.isFinite(usedPctOf(r.used_pct))) r = undefined;")).toBe(true);
 });

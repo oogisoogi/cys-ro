@@ -2,10 +2,11 @@
 //
 // 시안 = cysr-ui-research/P2-mock app.js rail()(마스터 카드 · 맡긴 일 N · 팀 묶음 · 부서 N · 결과 N) · guideCard().
 // 글은 전부 textContent(HTML 해석 0) · 누를 면 44px · 글자 18px 이상(§9-2). 판정은 judge/rail.ts · 장부는 ../rail.ts.
-// 「결과 N」 칸은 조각 7 이 채운다 — 여기서는 자리([data-rail=results])만 두고 비어 있으면 숨긴다(판정 0).
+// 「결과 N」 칸은 조각 7 이 채운다 — 여기서는 자리([data-rail=results])만 두고 결과 수 0 이면 숨긴다(판정 0 · TICKET=cysr-1119-s5 CV-RAIL).
 
 import { HEALTH_LABEL, type ChatState } from "../core";
-import { agoText, CARD_STATUS, DEPT_REPLY_NO, DEPT_REPLY_YES, quickReplyOf, TEAM_REPLY_NO, TEAM_REPLY_YES, type RailModel } from "../judge/rail";
+import { agoText, CARD_STATUS, DEPT_REPLY_NO, DEPT_REPLY_YES, quickReplyOf, TEAM_REPLY_NO, TEAM_REPLY_YES, type Helper, type RailModel } from "../judge/rail";
+import { PEEK_ENABLED } from "../../peek";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -18,10 +19,21 @@ export interface RailView {
   el: HTMLElement;
   /** 결과 자리(조각 7 이 채운다 · 비면 숨김) */
   results: HTMLElement;
+  /** (TICKET=cysr-1119-s5 · V3) rail 맨 아래 자리 — 한도 줄(넓은 창) */
+  foot: HTMLElement;
   paint(s: ChatState, m: RailModel): void;
+  /** (TICKET=cysr-1119-s5 · CV-RAIL ⑤-1 · C-18) 결과 칸 숨김 = 결과 수(데이터) — 자식 수가 아니다(머리가 늘 있음) */
+  setResults(count: number): void;
 }
 
-export function createRail(): RailView {
+/** (TICKET=cysr-1119-s12 · CV-PEEK ②) 카드 누름 → 보기 칸. 없거나 PEEK_ENABLED=false 면 카드는 종전처럼 누를 것 0. */
+export interface RailPeek {
+  pick(h: Helper): void;
+  /** 지금 보기 칸에 있는 좌석 — 이름 목록 단추에 aria-pressed */
+  openSid(): number | null;
+}
+
+export function createRail(peek?: RailPeek): RailView {
   const aside = el("aside", "cv-rail");
   aside.setAttribute("aria-label", "맡긴 일");
   const who = el("div", "cvr-who");
@@ -40,11 +52,17 @@ export function createRail(): RailView {
   const results = el("div", "cvr-results");
   results.dataset.rail = "results";
   results.hidden = true; // 조각 7 이 채우기 전 = 빈 상태 = 숨김
-  aside.append(who, tasks, depts, results);
+  const foot = el("div", "cvr-foot");
+  aside.append(who, tasks, depts, results, foot);
 
   let last = "";
+  // (CV-PEEK ② · C-18) 펼친 카드 열쇠 = 화면 메모리 — 3초 다시 그리기에도 펼침 유지(서명에 넣어 바뀌면 다시 그림)
+  const expanded = new Set<string>();
+  let lastArgs: [ChatState, RailModel] | null = null;
+  const canPeek = PEEK_ENABLED && peek !== undefined;
   const paint = (s: ChatState, m: RailModel) => {
-    const sig = JSON.stringify([s.health, m]);
+    lastArgs = [s, m];
+    const sig = JSON.stringify([s.health, m, [...expanded], canPeek ? peek!.openSid() : null]);
     if (sig === last) return;
     last = sig;
     whoSt.textContent = HEALTH_LABEL[s.health];
@@ -53,7 +71,14 @@ export function createRail(): RailView {
 
     const head = el("h2", "cvr-h", m.loading ? "맡긴 일" : `맡긴 일 ${m.taskCount}`);
     const out: HTMLElement[] = [head];
-    if (m.loading) out.push(card("불러오는 중이에요", null, "cvr-card cvr-loading"));
+    // (TICKET=cysr-1119-s5 · V11) 불러오는 중 = 뼈대 카드 2장 · 250ms 늦게 나타남(CSS · 타이머 0) · 화면 읽기 글은 aria-label 로 남김
+    if (m.loading) {
+      const sk = el("div", "cvr-loading");
+      sk.setAttribute("role", "status");
+      sk.setAttribute("aria-label", "불러오는 중이에요");
+      sk.append(el("div", "cvr-skel"), el("div", "cvr-skel"));
+      out.push(sk);
+    }
     for (const f of m.forming) {
       const c = card(f.name, f.line, `cvr-card cvr-forming cvr-${f.kind}`);
       c.dataset.forming = f.kind;
@@ -77,8 +102,50 @@ export function createRail(): RailView {
         const line = el("div", "cvr-s cvr-line"); // 상태 줄(색 = 상태별 · views.css .cvr-line)
         line.append(el("i", "cvr-mk", st.mark), document.createTextNode(t.status === "unknown" ? st.label : `${st.label} · ${agoText(t.newsSecs)}`));
         c.append(line);
-        c.append(el("div", "cvr-s cvr-help", `도우미 ${t.helpers}명`));
+        c.append(el("div", "cvr-s cvr-help", `도우미 ${t.helpers.length}명`));
         out.push(c);
+        if (canPeek && t.helpers.length > 0) {
+          const ck = `${b.team ?? ""}\u0000${t.key}`;
+          const many = t.helpers.length > 1;
+          c.classList.add("cvr-peekable");
+          c.tabIndex = 0;
+          c.setAttribute("role", "button");
+          c.setAttribute("aria-label", many ? `${t.title} — 도우미 ${t.helpers.length}명 창 고르기` : `${t.title} 창 보기`);
+          if (many) c.setAttribute("aria-expanded", String(expanded.has(ck)));
+          const act = () => {
+            if (!many) return peek!.pick(t.helpers[0]);
+            if (expanded.has(ck)) expanded.delete(ck);
+            else expanded.add(ck);
+            if (lastArgs) paint(...lastArgs);
+          };
+          c.addEventListener("click", (e) => {
+            if (e.isTrusted) act(); // 사람의 신뢰 클릭만
+          });
+          c.addEventListener("keydown", (e) => {
+            if (e.isTrusted && (e.key === "Enter" || e.key === " ")) {
+              e.preventDefault();
+              act();
+            }
+          });
+          if (many && expanded.has(ck)) {
+            const list = el("div", "cvr-peek-list");
+            list.setAttribute("role", "group");
+            list.setAttribute("aria-label", `${t.title} 도우미`);
+            const on = peek!.openSid();
+            for (const h of t.helpers) {
+              const pb = el("button", "cvr-peek-pick", h.label);
+              pb.type = "button";
+              pb.dataset.sid = String(h.sid);
+              pb.setAttribute("aria-label", `${h.label} 창 보기`);
+              pb.setAttribute("aria-pressed", String(on === h.sid));
+              pb.addEventListener("click", (e) => {
+                if (e.isTrusted) peek!.pick(h);
+              });
+              list.append(pb);
+            }
+            out.push(list);
+          }
+        }
       }
     }
     tasks.replaceChildren(...out);
@@ -94,9 +161,11 @@ export function createRail(): RailView {
     }
     depts.replaceChildren(...dl);
     depts.hidden = dl.length === 0;
-    results.hidden = results.childElementCount === 0;
   };
-  return { el: aside, results, paint };
+  const setResults = (count: number) => {
+    results.hidden = count === 0;
+  };
+  return { el: aside, results, foot, paint, setResults };
 }
 
 function card(title: string, line: string | null, cls: string): HTMLElement {

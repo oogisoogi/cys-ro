@@ -63,6 +63,7 @@ with sync_playwright() as p:
     pg.click("#view-switch button[data-view=chat]"); pg.clock.run_for(6_000)
     for w in (1400, 700, 420):
         pg.set_viewport_size({"width": w, "height": 900}); pg.clock.run_for(200)
+        pg.wait_for_timeout(300)  # (TICKET=cysr-1119-s5 · V3) 한도 줄 자리 = matchMedia 사건(다음 그리기 = 실시간 · 가짜 시계 밖) → 실시간 300ms
         st = ev(pg, """() => { const L = document.querySelector('.cv-limits'); if (!L) return null;
           return { hidden: L.hidden, vis: L.getBoundingClientRect().width > 0, rows: [...L.querySelectorAll('.cv-limit')].map((r) => [r.querySelector('.cv-limit-name').textContent, r.querySelector('.cv-limit-text').textContent, r.className, r.title]),
             clip: [...L.querySelectorAll('.cv-limit, .cv-limit-name, .cv-limit-text')].filter((e) => e.scrollWidth > e.clientWidth + 1).length,

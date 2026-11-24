@@ -56,14 +56,14 @@ describe("팀 = 작업 화면 묶음 탭과 같은 모델(개정 E1 · bun 대�
     });
     const work = buildSeatRows(inputs);
     const workTeams = work.groups.map((g) => ({ team: g.label, n: g.rows.length }));
-    const chatTeams = m.blocks.map((b) => ({ team: b.team, n: b.cards.reduce((a, c) => a + c.helpers, 0) }));
+    const chatTeams = m.blocks.map((b) => ({ team: b.team, n: b.cards.reduce((a, c) => a + c.helpers.length, 0) }));
     expect(chatTeams).toEqual(workTeams);
     expect(chatTeams.map((t) => t.team)).toEqual(["site", "home", "홍보팀"]);
   });
   it("같은 팀 같은 일감 = 카드 하나 · 도우미 수(FR-P1)", () => {
     const site = m.blocks.find((b) => b.team === "site")!;
     expect(site.cards).toHaveLength(1);
-    expect([site.cards[0].title, site.cards[0].helpers]).toEqual(["사이트 고치기", 2]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
+    expect([site.cards[0].title, site.cards[0].helpers.length]).toEqual(["사이트 고치기", 2]); // toMatchObject 대신(bun-env.d.ts 최소 matcher 계약)
     expect(m.taskCount).toBe(4);
   });
   it("(검증 i7) ceo 좌석 = 고정(팀·카드 아님) — 작업 화면 묶음과 같은 판정", () => {
@@ -125,7 +125,7 @@ describe("카드 상태(FR-P2 · 모름은 칠하지 않음)", () => {
     expect(railModel(input([], [], { surfaces: undefined })).loading).toBe(true);
   });
   it("요약 = 모두 조용하면 조용함", () => {
-    expect(teamSummary([{ key: "a", title: "a", status: "quiet", newsSecs: 700, helpers: 1 }])).toBe("○ 조용함");
+    expect(teamSummary([{ key: "a", title: "a", status: "quiet", newsSecs: 700, helpers: [{ sid: 1, name: "a", label: "a", need: false }] }])).toBe("○ 조용함");
   });
 });
 
@@ -171,5 +171,28 @@ describe("빠른 답(§5-4 D7 · §16-5 ①)", () => {
   });
   it("단추 글 = 설계 원문 그대로", () => {
     expect([TEAM_REPLY_YES, TEAM_REPLY_NO, DEPT_REPLY_YES, DEPT_REPLY_NO]).toEqual(["네, 팀으로 나눠 주세요", "아니요, 지금처럼 해 주세요", "네, 부서로 올려 주세요", "지금은 아니요"]);
+  });
+});
+
+// (TICKET=cysr-1119-s12 · CV-PEEK ① · C-07 · FR-P1) 보기 칸 열기 대상 = 카드의 좌석 목록 — 번호·CTX 는 글에 없다.
+describe("helpers — 보기 칸 이름 목록(DESIGN §4-3 ①)", () => {
+  it("같은 이름 좌석 여럿 = 「도우미 N · 상태 글」 순번 · 하나 = 좌석 이름표", () => {
+    const surfaces = [seat(31, "/w/p/site"), seat(32, "/w/p/site"), seat(33, "/w/p/site")];
+    const orgs = [org(31, { task: "사이트 고치기", working: true }), org(32, { task: "사이트 고치기" }), org(33, { task: "글 쓰기" })];
+    const m = railModel(input(surfaces, orgs, { approvalSeats: [32] }));
+    const cards = m.blocks.flatMap((b) => b.cards);
+    const site = cards.find((c) => c.title === "사이트 고치기")!;
+    expect(site.helpers).toEqual([
+      { sid: 31, name: "사이트 고치기", label: "도우미 1 · 일하는 중", need: false },
+      { sid: 32, name: "사이트 고치기", label: "도우미 2 · 승인 기다림", need: true },
+    ]);
+    const one = cards.find((c) => c.title === "글 쓰기")!;
+    expect(one.helpers).toEqual([{ sid: 33, name: "글 쓰기", label: "글 쓰기", need: false }]);
+  });
+  it("글에 좌석 번호·모델·CTX 가 없다(FR-P1)", () => {
+    const m = railModel(input([seat(41, "/w/p/a"), seat(42, "/w/p/a")], [org(41, { task: "일" }), org(42, { task: "일" })]));
+    const labels = m.blocks.flatMap((b) => b.cards).flatMap((c) => c.helpers.map((h) => h.label));
+    expect(labels.length).toBe(2);
+    for (const l of labels) expect(/41|42|Opus|CTX|%/.test(l)).toBe(false);
   });
 });

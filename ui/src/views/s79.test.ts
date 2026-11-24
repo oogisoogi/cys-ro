@@ -576,7 +576,7 @@ describe("S4-7 · F7 — 사람이 물음을 띠에서 내림(마스터에게 �
   it("ConfirmBook.dismiss → 띠에서 빠짐 · 기록(번호·dismiss · 글 0자) · invoke 0 · 세션 바뀌면 비움", async () => {
     const mem = new Map<string, string>();
     const calls: string[] = [];
-    const b = new ConfirmBook({ invoke: async (c) => (calls.push(c), null), now: () => 5, store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v) } }, () => {});
+    const b = new ConfirmBook({ invoke: async (c) => (calls.push(c), null), now: () => 5, store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v) }, transcriptArgs: (surfaceId, afterOffset, fromEnd) => ({ socket: null, surfaceId, afterOffset, fromEnd }) }, () => {});
     b.startSession("s1", 1, 0);
     b.onTail([rec("⟪확인 요청: 비밀 물음 글⟫", { uuid: "q" })]);
     b.observe({ items: [] }, { surfaces: [{ surface_id: 1, role: "master", agent_alive: true }] }, { surface_id: 1, agent_alive: true });

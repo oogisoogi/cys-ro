@@ -8,6 +8,7 @@ import { describe, it, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   TOPBAR_LAYOUT_KEY, TOPBAR_LAYOUT_VERSION, TOPBAR_PINNED, TOPBAR_DEFAULT_OFF, type TopbarItem,
+  SORT_BUTTON_MODE, FILES_BUTTON_DEFAULT, FILES_BTN_OFF_ONCE_KEY, topbarDefaultOff, filesButtonOffOnce, topbarDimIds,
   isTopbarPinned, defaultTopbarLayout, parseTopbarLayout, serializeTopbarLayout,
   setTopbarItemOn, moveTopbarItem, canMoveTopbarItem, dropTopbarItem, visibleTopbarIds,
 } from "./topbarlayout";
@@ -22,17 +23,21 @@ const save = (items: unknown, version: unknown = 1) => JSON.stringify({ version,
 
 describe("기본값 — 박사님 확정 A안(끔 5 · 보이는 8 = 종전 6 + 상단으로 옮긴 상담소·아고라)", () => {
   it("대상 = 상단바 단추 13개 · 기본 순서 = index.html 순서(피드백 · 상담소 · 아고라 · 정렬 …)", () => {
-    expect(DOM).toEqual(["btn-feedback", "btn-counsel", "btn-agora", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-restart-daemon", "btn-factory-reset", "btn-theme"]);
+    // (cysr-1119-s10b MD-T9) ↻ 재시작 = 맨 오른쪽(화면 설정 뒤) — html 순서 = 기본 순서.
+    // (1.1.19 · cysr-1119-s10b AG4·AG5) 상담소·아고라 = html 에서 빠짐 → 11개.
+    expect(DOM).toEqual(["btn-feedback", "btn-equalize", "btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-files", "btn-cc", "btn-factory-reset", "btn-theme", "btn-restart-daemon"]);
     expect(ids(defaultTopbarLayout(DOM))).toEqual(DOM);
   });
 
-  it("처음 보이는 단추 = 피드백 · 상담소 · 아고라 · 정렬 · 파일 · ↻ 재시작 · 화면 설정(1.1.15 1e: Control Center 기본 끔)", () => {
-    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "상담소", "아고라", "정렬", "파일", "↻ 재시작", "화면 설정"]);
+  it("처음 보이는 단추 = 피드백 · 화면 설정 · ↻ 재시작(1.1.19: 상담소·아고라 삭제 · 정렬 fold · 파일 off = 박사님 11-24)", () => {
+    expect(SORT_BUTTON_MODE).toBe("fold");
+    expect(FILES_BUTTON_DEFAULT).toBe("off");
+    expect(visibleTopbarIds(defaultTopbarLayout(DOM)).map(label)).toEqual(["피드백", "화면 설정", "↻ 재시작"]); // + 화면 전환 2 = 첫 화면 5(DESIGN §2-1 fold)
   });
 
-  it("처음 꺼진 단추 = + New · Split → · Split ↓ · 창 닫기 · Control Center · 완전 초기화(html 에 요소는 그대로 있다)", () => {
+  it("처음 꺼진 단추 = 정렬 · + New · Split → · Split ↓ · 창 닫기 · 파일 · Control Center · 완전 초기화(html 에 요소는 그대로 있다)", () => {
     const off = defaultTopbarLayout(DOM).filter((x) => !x.on).map((x) => x.id);
-    expect(off.map(label)).toEqual(["+ New", "Split →", "Split ↓", "창 닫기", "Control Center", "완전 초기화"]);
+    expect(off.map(label)).toEqual(["정렬", "+ New", "Split →", "Split ↓", "창 닫기", "파일", "Control Center", "완전 초기화"]);
     expect([...TOPBAR_DEFAULT_OFF].sort()).toEqual([...off].sort());
     for (const id of TOPBAR_DEFAULT_OFF) expect(html.split(`id="${id}"`).length - 1).toBe(1);
   });
@@ -97,8 +102,8 @@ describe("손상·구판 저장 = 기본값(앱이 죽거나 단추가 통째로
   for (const [name, raw] of bad) {
     it(name, () => expect(parseTopbarLayout(raw, DOM)).toEqual(defaultTopbarLayout(DOM)));
   }
-  it("손상 폴백에서도 끔 6 은 꺼진 채다(전부 켬으로 새지 않는다 · 1.1.15 1e: Control Center 포함)", () => {
-    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(7);
+  it("손상 폴백에서도 기본 끔은 꺼진 채다(전부 켬으로 새지 않는다 · 1.1.15 1e: Control Center 포함)", () => {
+    expect(visibleTopbarIds(parseTopbarLayout("{{{", DOM)).length).toBe(DOM.length - TOPBAR_DEFAULT_OFF.length);
   });
 });
 
@@ -113,23 +118,17 @@ describe("새 단추·없어진 단추·중복", () => {
     expect(ids(l).length).toBe(DOM.length);
   });
 
-  it("1.1.9 에서 순서를 저장한 사람(상담소·아고라 없는 저장) → 상담소·아고라가 피드백 바로 뒤 · 켬 · 나머지 저장 순서·켬끔 그대로", () => {
-    const OLD = DOM.filter((id) => id !== "btn-counsel" && id !== "btn-agora"); // 1.1.9 상단바 11개
-    const custom = [...OLD].reverse().map((id) => ({ id, on: id !== "btn-files" })); // 뒤집고 파일만 끔(손댄 저장)
+  // ★(1.1.19 · cysr-1119-s10b AG4·AG5) 상담소·아고라 단추가 html 에서 빠졌다 — 1.1.10~1.1.18 에서 순서를 저장한 기기(두 id 가 저장에 있음)도
+  //   두 단추가 보이지 않는다(파서가 화면에 없는 id 를 버린다) · 나머지 저장 순서·켬끔은 그대로. (옛 시험 「1.1.9 저장 → 상담소·아고라 피드백 뒤」 둘은 대상 없음 → 지움)
+  it("저장 배치에 btn-counsel·btn-agora 가 있어도(1.1.18 이하 저장) 보이지 않는다 · 나머지 순서·켬끔 그대로", () => {
+    expect(DOM.includes("btn-counsel") || DOM.includes("btn-agora")).toBe(false);
+    const OLD = ["btn-feedback", "btn-counsel", "btn-agora", ...DOM.filter((id) => id !== "btn-feedback")];
+    const custom = [...OLD].reverse().map((id) => ({ id, on: id !== "btn-files" }));
     const l = parseTopbarLayout(save(custom), DOM);
-    const at = ids(l).indexOf("btn-feedback");
-    expect(ids(l).slice(at, at + 3)).toEqual(["btn-feedback", "btn-counsel", "btn-agora"]);
-    expect(l.find((x) => x.id === "btn-counsel")!.on && l.find((x) => x.id === "btn-agora")!.on).toBe(true);
-    expect(ids(l).filter((id) => OLD.includes(id))).toEqual(custom.map((x) => x.id));
+    expect(ids(l)).toEqual(custom.map((x) => x.id).filter((id) => DOM.includes(id)));
+    expect(visibleTopbarIds(l).some((id) => id === "btn-counsel" || id === "btn-agora")).toBe(false);
     expect(l.find((x) => x.id === "btn-files")!.on).toBe(false);
-  });
-
-  it("피드백을 옮겨 둔 저장이어도 상담소·아고라는 피드백을 따라간다 · 피드백을 꺼 둔 저장이면 그 자리(꺼진 피드백 뒤)에 켠 채", () => {
-    const OLD = DOM.filter((id) => id !== "btn-counsel" && id !== "btn-agora");
-    const moved = [...OLD.filter((id) => id !== "btn-feedback"), "btn-feedback"].map((id) => ({ id, on: id !== "btn-feedback" }));
-    const l = parseTopbarLayout(save(moved), DOM);
-    expect(ids(l).slice(-3)).toEqual(["btn-feedback", "btn-counsel", "btn-agora"]);
-    expect(l.slice(-3).map((x) => x.on)).toEqual([false, true, true]);
+    expect(l.length).toBe(DOM.length);
   });
 
   it("미래 단추 id 가 html 에 생기면 옛 저장을 읽어도 그 단추가 보인다", () => {
@@ -166,7 +165,7 @@ describe("고정 2 — 끌 수 없다(순서만)", () => {
 
   it("순서는 바뀐다(▲▼ · 끌어 놓기)", () => {
     const l = defaultTopbarLayout(DOM);
-    expect(ids(moveTopbarItem(l, "btn-theme", -1)).slice(-2)).toEqual(["btn-theme", "btn-factory-reset"]);
+    expect(ids(moveTopbarItem(l, "btn-restart-daemon", -1)).slice(-2)).toEqual(["btn-restart-daemon", "btn-theme"]); // (1.1.19 MD-T9) 재시작 = 맨 끝
     expect(ids(dropTopbarItem(l, "btn-cc", "btn-feedback", true))[0]).toBe("btn-cc");
   });
 });
@@ -211,7 +210,7 @@ describe("▲▼ — 한 칸 · 경계", () => {
   it("켬끔은 따라간다(꺼진 단추를 옮겨도 꺼진 채)", () => {
     const d = moveTopbarItem(l, "btn-new", -1);
     expect(d.find((x) => x.id === "btn-new")!.on).toBe(false);
-    expect(visibleTopbarIds(d).length).toBe(7); // 1.1.15 1e: Control Center 기본 끔
+    expect(visibleTopbarIds(d).length).toBe(DOM.length - TOPBAR_DEFAULT_OFF.length); // 1.1.15 1e: Control Center 기본 끔 · 1.1.19 정렬·파일 상수
   });
 });
 
@@ -220,8 +219,9 @@ describe("끌어 놓기 결과 = 순서", () => {
   it("다른 줄의 앞·뒤에 놓는다(아래 → 위 · 위 → 아래)", () => {
     expect(ids(dropTopbarItem(l, "btn-restart-daemon", "btn-feedback", false)).slice(0, 3)).toEqual(["btn-feedback", "btn-restart-daemon", DOM[1]]);
     expect(ids(dropTopbarItem(l, "btn-restart-daemon", "btn-feedback", true)).slice(0, 2)).toEqual(["btn-restart-daemon", "btn-feedback"]);
-    expect(ids(dropTopbarItem(l, "btn-feedback", "btn-theme", false)).at(-1)).toBe("btn-feedback");
-    expect(ids(dropTopbarItem(l, "btn-feedback", "btn-theme", true)).slice(-2)).toEqual(["btn-feedback", "btn-theme"]);
+    // (1.1.19 MD-T9) 맨 끝 단추 = ↻ 재시작(html 순서) — 끝 단추를 html 에서 읽는다.
+    expect(ids(dropTopbarItem(l, "btn-feedback", DOM.at(-1)!, false)).at(-1)).toBe("btn-feedback");
+    expect(ids(dropTopbarItem(l, "btn-feedback", DOM.at(-1)!, true)).slice(-2)).toEqual(["btn-feedback", DOM.at(-1)!]);
   });
 
   it("제자리(바로 뒤 줄의 앞 · 바로 앞 줄의 뒤)·자기 위·없는 id = 순서 그대로", () => {
@@ -260,5 +260,56 @@ describe("(1e) Control Center 단추 — 저장 배치에도 한 번만 끈다",
     expect(r.items.filter((x) => !x.on).map((x) => x.id)).toEqual(["btn-cc"]);
     expect(ccButtonOffOnce(on, true).changed).toBe(false);
     expect(ccButtonOffOnce(r.items, false).changed).toBe(false);
+  });
+});
+
+// ── (cysr-1119-s10b) MD-T4 정렬 · MD-T7 파일 · MD-T9 재시작 — 값으로 갈리는 빌드 상수(DESIGN §2-3 · §8-3 · §8-4) ──
+describe("MD-T4·T7 — 기본 끔 목록은 두 상수에서 계산한다(값마다 동작)", () => {
+  const BASE = ["btn-new", "btn-split-h", "btn-split-v", "btn-close", "btn-factory-reset", "btn-cc"];
+  it("keep·dim = 정렬 켬 · fold = 정렬 끔 / on = 파일 켬 · off = 파일 끔(그 밖 기본 끔 6 은 그대로)", () => {
+    for (const sort of ["keep", "dim", "fold"] as const)
+      for (const files of ["on", "off"] as const) {
+        const off = topbarDefaultOff(sort, files);
+        expect([...off].sort()).toEqual([...BASE, ...(sort === "fold" ? ["btn-equalize"] : []), ...(files === "off" ? ["btn-files"] : [])].sort());
+      }
+    expect([...TOPBAR_DEFAULT_OFF].sort()).toEqual([...topbarDefaultOff(SORT_BUTTON_MODE, FILES_BUTTON_DEFAULT)].sort());
+  });
+  it("on·keep = 1.1.18 과 같은 배치(상담소·아고라 빼고 · 재시작 자리만 맨 끝)", () => {
+    const l = defaultTopbarLayout(DOM, topbarDefaultOff("keep", "on"));
+    expect(visibleTopbarIds(l).map(label)).toEqual(["피드백", "정렬", "파일", "화면 설정", "↻ 재시작"]);
+  });
+  it("흐린 글자 = 재시작 늘 · 정렬은 dim 일 때만", () => {
+    expect(topbarDimIds("keep")).toEqual(["btn-restart-daemon"]);
+    expect(topbarDimIds("fold")).toEqual(["btn-restart-daemon"]);
+    expect([...topbarDimIds("dim")].sort()).toEqual(["btn-equalize", "btn-restart-daemon"]);
+  });
+});
+
+describe("MD-T7 — 파일 단추: 저장 배치에도 한 번만 끈다(off) · on 이면 손대지 않는다", () => {
+  it("표지 열쇠 = cys-files-btn-off-119", () => expect(FILES_BTN_OFF_ONCE_KEY).toBe("cys-files-btn-off-119"));
+  it("off: 켜져 있고 표지 없음 = 끄고 changed · 표지 있음 = 그대로(다시 켜면 유지) · 이미 끔 = 그대로 · 파일 말고는 안 바뀜", () => {
+    const on = DOM.map((id) => ({ id, on: true }));
+    const r = filesButtonOffOnce(on, false, "off");
+    expect(r.changed).toBe(true);
+    expect(r.items.filter((x) => !x.on).map((x) => x.id)).toEqual(["btn-files"]);
+    expect(filesButtonOffOnce(on, true, "off").changed).toBe(false);
+    expect(filesButtonOffOnce(r.items, false, "off").changed).toBe(false);
+  });
+  it("on: 어떤 저장이어도 바꾸지 않는다", () => {
+    const on = DOM.map((id) => ({ id, on: true }));
+    expect(filesButtonOffOnce(on, false, "on")).toEqual({ items: on, changed: false });
+  });
+});
+
+describe("MD-T4·T7·T9 배선(main.ts) — 표지 1회 끄기 · 흐린 글자", () => {
+  const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
+  it("파일 단추 표지 = 시작 때 한 번 · 저장이 있을 때만 저장 배치를 고친다(CC 1e 와 같은 꼴)", () => {
+    expect(main).toContain("filesButtonOffOnce(topbarLayout, localStorage.getItem(FILES_BTN_OFF_ONCE_KEY) === \"1\")");
+    expect(main).toContain("localStorage.setItem(FILES_BTN_OFF_ONCE_KEY, \"1\");");
+  });
+  it("흐린 글자 = topbarDimIds(SORT_BUTTON_MODE) 의 단추에 tb-dim(확인 창·처리기 무변경)", () => {
+    expect(main).toContain("for (const id of topbarDimIds(SORT_BUTTON_MODE)) topbarBtn(id)?.classList.add(\"tb-dim\");");
+    const css = readFileSync(new URL("./views/views.css", import.meta.url), "utf8");
+    expect(css).toContain("#topbar > button.tb-dim");
   });
 });

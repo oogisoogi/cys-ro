@@ -111,7 +111,7 @@ describe("닫기 배선 — 세 입구가 모두 판정을 지난다", () => {
     const moved = body.indexOf("if (ws !== current()) {");
     expect(body.indexOf(CLOSE_AT)).toBeGreaterThan(-1);
     expect(moved).toBeGreaterThan(body.indexOf(CLOSE_AT));
-    expect(moved).toBeLessThan(body.indexOf("focusedSid = collectSids(ws.tree)[0] ?? null;"));
+    expect(moved).toBeLessThan(body.indexOf("setFocusedSid(collectSids(ws.tree)[0] ?? null);")); // (cysr-1119-s7 SEL-1) 포커스 쓰기 한 입구
   });
 
   it("(opus 뮤턴트 X1) 낡은 포커스 가드는 판정보다 앞 · close_surface 경로에 우회 0", () => {

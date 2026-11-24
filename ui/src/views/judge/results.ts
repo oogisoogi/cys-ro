@@ -6,12 +6,15 @@
 //  ② 마스터 답 속 절대 경로 — **홈 아래만**(허용 경로 · NFR-S2) · 숨은 폴더(`.` 로 시작하는 마디) 안 경로 · `..` 마디 · 코드 울타리 안 줄 = 0.
 //     답 글은 경로를 설명·인용으로도 쓰므로 **실재가 확인된 것만** 카드가 된다(없는 경로를 「찾을 수 없어요」로 칠하지 않음 · 소음 0).
 // 「새 결과」(FR-P4) = 사람이 열기·폴더 보기를 누르기 전까지 유지.
+// (1.1.19 OB-O4 · DESIGN §11-4) 정리 = 「치우기」(목록에서만 숨김 · 파일 무변경) · 파일이 없어진 카드 = 없음을 처음 본 뒤 7일이면 자동 숨김 · 「모두 치우기」 = 보이는 카드 전부.
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지(시각은 인자 · views 정적 핀).
 
 import type { Rec } from "./msgstep";
 
 /** 결과 목록 상한(최근 것부터) — 앱 저장소 보관 한도와 같음. */
 export const RESULTS_MAX = 50;
+/** (OB-O4) 파일이 없어진 카드를 자동으로 숨기기까지(없음을 처음 본 시각부터). */
+export const MISSING_HIDE_MS = 7 * 24 * 3600 * 1000;
 /** 한 답에서 받는 경로 상한(긴 목록을 붙인 답이 카드를 쏟지 않게). */
 export const PATHS_PER_REPLY_MAX = 5;
 
@@ -43,6 +46,10 @@ export interface Result {
   exists: boolean | null;
   /** 폴더인가 · null = 모름 */
   isDir: boolean | null;
+  /** (OB-O4) 사람이 치웠거나 없어진 지 7일 — 목록에서만 숨김(파일 무변경 · 같은 경로를 다시 말해도 숨김 그대로) */
+  hidden: boolean;
+  /** (OB-O4) 파일 없음을 처음 본 시각(ms) · 다시 있으면 null */
+  missingAt: number | null;
 }
 
 /** 경로 구분자 — 홈이 `C:\…` 꼴이면 `\` 와 `/` 둘 다 받는다(윈도우 · NFR-P1). */
@@ -275,7 +282,7 @@ export function addCandidates(list: readonly Result[], cands: readonly Candidate
       if (c.source === "skill" && out[i].source !== "skill") out[i] = { ...out[i], source: "skill", runId: c.runId };
       continue;
     }
-    out.unshift({ id: c.path, path: c.path, name: baseName(c.path), source: c.source, at: now, uuid: c.uuid, runId: c.runId, seen: false, exists: null, isDir: c.source === "skill" ? true : null });
+    out.unshift({ id: c.path, path: c.path, name: baseName(c.path), source: c.source, at: now, uuid: c.uuid, runId: c.runId, seen: false, exists: null, isDir: c.source === "skill" ? true : null, hidden: false, missingAt: null });
   }
   if (out.length > RESULTS_MAX) out = out.slice(0, RESULTS_MAX);
   return out;
@@ -303,7 +310,31 @@ export function listErrorIsMissing(err: string): boolean {
 
 /** 화면에 보일 결과 — 스킬 결과 = 늘 · 답 속 경로 = 실재 확정만(답이 설명으로 쓴 경로는 카드 0). */
 export function visibleResults(list: readonly Result[]): Result[] {
-  return list.filter((r) => r.source === "skill" || r.exists === true || (r.seen && r.exists === false));
+  return list.filter((r) => !r.hidden && (r.source === "skill" || r.exists === true || (r.seen && r.exists === false)));
+}
+
+/** (OB-O4) 「치우기」 — 그 카드만 숨김(목록에서만 · 파일 무변경). */
+export function hideResult(list: readonly Result[], id: string): Result[] {
+  return list.map((r) => (r.id === id && !r.hidden ? { ...r, hidden: true } : r));
+}
+
+/** (OB-O4) 「모두 치우기」 — 지금 보이는 카드 전부 숨김(아직 확인 중인 후보는 그대로 · 보이는 것만 치운다). */
+export function hideAll(list: readonly Result[]): Result[] {
+  const vis = new Set(visibleResults(list).map((r) => r.id));
+  return list.map((r) => (vis.has(r.id) ? { ...r, hidden: true } : r));
+}
+
+/** (OB-O4) 실재 확인 결과 반영 — 없음 확정이면 처음 본 시각을 남기고(이미 있으면 유지) · 있으면 지움. */
+export function withPresence(r: Result, exists: boolean, isDir: boolean | null, now: number): Result {
+  const missingAt = exists ? null : (r.missingAt ?? now);
+  return { ...r, exists, isDir: isDir ?? r.isDir, missingAt };
+}
+
+/** (OB-O4) 없어진 지 MISSING_HIDE_MS 지난 카드 숨김 — 없음 확정(exists false)일 때만(다시 켠 뒤 재확인 전 = 모름 = 그대로). 바뀐 것 없으면 같은 목록. */
+export function expireMissing(list: readonly Result[], now: number): readonly Result[] {
+  const due = (r: Result) => !r.hidden && r.exists === false && r.missingAt !== null && now - r.missingAt >= MISSING_HIDE_MS;
+  if (!list.some(due)) return list;
+  return list.map((r) => (due(r) ? { ...r, hidden: true } : r));
 }
 
 /** 「결과 N」 머리(보이는 수) · 새 결과 수. */
@@ -345,16 +376,17 @@ export function restoreResults(raw: string | null): Result[] {
     const x = it as Record<string, unknown> | null;
     if (!x || typeof x.path !== "string" || (x.source !== "skill" && x.source !== "reply") || typeof x.at !== "number" || typeof x.seen !== "boolean") continue;
     if (out.some((r) => r.id === x.path)) continue;
-    out.push({ id: x.path, path: x.path, name: baseName(x.path), source: x.source, at: x.at, uuid: typeof x.uuid === "string" ? x.uuid : null, runId: typeof x.runId === "string" ? x.runId : null, seen: x.seen, exists: null, isDir: x.source === "skill" ? true : null });
+    out.push({ id: x.path, path: x.path, name: baseName(x.path), source: x.source, at: x.at, uuid: typeof x.uuid === "string" ? x.uuid : null, runId: typeof x.runId === "string" ? x.runId : null, seen: x.seen, exists: null, isDir: x.source === "skill" ? true : null, hidden: x.hidden === true, missingAt: typeof x.missingAt === "number" ? x.missingAt : null });
     if (out.length >= RESULTS_MAX) break;
   }
   return out;
 }
 
-/** 저장할 꼴(실재는 저장하지 않음 — 다시 켜면 다시 확인). 답 속 경로는 실재가 확정된 적 있는 것만(설명으로 쓴 경로를 남기지 않음). */
+/** 저장할 꼴(실재는 저장하지 않음 — 다시 켜면 다시 확인). 답 속 경로는 실재가 확정된 적 있는 것만(설명으로 쓴 경로를 남기지 않음).
+ *  (OB-O4) 숨김·없어진 시각도 같은 키·같은 v:1 에 덧붙임 — 숨긴 카드는 늘 저장(다시 켠 뒤 같은 경로를 말해도 되살아나지 않게) · 1.1.18 은 모르는 칸을 버려 되돌리면 숨김만 풀림(파일 무관). */
 export function persistable(list: readonly Result[]): string {
   const items = list
-    .filter((r) => r.source === "skill" || r.exists === true || r.seen)
-    .map((r) => ({ path: r.path, source: r.source, at: r.at, uuid: r.uuid, runId: r.runId, seen: r.seen }));
+    .filter((r) => r.source === "skill" || r.exists === true || r.seen || r.hidden)
+    .map((r) => ({ path: r.path, source: r.source, at: r.at, uuid: r.uuid, runId: r.runId, seen: r.seen, hidden: r.hidden, missingAt: r.missingAt }));
   return JSON.stringify({ v: 1, items });
 }

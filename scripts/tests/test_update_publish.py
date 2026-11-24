@@ -10,6 +10,7 @@ U1 왕복: env `CYS_UPDATE_VERIFY_BIN` = `update-verify` 를 가진 **디버그*
 각 거부 조건은 뮤테이션 1개로 음성 대조한다(양성 = 통과 · 음성 = 정확히 그 이유로 거부).
 """
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,9 @@ from unittest import mock
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 UPD = os.path.join(ROOT, "scripts", "update")
 FAKE = os.path.join(ROOT, "scripts", "tests", "fixtures", "fake_minisign.py")
+# 1.1.18(838f24421) scripts/update/sign-release.sh 의 바이트 동일 사본 + 그 sha256(test_co_l3_no_flag_same_as_1118 의 비교 대상).
+SIGN_1118_FIXTURE = os.path.join(ROOT, "scripts", "tests", "fixtures", "sign-release-1.1.18-838f24421.sh")
+SIGN_1118_SHA256 = "09d76522ee0f9fdad252488a91deea6c08763cc0cc89fe2ccb7e72800b51ad27"
 sys.path.insert(0, UPD)
 sys.path.insert(0, os.path.dirname(FAKE))
 import update_common as uc  # noqa: E402
@@ -1505,10 +1509,16 @@ class TestOfflineRitual(Base):
 
     def test_co_l3_no_flag_same_as_1118(self):
         """(L4 · master#26ecbe64 조건 ①) 인자를 안 주면 1.1.18(838f24421) sign-release.sh 와 같은 동작 — 더러운 git 트리에서도 끝 코드·출력 같음."""
-        base = run(["git", "-C", ROOT, "show", "838f24421:scripts/update/sign-release.sh"])
-        self.assertEqual(base.returncode, 0, base.stderr)
+        # 1.1.18 판 = 고정 자료(바이트 동일 사본) — CI 체크아웃은 얕은 받기라 838f24421 객체가 없다(TICKET=cysr-1119-integ2 · run 45374218639).
+        raw = open(SIGN_1118_FIXTURE, "rb").read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), SIGN_1118_SHA256, "고정 자료가 바뀌었다")
+        spec = "838f24421:scripts/update/sign-release.sh"
+        if run(["git", "-C", ROOT, "cat-file", "-e", spec]).returncode == 0:  # 객체가 있는 환경(전체 받기) = 자료 == 원본
+            base = subprocess.run(["git", "-C", ROOT, "show", spec], capture_output=True)
+            self.assertEqual(base.returncode, 0, base.stderr)
+            self.assertEqual(base.stdout, raw, "고정 자료 ≠ git show " + spec)
         res = []
-        for tag, text in (("new", None), ("old", base.stdout)):
+        for tag, text in (("new", None), ("old", raw.decode("utf-8"))):
             g, head, script = self._git_tree(text)
             open(os.path.join(g, "README"), "a").write("dirty\n")  # 더러움 — 인자 없으면 검사 0
             out = os.path.join(self.tmp, "out-" + tag)

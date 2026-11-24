@@ -4,7 +4,7 @@
 // 「답함」 = 그 user 레코드의 uuid 를 부모로 잇는 사슬 위 assistant 글 + 마스터 활동 쉼. 근거가 없으면 칠하지 않는다(「모름」 = 확인 중).
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지(시각은 인자).
 
-import { appendSteps, stepsOf, type ProgStep } from "./progress";
+import { appendStepsTo, stepsOf, type ProgDropped, type ProgStep } from "./progress";
 
 /** 「전달 확인 중」·「확인 중」이 이 시간 넘게 근거 없으면 「확인이 오래 걸려요」(설계 목표값 120초 · §5-1). */
 export const SLOW_MS = 120_000;
@@ -90,6 +90,8 @@ export interface Msg {
   slowHolds?: number;
   /** (TICKET=cysr-1118-ui ①) 이 말에 이어진 마스터 과정(도구·중간 글·생각 표지) — 진행 줄·「과정 보기」 재료 · 메모리만(화면 저장소 0 = NFR-S3) */
   steps?: ProgStep[];
+  /** (TICKET=cysr-1119-s4 · F25) 단계 상한(PROG_MAX)으로 앞에서 버린 단계의 분류별 수 — 과정 요약 셈 = 남은 단계 + 이것 */
+  stepsDropped?: ProgDropped;
   /** (TICKET=cysr-1118u-chat ③) 이 말의 턴이 끝났다 — 세션 기록에 이 말 사슬 뒤로 **다른 글 있는 user 레코드**(중계·작업 화면 직접 입력·알림 등 새 차례)가 왔다.
    *  이 뒤로는 마스터 활동으로 「답하는 중」을 다시 칠하지 않는다(그 활동은 새 차례의 일이다) · 진행 줄도 달지 않는다. */
   turnClosed?: boolean;
@@ -241,7 +243,7 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
       if (r.uuid) owner.thread.push(r.uuid);
       if (r.role === "assistant") owner.tail = "assistant";
       else if (r.role === "user") owner.tail = "result"; // (TICKET=cysr-1118u-chat ③) 글 없는 user = 도구 결과
-      if (r.role === "assistant") owner.steps = appendSteps(owner.steps, stepsOf(r)); // (TICKET=cysr-1118-ui ①) 진행 줄 재료
+      if (r.role === "assistant") appendStepsTo(owner, stepsOf(r)); // (TICKET=cysr-1118-ui ①) 진행 줄 재료 · (cysr-1119-s4 F25) 버린 수 보존
       if (r.role === "assistant" && r.text !== null) {
         owner.replies.push({ uuid: r.uuid, text: r.text });
         if (owner.step === "delivered") owner.step = "replying";
@@ -311,7 +313,7 @@ export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
   const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
   if (EVIDENCED.has(cur.step) && !definite) return {};
   if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
-  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined, tail: undefined, turnClosed: undefined }; // (codex 1R major) 결속을 풀면 턴 끝 표지도 푼다
+  if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined, stepsDropped: undefined, tail: undefined, turnClosed: undefined }; // (codex 1R major) 결속을 풀면 턴 끝 표지도 푼다
   return { step: outcomeStep };
 }
 

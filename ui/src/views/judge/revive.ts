@@ -52,7 +52,64 @@ export interface ReviveFacts {
   seenSame?: boolean;
   /** 마지막 master.idle(본부 · role master) — 새 출력이 있으면 공통층이 지운다 */
   idle: { sid: number; at: number } | null;
+  /** (BA1 · 1.1.19) 마스터가 멈춘 까닭(한도 · 로그인) — 장부가 pickStall 로 고른 하나 · 없음 = null(1.1.18 동작) */
+  stall?: Stall;
   now: number;
+}
+
+// ---------- (BA1 · TICKET=cysr-1119-s8) 멈춘 까닭 — 한도 · 로그인(DESIGN §7 BA1 · 카드 BORROW §3-1 A1) ----------
+
+/** 되돌리기 = false → login·limited 갈래 없음(1.1.18 조용함 띠 그대로). */
+export const LIMIT_LOGIN_BANDS = true;
+/** 로그인 룰 = 데몬 auth 인터록 룰 그대로(state.rs AUTH_INTERLOCK_RULES · 원천 검사 시험). */
+export const AUTH_RULES: readonly string[] = ["not_logged_in", "auth_401", "token_expired", "login_required"];
+/** 사건 근거 창 = 데몬 AUTH_INTERLOCK_WINDOW_SECS(300초)와 같은 값. */
+export const STALL_EVENT_MS = 300_000;
+/** 한도 수치가 이보다 낡았으면(또는 나이 모름) 한도 판정 안 함 = usagebar USAGE_STALE_SECS(30분 · 거짓 띠 0). */
+export const LIMIT_STALE_SECS = 1800;
+
+export type Stall = { why: "limit"; resetsAt: number | null } | { why: "login"; rule: string } | null;
+
+/** 좌석 행 `usage`(accounts.rs seat_usage_wire) → 한도 읽기(순수 · 시각 ms). limited = 100% 이상 창이 있고 리셋 전(리셋 = 그 창들 중 가장 늦은 것 · 모름 = null)
+ *  · fresh = 신선한 수치가 있으나 한도 아님 · none = 수치 없음·낡음·나이 모름(판정 안 함). */
+export type LimitRead = { state: "limited"; resetsAt: number | null } | { state: "fresh" } | { state: "none" };
+export function usageLimit(usage: unknown, nowMs: number): LimitRead {
+  const u = usage as { rate?: unknown; rate_age_secs?: unknown } | null | undefined;
+  const age = u?.rate_age_secs;
+  if (!u || !Array.isArray(u.rate) || typeof age !== "number" || !Number.isFinite(age) || age > LIMIT_STALE_SECS) return { state: "none" };
+  let hit = false;
+  let any = false;
+  let resetsAt: number | null = null;
+  let unknownReset = false;
+  for (const w of u.rate as unknown[]) {
+    const r = w as { used_pct?: unknown; resets_at?: unknown } | null;
+    if (!r || typeof r.used_pct !== "number" || !Number.isFinite(r.used_pct)) continue;
+    const at = typeof r.resets_at === "number" && Number.isFinite(r.resets_at) ? r.resets_at * 1000 : null;
+    if (at !== null && at <= nowMs) continue; // 이미 리셋된 창 = 지금 값이 아니다
+    any = true;
+    if (r.used_pct < 100) continue;
+    hit = true;
+    if (at === null) unknownReset = true;
+    else if (resetsAt === null || at > resetsAt) resetsAt = at;
+  }
+  if (hit) return { state: "limited", resetsAt: unknownReset ? null : resetsAt };
+  return any ? { state: "fresh" } : { state: "none" };
+}
+
+/** 까닭 하나 고르기(순수) — 로그인 > 한도(로그인은 리셋으로 안 풀림) · 한도 1차 근거 = 수치 · rate_limited 사건은 수치가 없을 때만(리셋 모름). */
+export function pickStall(login: { rule: string; at: number } | null, limit: LimitRead, rateLimitedAt: number | null, now: number): Stall {
+  if (login && now - login.at < STALL_EVENT_MS) return { why: "login", rule: login.rule };
+  if (limit.state === "limited") return { why: "limit", resetsAt: limit.resetsAt };
+  if (limit.state === "none" && rateLimitedAt !== null && now - rateLimitedAt < STALL_EVENT_MS) return { why: "limit", resetsAt: null };
+  return null;
+}
+
+const DAY = ["일", "월", "화", "수", "목", "금", "토"];
+/** 리셋 시각(기기 현지) — 24시간 안 = 「HH:MM」 · 넘으면 「요일 HH:MM」(오늘로 오독 방지 · master#9d622f54 판단 1 승인). */
+export function resetClock(atMs: number, nowMs: number): string {
+  const t = new Date(atMs);
+  const hm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+  return atMs - nowMs > 86_400_000 ? `${DAY[t.getDay()]} ${hm}` : hm;
 }
 
 /** 꺼짐 갈래(화면 글이 다르다). */
@@ -64,6 +121,8 @@ export type ReviveSit =
   | { kind: "ok" }
   | { kind: "gate"; sid: number } // §6-3
   | { kind: "idle"; sid: number } // §6-1
+  | { kind: "login"; sid: number; rule: string } // (BA1) 다시 로그인 필요
+  | { kind: "limited"; sid: number; resetsAt: number | null } // (BA1) 사용 한도 · 리셋 ms(모름 = null)
   | { kind: "down"; down: Down; axis: DeadAxis | "vacant"; sid: number | null };
 
 /** 행이 「등록 에이전트를 한 번도 못 봤고 좌석이 비어 있다」인가(agent_never_started 의 행 증거 · 데몬 진리표 meta ∧ !agent_seen ∧ Empty). */
@@ -103,6 +162,9 @@ export function reviveSituation(f: ReviveFacts): ReviveSit {
   // (codex 1R major) 등록 없는 마스터 좌석이 빈 셸로 이어짐 + 이 기기에서 마스터를 본 적 있음 = 사건(seat_vacant_no_meta)을 못 받은 앱 새로 켬도 꺼짐으로
   //   (codex 2R minor) 근거 = 바로 이 좌석을 살아 있는 마스터로 본 적 있음 — 다른 좌석·옛 데몬 표식만으로는 「준비 중」(거짓 꺼짐 띠 0)
   if (vacantNoMetaEvidence(m) && sustained && f.seenSame === true) return { kind: "down", down: "agent", axis: "seat_vacant_no_meta", sid };
+  // (BA1) 꺼짐·관문 다음 · 조용함 앞 — 로그인 > 한도
+  if (LIMIT_LOGIN_BANDS && f.stall?.why === "login") return { kind: "login", sid, rule: f.stall.rule };
+  if (LIMIT_LOGIN_BANDS && f.stall?.why === "limit") return { kind: "limited", sid, resetsAt: f.stall.resetsAt };
   if (f.idle && f.idle.sid === sid && m.agent_alive === true) return { kind: "idle", sid };
   return { kind: "ok" };
 }
@@ -265,6 +327,7 @@ export function reviveBand(sit: ReviveSit, ph: RevivePhase, restoring: boolean, 
       break;
   }
   if (sit.kind === "gate") return { key: "gate", tone: "wait", title: "마스터가 처음 켜지며 확인을 기다려요.", body: "작업 화면의 마스터 창에서 답해 주세요.", buttons: ["gate_answer"] };
+  if (sit.kind === "login" || sit.kind === "limited") return stallBand(sit, now);
   if (sit.kind === "idle") return { key: "idle", tone: "err", title: "마스터가 한동안 조용해요.", body: "보낸 말은 깨어나면 차례대로 전달돼요.", buttons: ["wake"] };
   if (sit.kind === "down") {
     const b: ReviveBand = { key: `down_${sit.down}`, tone: "err", title: WHY[sit.down], body: "다시 켜면 하던 일을 이어서 해요.", buttons: ["restart"] };
@@ -272,6 +335,18 @@ export function reviveBand(sit: ReviveSit, ph: RevivePhase, restoring: boolean, 
     return b;
   }
   return null;
+}
+
+/** (BA1) 까닭 띠 글 표 — 열쇠 = 기계 값(sit.kind)만 · 한국어 글로 가르지 않는다(F02 원칙). 한도 띠 = 단추 0(깨우기 헛손 없음). */
+export const STALL_TEXT = {
+  limited: { title: "마스터가 사용 한도에 닿아 쉬고 있어요.", at: (hm: string) => `${hm} 쯤 다시 움직여요. 보낸 말은 그때 차례대로 전달돼요.`, unknown: "한도가 풀리면 다시 움직여요." },
+  login: { title: "마스터가 다시 로그인해야 해요.", body: "작업 화면의 마스터 창에서 /login 을 입력해 주세요." },
+} as const;
+
+function stallBand(sit: { kind: "login"; sid: number; rule: string } | { kind: "limited"; sid: number; resetsAt: number | null }, now: number): ReviveBand {
+  if (sit.kind === "login") return { key: "login", tone: "err", title: STALL_TEXT.login.title, body: STALL_TEXT.login.body, buttons: ["work"] };
+  const body = sit.resetsAt === null ? STALL_TEXT.limited.unknown : STALL_TEXT.limited.at(resetClock(sit.resetsAt, now));
+  return { key: "limited", tone: "wait", title: STALL_TEXT.limited.title, body, buttons: [] };
 }
 
 /** 작업 화면 관문 안내(§6-3 · 앱 문구 근거 main.rs start_master 관문 처방). */

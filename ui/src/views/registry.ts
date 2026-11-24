@@ -171,6 +171,7 @@ export class Registry<S, A> {
     }
     this.unmountLive(); // 새 화면이 선 뒤에 옛 화면을 내린다(같은 프레임 · 두 화면 동시 노출 0)
     this.live = mounted;
+    if (typeof document !== "undefined") document.body.classList.toggle("view-chat", id === "chat"); // (TICKET=cysr-1119-s5 · V2) 대화 화면일 때 상단바를 대화 바탕에(views.css body.view-chat)
     if (id !== this.fallbackId()) this.band = null;
     this.env.onShown?.(id);
     this.env.paint();

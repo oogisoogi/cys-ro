@@ -8981,6 +8981,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             viewcore::chat_send, // (cysr-ui-slice1)
             viewcore::chat_transcript, // (cysr-ui-slice1)
+            viewcore::chat_transcript_watch, // (1.1.19 · cysr-1119-s3 · CH-C) 결속 파일 쥐고 0.25초 경로 stat
+            viewcore::chat_transcript_unwatch, // (1.1.19 · cysr-1119-s3)
+            viewcore::chat_transcript_tail, // (1.1.19 · cysr-1119-s3) 쥔 핸들 이어 읽기 · RPC 0
+            viewcore::chat_compat_env, // (1.1.19 · cysr-1119-s3 · CH-E) CYS_CHAT_COMPAT_1118
             viewcore::result_open, // (s79 조각 7) 결과 열기·폴더 보기 — 정규 경로 가둠
             viewcore::confirm_reply, // (cysr-ui-slice4) 대화 화면 직접 허락·거절 — 데몬 결과(actuated) 그대로
             viewcore::close_surface_if_quiet, // (cysr-1116-s5 P1) 다시 켜기 옛 창 조건부 닫기 — 데몬이 닫기와 같은 잠금 안에서 판정
@@ -9049,9 +9053,7 @@ fn main() {
             home_dir_path,
             open_url,
             // (1.1.9 T4 · cysr-119-t4-app) 상담소 메뉴 — 글 목록(아고라 클라이언트 read 결과만 · 앱은 릴레이에 안 감).
-            counsel::counsel_room_list,
-            counsel::counsel_unread,
-            counsel::open_agora_window,
+            // (1.1.19 · cysr-1119-s10b AG4·AG5 · D-13) counsel_room_list · counsel_unread · open_agora_window = 상담소·아고라 화면과 함께 삭제
             counsel::counsel_auto_status,
             counsel::counsel_auto_set,
             counsel::counsel_notice_seen,

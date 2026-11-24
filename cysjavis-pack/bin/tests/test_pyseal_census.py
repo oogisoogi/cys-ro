@@ -365,6 +365,11 @@ REFERENCING_FILES = (  # 정렬 key=str(코드포인트 순 · LC_ALL=C sort 와
     "scripts/tests/test_cysd_dispatch_storm_e2e.py",
     # 0.14.52 seal audit: Private sealed env reaches bash workflow bodies and their Python verifier children.
     "scripts/tests/test_unix_pty_results.py",
+    # ★2026-11-24 등재(1.1.19 · fix-1119-codex-r1 d2fa73e62 · TICKET=fix-1119-s16-census). **봉인 점검 결과(등재 = 이 선언)**:
+    #   새 python 진입점도 제품 강제점도 **아니다**. U 서명 의식 스크립트(발행자 서명 기기에서만 사람이 돌림 · 설치본·사용자 기기 길 0)이고,
+    #   니들은 `--expect-head` 갈래가 그 뒤 python(-I -B 아닌 본문 서식·해시 python)에 pyc 를 쓰지 않게 거는 `export … =1`(+ PYTHONPYCACHEPREFIX=빈 임시 폴더) 한 줄 —
+    #   봉인을 **거는 방향**이다(벗기는 줄 0 · 값 "1"). bin/ 직속이 아니라 ⓒ(ii) 대상 밖.
+    "scripts/update/sign-release.sh",
     "scripts/verify-gatekeeper-user-path.sh",
     "src-tauri/src/main.rs",
     "src/app_bundle.rs",
@@ -520,7 +525,7 @@ RUST_SPAWN_PIN = {  # Rust 핀 expected 와 동일 값(2026-08-26 실측 · 2026
     "src/bin/cysd/native_publication_transition_tests.rs": 1,  # Existing Rust mirror: sealed supervisor.
     "src/bin/cysd/main.rs": 2,             # office-bridge(tokio 직봉인) + self-test 게이트
     "src-tauri/src/main.rs": 4,            # orchestra/resource-gate/boot/org · inject_runtime_path
-    "src-tauri/src/counsel.rs": 2,         # 1.1.9 T4 상담소 `agora read` + 1.1.10 팩 앱 동사(cysr-1110-counsel-off) · 둘 다 inject_runtime_path + -B + spawn_policy(Attached)
+    "src-tauri/src/counsel.rs": 1,         # 1.1.10 팩 앱 동사(cysr-1110-counsel-off) · inject_runtime_path + -B + spawn_policy(Attached) — 1.1.9 T4 상담소 `agora read` 는 1.1.19 s10b D-13 에서 삭제(master#bab341a6)
 }
 _ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)  # Rust to_ascii_lowercase 동형
 

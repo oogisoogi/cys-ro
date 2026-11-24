@@ -5,7 +5,16 @@ import { roleDotColor } from "./appearance";
 import { SEAT_STATE_ACT, SEAT_STATE_LABEL, type SeatRowsModel } from "./seatrows";
 import type { TabInfo } from "./grouptabs";
 
-export function buildTabBar(tabs: readonly TabInfo[], model: SeatRowsModel, active: string | null, onPick: (key: string) => void): HTMLElement {
+/** (cysr-1119-s7 SEL-3) 표시용 선택 — `active`(동작용 · 넓게 보기 중 null)와 따로 넘긴다. 넓게 보기 중이면 그 좌석이 든 탭 = `active zoomed`.
+ *  생략하면 지금 꼴(active 만). 동작(누름 · 넓게 보기 규칙)은 바뀌지 않는다 — 클래스·aria·「⤢」 표지만. */
+export interface TabDisplay {
+  key: string | null;
+  zoomed: boolean;
+}
+
+export function buildTabBar(tabs: readonly TabInfo[], model: SeatRowsModel, active: string | null, onPick: (key: string) => void, display?: TabDisplay): HTMLElement {
+  const shown = display ? display.key : active;
+  const zoomed = !!display?.zoomed;
   const bar = document.createElement("div");
   bar.className = "group-tabbar";
   bar.setAttribute("role", "tablist");
@@ -13,9 +22,19 @@ export function buildTabBar(tabs: readonly TabInfo[], model: SeatRowsModel, acti
     const g = model.groups.find((x) => x.key === t.key);
     const b = document.createElement("button");
     b.type = "button";
-    b.className = `group-tab${t.key === active ? " active" : ""}`;
+    const on = t.key === shown;
+    b.className = `group-tab${on ? " active" : ""}${on && zoomed ? " zoomed" : ""}`;
     b.setAttribute("role", "tab");
-    b.setAttribute("aria-selected", String(t.key === active));
+    b.setAttribute("aria-selected", String(on));
+    if (on && zoomed) {
+      // 넓게 보기 표지 = 글 + 모양(색만으로 뜻을 전하지 않는다) · 접근 이름은 title 로
+      const z = document.createElement("span");
+      z.className = "group-tab-zoom";
+      z.textContent = "⤢";
+      z.setAttribute("aria-hidden", "true");
+      b.appendChild(z);
+      b.title = `${t.label} · 좌석 하나 넓게 보기 중`;
+    }
     const name = document.createElement("span");
     name.className = "group-tab-name";
     name.textContent = t.label;

@@ -1158,7 +1158,11 @@ pub fn gate_pending_from_wire_with(enabled: bool, v: &Value) -> bool {
 pub const GATE_PENDING_TTL_SECS: f64 = 1800.0;
 
 /// 좌석 복원 지시(master) — `cys restore`·관문 보류 채택이 쓴다. 근거는 `src/bin/cys.rs` `restore_directive`.
-pub const RESTORE_DIRECTIVE_MASTER: &str = "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
+/// ★1.1.19 PK-DRAIN B-DR-1: 읽는 자리 = 저장 자리(`[DRAIN]` master 글의 팩 정본) — 옛 작업 폴더 `_round/` 사본으로 복원하지 않게.
+///   상수(데몬 닫힌 어휘 `gate_followup_allowed`)라 CLI 가 경로를 펼칠 수 없다 → 셸 꼴 없이 운영체제 중립 말로 쓴다
+///   (codex 1R A4 · PowerShell 은 `${CYS_PACK_DIR:-…}` 를 `/round/` 로 접는다). 같은 글의 `javis_mission.py` 명령 줄은 1.1.18 부터 있던 꼴 그대로.
+///   판 혼재 = 옛 글·새 글을 서로의 데몬이 거부 → `gate_mark_retry_params` 폴백(지시 없이 한 번 재표식 · 좌석은 전문만) · 시험 `cys.rs` `restore_master_text_mixed_versions_fall_back_once`.
+pub const RESTORE_DIRECTIVE_MASTER: &str = "[RESTORE] 조직 복원 절차다(master). 정본 = 팩 폴더(환경 변수 CYS_PACK_DIR 이 있으면 그 폴더 · 없으면 홈 폴더의 .cys/pack) 아래 round/ 의 RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
          ★이어서 진행할지는 **임무 게이트가 정한다 — 네 판단이 아니다**: `python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_mission.py\" status` 를 실행하고 그 **종료코드만** 근거로 삼아라(화면·기억·추정 금지). \
          0=오너 임무 있음 → 그 임무를 이어서 진행한다. 1(임무 없음)·2(판독 불가=없음 취급) → 한 줄로 상태만 보고하고 **대기**하라. \
          ⛔임무가 없을 때 스스로 티켓을 만들어 CSO·워커를 가동하는 것은 자율 착수이며 금지다(2026-09-21 실기: 임무 0 함대가 자기발의 티켓으로 세 자리를 60%+ 로 태웠다).";
@@ -5073,7 +5077,8 @@ mod tests {
             ("src-tauri/src/main.rs", 4),
             // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 = 아고라 클라이언트 `agora read` 1곳 · inject_runtime_path 봉인 + spawn_policy(Attached).
             // 1.1.10(cysr-1110-counsel-off): 「상담소 끄기/켜기」·첫 안내 = 팩 `javis_counsel.py` 앱 동사(pack_verb_command) +1 · 같은 봉인(-I -B).
-            ("src-tauri/src/counsel.rs", 2),
+            // 1.1.19(cysr-1119-s10b D-13 · master#bab341a6): 상담소 글 목록 `agora read`(read_command) 삭제 −1 → 팩 앱 동사 1곳만.
+            ("src-tauri/src/counsel.rs", 1),
         ];
 
         let mut found: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
@@ -7838,7 +7843,8 @@ mod spawn_policy_tests {
         // 1.1.9 T4(cysr-119-t4-app): 상담소 글 목록 `agora read`(번들 python · 맥·윈 공통) 1곳 — ⓐ윈에서 돈다 → ⓑ체인에
         //   `spawn_policy(ChildLifetime::Attached)`(= GUI no_console 과 같은 등급) 를 단다 · 봉인 = inject_runtime_path(python 열거 핀에도 등재).
         // 1.1.10(cysr-1110-counsel-off): 팩 앱 동사 pack_verb_command(번들 python · 맥·윈 공통) +1 — ⓐ윈에서 돈다 → ⓑ같은 Attached 등급 · 봉인 동일.
-        ("src-tauri/src/counsel.rs", 2),
+        // 1.1.19(cysr-1119-s10b D-13 · master#bab341a6): 상담소 글 목록 `agora read`(read_command) 삭제 −1.
+        ("src-tauri/src/counsel.rs", 1),
         ("src-tauri/src/feedback.rs", 6),
         // v114-dept-fd: cys-dept 직접 스폰 3곳 → run_dept_tool_direct 1곳(-2) · 1.1.8 병합 +1 = 원작자
         //   open_privacy_settings `/usr/bin/open`(macOS cfg) · smart_app_control_state `reg.exe`(windows cfg · no_console).
@@ -10069,3 +10075,8 @@ mod bridge_probe_tests {
 // 파일 맨 끝에 두는 것은 cysd 쪽 테스트 전용 모듈 규약과 같은 이유다(첫 `#[cfg(test)]` 앵커).
 #[cfg(test)]
 mod job_name_binding_tests;
+
+// TICKET=fw-popup-1124 — 시험·도구·README 처방이 모든 인터페이스로 듣지 않는다(맥 방화벽 「cysd 가 들어오는 연결」 팝업의 원천 차단) ·
+// 테스트 전용 모듈(프로덕션 코드 0행) · 저장소 파일을 런타임에 읽는다.
+#[cfg(test)]
+mod no_wildcard_bind_tests;

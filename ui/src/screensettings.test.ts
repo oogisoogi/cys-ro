@@ -25,18 +25,18 @@ const pop = (() => {
 })();
 
 describe("이름·입구 — 「화면 설정」", () => {
-  it("단추 글자 = 화면 설정 · title = 화면 설정 — 글자·배경·상단 단추 · id·자리(맨 끝) 그대로", () => {
+  it("단추 글자 = 화면 설정 · title = 화면 설정 — 글자·배경·상단 단추 · id 그대로 · 자리 = ↻ 재시작 바로 앞(1.1.19 MD-T9: 재시작이 맨 끝)", () => {
     expect(top).toContain('<button id="btn-theme" title="화면 설정 — 글자·배경·상단 단추">화면 설정</button>');
     const ids = [...top.matchAll(/<button\b[^>]*?\bid="([^"]+)"/g)].map((m) => m[1]);
-    expect(ids.at(-1)).toBe("btn-theme");
+    expect(ids.slice(-2)).toEqual(["btn-theme", "btn-restart-daemon"]);
     expect(/>테마<\/button>/.test(html)).toBe(false);
     expect(main).toContain('document.getElementById("btn-theme")!.addEventListener("click", (e) =>');
   });
 
-  it("팝오버 구획 3개 = 글자·배경 / 상단 단추 / 기본값 복원 · 제목 줄로 접는다", () => {
+  it("팝오버 구획 4개 = 글자·배경 / 상단 단추 / 전문가 / 기본값 복원(+ 전문가 앞 「자동 보고」 자리 · cysr-1119-s9 MD-T11 틀) · 제목 줄로 접는다", () => {
     const secs = [...pop.matchAll(/mkSection\("([a-z]+)", "([^"]+)"\)/g)].map((m) => [m[1], m[2]]);
-    expect(secs).toEqual([["look", "글자·배경"], ["topbar", "상단 단추"], ["reset", "기본값 복원"]]);
-    expect(pop).toContain("pop.append(look.sec, bar.sec, all.sec);");
+    expect(secs).toEqual([["look", "글자·배경"], ["topbar", "상단 단추"], ["expert", "전문가"], ["reset", "기본값 복원"]]);
+    expect(pop).toContain("pop.append(look.sec, bar.sec, ...(autoRow ? [autoRow] : []), expert.sec, all.sec);");
     expect(pop).toContain("body.hidden = folded;");
     expect(pop).toContain('head.setAttribute("aria-expanded", String(!folded));');
   });
@@ -410,5 +410,80 @@ describe("사용 설명서", () => {
     expect(manual).toContain("상단 단추는 `화면 설정` → 「상단 단추」에서 하나씩 켜고 끄고, 순서를 바꿉니다");
     expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `Control Center` · `완전 초기화` 가 꺼져 있습니다"); // 1.1.15 1e
     expect(manual.includes("`테마` 버튼")).toBe(false);
+  });
+});
+
+// ── TICKET=cysr-1119-s9 · DESIGN §8-3 MD-T11 틀 — 화면 설정이 받는 입구(자동 보고 자리 · 전문가 접힘 구획) ──
+describe("MD-T11 틀 — 자동 보고 자리 · 전문가 구획(처음엔 접힘)", () => {
+  const fnBody = (name: string) => {
+    const i = main.indexOf(`function ${name}(`);
+    expect([name, i > 0]).toEqual([name, true]);
+    return main.slice(i, main.indexOf("\n}\n", i));
+  };
+
+  it("첫 열림 보이는 줄 ≤ 1.1.18 + 2 — 새로 보이는 것 = 「자동 보고」 자리(≤1줄) + 접힌 전문가 머리 1줄", () => {
+    // 접힘 기본값 = 전문가 하나 · spCollapsed 가 그 값으로 시작한다(펼치면 앱이 켜진 동안 기억 · 저장 0)
+    expect(main).toContain('const SP_FOLDED_BY_DEFAULT = ["expert"] as const;');
+    expect(main).toContain("const spCollapsed = new Set<string>(SP_FOLDED_BY_DEFAULT);");
+    // 접힌 구획은 몸통이 hidden(머리 1줄만) — mkSection 의 접힘 규칙 그대로
+    expect(pop).toContain("body.hidden = folded;");
+    // 자동 보고 자리 = 줄 하나(구획 머리 없음) — (1.1.19 · cysr-1119-s10b AG5) 줄 1 = 상태 글 + 단추 하나(같은 줄)
+    expect(fnBody("screenSettingsAutoRow")).toContain("return row;");
+    expect(fnBody("screenSettingsAutoRow")).toContain("row.append(state, btn);");
+    expect(pop).toContain("const autoRow = screenSettingsAutoRow();");
+    // 그 밖의 최상위 자식은 1.1.18 의 세 구획 그대로
+    const append = pop.slice(pop.indexOf("pop.append("), pop.indexOf(");", pop.indexOf("pop.append(")));
+    expect((append.match(/\.sec\b/g) ?? []).length).toBe(4);
+  });
+
+  it("전문가 구획 = 6줄(전문가 모드 · 계정 가림 · 계정 숨기기 목록 · 셸에 cysr 설치 · 사이드바 글자 크기 · ＋ 새 워크스페이스)", () => {
+    expect(pop).toContain("expert.body.append(expertRow, redactRow, acctList, cliRow, wsFontRow, wsNewRow);");
+  });
+
+  it("줄마다 기존 입구와 같은 함수 — 저장·판정 길 하나(두 입구가 서로 따라간다)", () => {
+    // 전문가 모드
+    expect(pop).toContain("exCb.addEventListener(\"change\", () => setExpertMode(exCb.checked));");
+    // (1.1.19 · cysr-1119-s10b MD-CC) Control Center Live 의 전문가 체크·🔒 단추는 Live 와 함께 빠졌다 — 화면 설정 줄이 유일한 입구.
+    expect(main.includes("cc-expert-toggle")).toBe(false);
+    const sem = fnBody("setExpertMode");
+    expect(sem).toContain("localStorage.setItem(EXPERT_KEY, expertModeRaw(on));");
+    expect(sem).toContain("applyExpertMode(on);");
+    // 계정 가림
+    expect(pop).toContain("rdCb.addEventListener(\"change\", () => setAcctRedact(rdCb.checked));");
+    expect(main.includes("btn-cc-acct-redact")).toBe(false);
+    expect(fnBody("setAcctRedact")).toContain('localStorage.setItem("cys-cc-acct-redact", ccAcctRedact ? "1" : "0");');
+    // 계정 숨기기 = 같은 함수·같은 저장 · 목록 재료 = 사이드바 15초 폴러의 accountsCache(CC Live 의 ccAccounts 는 빠졌다)
+    expect(pop).toContain("toggleUsageAcctHidden(key);");
+    expect(pop).toContain("for (const a of accountsCache as any[]) {");
+    expect(main.includes("ccAccounts")).toBe(false);
+    // 사이드바 글자 크기
+    expect(pop).toContain("applyWsbarFontStep(dir)");
+    expect(pop).toContain('mkWsFont("A−", -1,');
+    expect(pop).toContain('mkWsFont("A＋", +1,');
+    // ＋ 새 워크스페이스 — 가드 포함 함수 하나
+    expect(pop).toContain("newWorkspaceFromUser()");
+    // (1.1.19 · cysr-1119-s10b MD-S1S2) 사이드바 머리 ＋·A−·A＋ 단추는 빠졌다 — 전문가 줄이 유일한 입구.
+    for (const id of ["btn-ws-new", "btn-ws-font-minus", "btn-ws-font-plus"]) expect({ id, 있음: main.includes(`getElementById("${id}")`) || html.includes(`id="${id}"`) }).toEqual({ id, 있음: false });
+    const nw = fnBody("newWorkspaceFromUser");
+    expect(nw).toContain("if (daemonActionBlocked()) return;");
+    expect(nw).toContain("void addWorkspace();");
+  });
+
+  it("셸에 cysr 설치 = 화면 설정 소유 단추(#btn-install-cli · id 그대로)를 비추고 그 click 을 부른다(처리기 한 곳 · 다른 invoke 0 · 닫으면 비춤 거둠)", () => {
+    expect(pop).toContain('cliBtn.addEventListener("click", () => ccCliBtn?.click());');
+    expect(pop).toContain("cliRow.hidden = !ccCliBtn || ccCliBtn.hidden;");
+    for (const k of ["cliBtn.textContent = ccCliBtn.textContent;", "cliBtn.title = ccCliBtn.title;", "cliBtn.disabled = ccCliBtn.disabled;"]) expect(pop).toContain(k);
+    expect(pop).toContain("cliMirror?.disconnect();");
+    // 상태 조회 = 전문가 구획이 보일 때만(접힌 채 열면 로그인 셸 0)
+    //   ★(1.1.19 · cysr-1119-s10b) 단추 요소 = 화면 설정 소유(#sp-owned) · CC 를 열 때 하던 「래치 풀기 + sticky 고지 1회」 가 여기로 왔다(팝오버당 처음 보일 때 한 번).
+    expect(pop).toContain('if (!ccCliBtn || ccCliBtn.hidden || spCollapsed.has("expert")) return;');
+    expect(pop).toContain("cliLastInstall = null;\n      void refreshCliInstallState();");
+    expect(pop).toContain("} else void refreshCliInstallState({ notice: false });");
+    expect((pop.match(/refreshCliInstallState\(/g) ?? []).length).toBe(2);
+    expect(/invoke\("(install_cli_to_path|uninstall_cli_from_path)"/.test(pop)).toBe(false);
+  });
+
+  it("기본값 복원은 종전 두 구획만(전문가 줄은 설정 되돌리기 대상 아님)", () => {
+    expect(pop).toContain('mkReset("모두 기본값으로 되돌리기", () => { resetLook(); resetBar(); })');
   });
 });

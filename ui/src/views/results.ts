@@ -7,11 +7,15 @@
 // 행동(누르기 → 실재 재확인 await 뒤 화면 재판정 = 작업 화면 살핌 중이면 0 · codex 3R ②): 열기·폴더 보기 = 우리 Tauri 명령 `result_open`(viewcore.rs — 정규 경로 가둠 · 열기 = 허용 목록 종류의 보통 파일·꾸러미 아닌 폴더만 · 가명 거절 ·
 //       그 밖 `executable_confirm` → **force 로 다시 부르지 않음** · 폴더 보기로 안내) · 둘 다 누르기 직전 실재를 다시 확인(없으면 호출 0 + 「파일을 찾을 수 없어요」).
 // 저장 = 앱 저장소 `cys-chat-results`(경로·출처·시각·봤음 · 말 원문 0자 · 최근 50).
+// (1.1.19 OB-O4) 치우기·모두 치우기 = 목록에서만 숨김(저장 + 다시 그리기 · invoke 0 = 파일 무변경) · 없어진 지 7일 = 틱에서 자동 숨김 · 숨긴 카드 = 실재 확인 0.
 
 import type { Rec } from "./judge/msgstep";
 import {
   addCandidates,
   candidatesOf,
+  expireMissing,
+  hideAll,
+  hideResult,
   openAllowedName,
   listErrorIsMissing,
   parentOf,
@@ -19,6 +23,7 @@ import {
   presenceIn,
   restoreResults,
   skillCandidateOf,
+  withPresence,
   type Candidate,
   type Result,
 } from "./judge/results";
@@ -73,6 +78,24 @@ export class ResultBook {
   /** 지금 목록(최근 것부터 · 숨은 후보 포함 — 그리기는 judge/results.visibleResults 로 거른다). */
   get items(): readonly Result[] {
     return this.list;
+  }
+
+  /** (OB-O4) 「치우기」 — 목록에서만 숨김(파일 명령 0). */
+  hide(id: string): void {
+    const next = hideResult(this.list, id);
+    if (next.every((r, i) => r === this.list[i])) return;
+    this.list = next;
+    this.save();
+    this.changed();
+  }
+
+  /** (OB-O4) 「모두 치우기」(화면이 확인 1회를 받은 뒤 부름) — 보이는 카드 전부 숨김(파일 명령 0). */
+  hideAll(): void {
+    const next = hideAll(this.list);
+    if (next.every((r, i) => r === this.list[i])) return;
+    this.list = next;
+    this.save();
+    this.changed();
   }
 
   get busy(): boolean {
@@ -171,7 +194,10 @@ export class ResultBook {
       }
       if (v === null) return null;
       const cur = this.list.find((x) => x.id === id);
-      if (cur && (cur.exists !== v.exists || (v.isDir !== null && cur.isDir !== v.isDir))) this.patch(id, { exists: v.exists, isDir: v.isDir ?? cur.isDir });
+      if (cur && (cur.exists !== v.exists || (v.isDir !== null && cur.isDir !== v.isDir) || (cur.missingAt !== null) === v.exists)) {
+        const w = withPresence(cur, v.exists, v.isDir, this.d.now()); // (OB-O4) 없음을 처음 본 시각
+        this.patch(id, { exists: w.exists, isDir: w.isDir, missingAt: w.missingAt });
+      }
       return v.exists;
     } finally {
       this.checking.delete(id);
@@ -181,7 +207,13 @@ export class ResultBook {
   /** poll 마다 — 아직 모르는 결과의 실재를 최대 CHECK_PER_TICK 개 확인(오래된 것 아닌 최근 것부터). */
   async tick(): Promise<void> {
     if (this.home === null || this.paused) return;
-    const todo = this.list.filter((r) => r.exists === null && !this.checking.has(r.id)).slice(0, CHECK_PER_TICK);
+    const kept = expireMissing(this.list, this.d.now()); // (OB-O4) 없어진 지 7일 = 숨김
+    if (kept !== this.list) {
+      this.list = [...kept];
+      this.save();
+      this.changed();
+    }
+    const todo = this.list.filter((r) => r.exists === null && !r.hidden && !this.checking.has(r.id)).slice(0, CHECK_PER_TICK); // 숨긴 카드 = 확인 0
     await Promise.all(todo.map((r) => this.check(r.id)));
   }
 
@@ -224,7 +256,7 @@ export class ResultBook {
         else if (msg.includes("network_path")) this.notice = MSG_NETWORK;
         else if (msg.includes("outside_home") || msg.includes("hidden_path")) this.notice = MSG_OUTSIDE;
         else if (/not a local path/.test(msg)) {
-          this.patch(id, { exists: false });
+          this.patch(id, { exists: false, missingAt: r.missingAt ?? this.d.now() });
           this.notice = MSG_MISSING;
         } else this.notice = `열지 못했어요 — 작업 화면에서 확인해 주세요.`;
       }

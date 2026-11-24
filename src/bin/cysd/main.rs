@@ -2071,14 +2071,18 @@ fn decide_auto_restore(
 /// (선행 cysd·수동 기동) 스폰하지 않는다 — 동일 서버 누적이 구조적으로 0(자원 거버넌스 '누적·미종료' 차단).
 /// 사망·부재는 주기 재확인이 이어받는다. ★(0.14.44) 데몬이 정상 종료(`process::exit`)·강제 종료돼도 브리지가 같이 죽는다는 보장은 `kill_on_drop` 이 아니라 managed 모드의 **표준입력 수명줄**이다
 /// (legacy — 윈도우 기본 — 에서는 종전처럼 살아남는다[실측 R4]).
-/// CYS_NO_OFFICE_BRIDGE=1 opt-out · 팩에 브리지 부재(구팩)면 조용히 skip.
+/// ★(1.1.19 · TICKET=cysr-1119-s10b · DESIGN §8-5 MD-OFFICE · D-10) **기본 = 띄우지 않는다** — 화면의 「🏢 오피스」 탭이 없어졌다(Control Center 12 → 3).
+///   시연 = `CYS_NO_OFFICE_BRIDGE=0` 일 때만 1.1.18 그대로 띄운다(값 고정 · 판정 = `office_bridge::bridge_enabled`).
+///   이름은 `cys::env_compat` 로 읽는다 = `CYS_NO_OFFICE_BRIDGE` 가 없거나 비면 옛 이름 `JAVIS_NO_OFFICE_BRIDGE` → `AITERM_NO_OFFICE_BRIDGE` 순으로 본다
+///   (1.1.18 과 같은 이행기 호환 · 옛 이름에 `0` 을 적어 둔 기기도 켜짐 · codex 1R C2 = 동작 그대로 두고 여기와 시험으로 못 박음).
+///   갱신 기기의 옛 서버: 맥 = Managed 일 때만(기본값) 수명줄로 옛 데몬과 함께 끝남(할 일 없음) · 수명줄 없이 뜬 경우(윈 · 맥 `Legacy` = 환경 변수·정책 파일
+///   되돌림 손잡이) = **끄지 않는다**(끄는 코드 0 · pid 파일로 끄는 길 0 — pid 재사용에 무관한 프로세스를 죽인다) → 데몬 원장(이 로그) 1줄만 남기고
+///   다음 재부팅에 사라진다 · 정지 길 = 1.1.20(codex 1R C1 · 끄는 코드는 범위 밖).
+/// 팩에 브리지 부재(구팩)면 조용히 skip.
 /// python 해석·PATH·cys 주입은 auto-restore(★B3)와 동일 SOT(bundled_python3·runtime_prefixed_path).
 #[deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 fn spawn_office_bridge(state_dir: std::path::PathBuf, socket_path: std::path::PathBuf) {
-    if cys::env_compat("CYS_NO_OFFICE_BRIDGE").map(|v| v == "1").unwrap_or(false) {
-        eprintln!("[cysd] office-bridge skipped (CYS_NO_OFFICE_BRIDGE=1)");
-        return;
-    }
+    let enabled = crate::office_bridge::bridge_enabled(cys::env_compat("CYS_NO_OFFICE_BRIDGE").as_deref());
     // ★(0.14.44 · B1) 브리지는 **본부 데몬만** 띄운다 — 부서 데몬이 띄우면 그 부서의 좌석을 "본부 · CEO"로 보여 주고 진짜 본부 좌석이 화면에서 사라졌다[실측 R3-b].
     //   판별은 데몬 자신의 소켓 경로 하나(`cys::is_dept_socket`). 손잡이 `CYS_OFFICE_BRIDGE_ANY_OWNER=1` → 종전처럼 어느 데몬이든(환경도 그대로 물려준다).
     let any_owner = crate::knobs::bridge_any_owner();
@@ -2086,14 +2090,34 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf, socket_path: std::path::Pa
         eprintln!("[cysd] office-bridge skipped (dept daemon)");
         return;
     }
-    let script = cys::pack::pack_dir().join("bin").join("javis_hud_bridge.py");
-    if !script.is_file() {
-        return; // 구팩(브리지 미배포) — 다음 팩 업데이트가 채운다.
-    }
     let port: u16 = std::env::var("HUD_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(8642);
+    if !enabled {
+        eprintln!("[cysd] office-bridge skipped (1.1.19 기본 끔 · 띄우려면 CYS_NO_OFFICE_BRIDGE=0)");
+        // (D-10) 수명줄 없이 뜬 옛 판 서버(윈 · 맥 Legacy)는 데몬이 끝나도 산다 — 끄지 않고 원장 1줄(재부팅이 정리한다 · codex 1R C1).
+        if cfg!(windows) || matches!(crate::knobs::bridge_mode(), crate::knobs::BridgeMode::Legacy) {
+            tokio::spawn(async move {
+                let held = matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        tokio::net::TcpStream::connect(("127.0.0.1", port)),
+                    )
+                    .await,
+                    Ok(Ok(_))
+                );
+                if held {
+                    eprintln!("[cysd] office-bridge: {}", crate::office_bridge::LEFTOVER_NOTE);
+                }
+            });
+        }
+        return;
+    }
+    let script = cys::pack::pack_dir().join("bin").join("javis_hud_bridge.py");
+    if !script.is_file() {
+        return; // 구팩(브리지 미배포) — 다음 팩 업데이트가 채운다.
+    }
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()));
@@ -2113,6 +2137,7 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf, socket_path: std::path::Pa
         let mut deaths: u32 = 0;
         let mut replace_done = false;
         let mut replace_rounds: u32 = 0;
+        let mut held_noted = false; // (1.1.19 · 윈 시연) 옛 서버가 포트를 쥔 사실은 데몬 수명당 한 줄만
         loop {
             // 스폰마다 읽는다 — 실행 중에 정책 파일로 `legacy` 가 되면 **다음 스폰부터** 적용된다(수명줄로 이어진 지금의 브리지를 그 자리에서 넘기지 않는다).
             let mode = crate::knobs::bridge_mode();
@@ -2185,6 +2210,10 @@ fn spawn_office_bridge(state_dir: std::path::PathBuf, socket_path: std::path::Pa
                         }
                         Ok(Rs::NotOld) | Err(_) => {}
                     }
+                }
+                if !managed && !held_noted && cfg!(windows) {
+                    held_noted = true;
+                    eprintln!("[cysd] office-bridge: {}", crate::office_bridge::PORT_HELD_NOTE);
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 continue;

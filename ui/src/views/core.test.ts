@@ -1,8 +1,10 @@
 // (cysr-ui-slice1) 공통층 보내기 길 시험 — 대역 데몬(invoke 기록기) · 가짜 시계·타이머.
 // 판정 단위 = 「PTY 쓰기 = chat_send 호출 수」(원자 제출 1요청 = 쓰기 1 · 데몬 거부는 바이트 0).
 import { describe, it, expect } from "bun:test";
-import { ChatCore, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, STALE, type Deps } from "./core";
+import { CHAT_TRANSCRIPT_CHANGED, ChatCore, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, STALE, type Deps } from "./core";
 import { READ_AFTER_MS } from "./judge/msgstep";
+import { masterRowOf } from "./judge/gate";
+import { readFileSync } from "node:fs";
 
 interface Call {
   cmd: string;
@@ -503,5 +505,503 @@ describe("상태 표시", () => {
     const row = { surface_id: 1, exited: false, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: false };
     expect(healthOf({ ...row, agent_alive: false })).toBe("off");
     expect(healthOf({ ...row, agent_alive: null })).toBe("unknown"); // 등록 없는 좌석 = 「꺼져 있어요」 아님(VERIFY 지적 11)
+  });
+});
+
+// (TICKET=cysr-1119-s2 · DESIGN §3-5 고침 ③ · K19) 상한 안내 글 = 사실대로(붙잡은 말 가운데 눌러야 나가는 말이 있을 수 있음 · 거절된 새 말은 나중에 저절로 가지 않음).
+//   셈(`held` ≥ HOLD_MAX)·저장 꼴·키·상한은 1.1.18 그대로 — 글만 바뀐다.
+describe("K19 — hold_cap_notice_text(붙잡은 말 상한 안내 글)", () => {
+  const CAP_TEXT = `붙잡아 둔 말이 ${HOLD_MAX}개 이상이라 이 말은 받지 않았어요 — 위의 말이 보내지면 다시 보낼 수 있어요(『이 말 보내기』가 붙은 말은 눌러야 보내져요). 입력칸 글은 그대로 있어요.`;
+  it("hold_cap_notice_text — 붙잡음 20(복원 15 + 바쁠 때 5) + 새 말 → 글자 그대로 · 입력칸 유지 · 셈·저장 꼴 = 1.1.18", async () => {
+    const h = harness();
+    h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: Array.from({ length: 15 }, (_, i) => ({ id: "x", text: `옛말${i}`, at: i })) }));
+    h.st.master = { ...(h.st.master as Record<string, unknown>), working: true };
+    const c = new ChatCore(h.deps);
+    for (let i = 0; i < 5; i++) await c.send(`바쁠때${i}`);
+    const held = () => c.state.msgs.filter((m) => m.step === "held");
+    expect(held()).toHaveLength(HOLD_MAX);
+    expect(held().filter((m) => m.code === RESTORED)).toHaveLength(15);
+    const saved = h.mem.get(HOLD_KEY);
+    expect(c.submit("새 말")).toBe(false); // 입력칸 글은 그대로(화면이 비우지 않음)
+    await h.flush();
+    expect(c.state.notice).toBe(CAP_TEXT);
+    expect(held()).toHaveLength(HOLD_MAX); // 셈 그대로 · 새 말은 목록에 들어가지 않음
+    expect(c.state.msgs.some((m) => m.text === "새 말")).toBe(false);
+    expect(h.writes()).toHaveLength(0);
+    expect(h.mem.get(HOLD_KEY)).toBe(saved); // 저장 바이트 그대로
+    const box = JSON.parse(saved as string) as { v: number; items: Array<{ id: string; text: string; at: number }> };
+    expect(box.v).toBe(1);
+    expect(box.items).toHaveLength(HOLD_MAX);
+    expect(Object.keys(box.items[0]).sort()).toEqual(["at", "id", "text"]);
+  });
+  it("hold_cap_notice_text — 19 이면 받는다(경계 = 1.1.18 셈 그대로)", async () => {
+    const h = harness();
+    h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: Array.from({ length: HOLD_MAX - 1 }, (_, i) => ({ id: "x", text: `옛말${i}`, at: i })) }));
+    const c = new ChatCore(h.deps);
+    expect(c.submit("새 말")).toBe(true);
+    await h.flush();
+    expect(c.state.notice).not.toBe(CAP_TEXT);
+  });
+});
+
+// ---------- (1.1.19 · TICKET=cysr-1119-s3 · CH-C) 기록 바뀌면 곧 보이기 — F06 읽기 길 하나 · C-1~C-4 · F29 · 되돌리기 C 끄기 지점 ----------
+// 대역 파일 = 레코드 배열 · 오프셋 = 레코드 번호(위 harness 와 같은 뜻) · tail 은 대역 시계로 늦게 답할 수 있다(겹침 계수).
+function chHarness(o: { compat?: boolean | (() => boolean); tailDelay?: number; regSid?: string | null } = {}) {
+  const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+  let now = 2_000_000;
+  const timers: Array<{ at: number; fn: () => void; h: number }> = [];
+  let hn = 0;
+  const st = {
+    master: { surface_id: 5, role: "master", exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: false, registered_session_id: o.regSid === undefined ? "sess-0001-aaaa" : o.regSid } as Record<string, unknown>,
+    file: [] as Array<Record<string, unknown>>,
+    session: "sess-0001-aaaa",
+    watchGen: 0,
+    watchOk: true,
+    tailFail: 0,
+    /** 다음 tail 응답을 이 오프셋에서 읽은 것으로(늦게 온 옛 응답 흉내) */
+    staleFrom: null as number | null,
+    inflight: 0,
+    maxInflight: 0,
+    /** watch 응답을 superseded 로(Tauri 가 unwatch 를 뒤에 처리) */
+    superseded: 0,
+    /** 파일 끝 미완 줄 길이(오프셋 단위) — tail 의 size 가 이만큼 크고 next_offset 은 완성 줄 끝 */
+    openTail: 0,
+    /** tail 이 쥔 핸들 = 옛 파일(경로는 새 파일 · 윈 터널링 꼴) — 이 값이면 tail 은 이 길이까지만 본다 */
+    heldLen: null as number | null,
+  };
+  const app = new Map<string, Array<(e: { payload: unknown }) => void>>();
+  const later = <T>(ms: number, v: () => T): Promise<T> =>
+    ms <= 0 ? Promise.resolve(v()) : new Promise((res) => timers.push({ at: now + ms, fn: () => res(v()), h: ++hn }));
+  const deps: Deps = {
+    invoke: async (cmd, args) => {
+      calls.push({ cmd, args });
+      if (cmd === "org_status") return { surfaces: [st.master] };
+      if (cmd === "feed_list") return { items: [] };
+      if (cmd === "chat_send") return { outcome: "written", result: { sent: true } };
+      if (cmd === "chat_transcript") {
+        const a = args as { afterOffset: number; fromEnd: boolean };
+        if (a.fromEnd) return { status: "ok", session_id: st.session, next_offset: st.file.length, size: st.file.length, records: [] };
+        return { status: "ok", session_id: st.session, next_offset: st.file.length, size: st.file.length, records: st.file.slice(a.afterOffset) };
+      }
+      if (cmd === "chat_transcript_watch") {
+        const a = args as { surfaceId: number; sessionId: string };
+        if (st.superseded > 0) {
+          st.superseded--;
+          return { status: "unknown", why: "superseded" };
+        }
+        if (!st.watchOk || a.sessionId !== st.session) return { status: "unknown", why: "session_mismatch" };
+        return { status: "ok", session_id: st.session, size: st.file.length, gen: ++st.watchGen };
+      }
+      if (cmd === "chat_transcript_unwatch") return { status: "ok", was: true };
+      if (cmd === "chat_transcript_tail") {
+        const a = args as { afterOffset: number };
+        st.inflight++;
+        st.maxInflight = Math.max(st.maxInflight, st.inflight);
+        return later(o.tailDelay ?? 0, () => {
+          st.inflight--;
+          if (st.tailFail > 0) {
+            st.tailFail--;
+            return null;
+          }
+          const from = st.staleFrom ?? a.afterOffset;
+          st.staleFrom = null;
+          if (st.heldLen !== null) return { status: "ok", session_id: st.session, gen: st.watchGen, from_offset: from, to_offset: st.heldLen, next_offset: st.heldLen, size: st.heldLen, records: [], reset: false };
+          return { status: "ok", session_id: st.session, gen: st.watchGen, from_offset: from, to_offset: st.file.length, next_offset: st.file.length, size: st.file.length + st.openTail, records: st.file.slice(from), reset: false };
+        });
+      }
+      throw new Error(`unexpected ${cmd}`);
+    },
+    listenApp: async (name, handler) => {
+      const hs = app.get(name) ?? [];
+      hs.push(handler);
+      app.set(name, hs);
+      return () => app.set(name, (app.get(name) ?? []).filter((h) => h !== handler));
+    },
+    now: () => now,
+    setTimeout: (fn, ms) => {
+      const h = ++hn;
+      timers.push({ at: now + ms, fn, h });
+      return h;
+    },
+    clearTimeout: (h) => {
+      const i = timers.findIndex((t) => t.h === h);
+      if (i >= 0) timers.splice(i, 1);
+    },
+    store: { get: () => null, set: () => {}, remove: () => {} },
+    working: (r) => r.working === true,
+  };
+  if (o.compat !== undefined) (deps as Deps & { compat1118?: () => boolean }).compat1118 = typeof o.compat === "function" ? o.compat : () => o.compat as boolean;
+  const flush = async () => {
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+  };
+  const advance = async (ms: number) => {
+    const until = now + ms;
+    for (;;) {
+      timers.sort((a, b) => a.at - b.at);
+      const t = timers[0];
+      if (!t || t.at > until) break;
+      timers.shift();
+      now = t.at;
+      t.fn();
+      await flush();
+    }
+    now = until;
+    await flush();
+  };
+  const emit = (payload: Record<string, unknown>) => {
+    for (const h of app.get("chat-transcript-changed") ?? []) h({ payload });
+  };
+  const core = new ChatCore(deps);
+  let seen = 0;
+  (core.confirm as unknown as { onTail(r: unknown[]): void }).onTail = (r) => void (seen += r.length);
+  const rec = (i: number) => ({ uuid: `u${i}`, parent: null, role: "assistant", text: `답 ${i}`, ts: null });
+  const n = (cmd: string) => calls.filter((c) => c.cmd === cmd).length;
+  return { core, st, calls, n, flush, advance, emit, rec, seen: () => seen, app, getNow: () => now };
+}
+
+/** 대화 화면을 켜고 결속 파일 watch 까지 건 상태로. */
+async function watched(h: ReturnType<typeof chHarness>) {
+  h.core.attach();
+  await h.flush();
+  await h.core.poll();
+  await h.advance(10);
+}
+
+describe("CH-C 기록 바뀌면 곧 보이기(1.1.19 · S3)", () => {
+  it("f29_master_row_registered_session_id — 3초 조회 원문의 결속 id 를 MasterRow 칸으로(글만 · 그 밖 null)", () => {
+    const base = { surface_id: 1, role: "master" };
+    expect(masterRowOf({ surfaces: [{ ...base, registered_session_id: "sess-1" }] }, () => false)?.registered_session_id).toBe("sess-1");
+    for (const v of [undefined, null, 7, "", { a: 1 }]) expect(masterRowOf({ surfaces: [{ ...base, registered_session_id: v }] }, () => false)?.registered_session_id).toBeNull();
+  });
+
+  it("c_watch — 결속을 안 뒤 watch 1회(3초 조회의 결속 id = 기록 세션 id) · 사건 → tail(RPC 0) 로 읽음", async () => {
+    const h = chHarness();
+    await watched(h);
+    expect(h.n("chat_transcript_watch")).toBe(1);
+    expect(h.calls.find((c) => c.cmd === "chat_transcript_watch")?.args).toEqual({ socket: null, surfaceId: 5, sessionId: "sess-0001-aaaa" });
+    const before = h.n("chat_transcript");
+    h.st.file.push(h.rec(1), h.rec(2));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 2, reset: false });
+    await h.advance(10);
+    expect(h.n("chat_transcript_tail")).toBe(1);
+    expect(h.n("chat_transcript")).toBe(before); // 사건 읽기 = RPC 2개짜리 기존 명령 0
+    expect(h.seen()).toBe(2);
+  });
+
+  it("f06_one_read_path_counts_each_byte_once — 같은 순간 사건·1초 맞춤·3초 계기 셋 → 각 레코드 1회 · tail 겹침 0", async () => {
+    const h = chHarness({ tailDelay: 40 });
+    await watched(h);
+    for (let i = 1; i <= 5; i++) h.st.file.push(h.rec(i));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 5, reset: false }); // 사건
+    h.core.pollTick(); // 1초 맞춤(사건 size > offset)
+    h.st.master.working = true; // 3초 계기(활동 바뀜) — 다음 조회에서
+    await h.core.poll();
+    h.st.master.working = false;
+    await h.core.poll();
+    await h.advance(500);
+    expect(h.seen()).toBe(5);
+    expect(h.st.maxInflight).toBe(1);
+    expect(h.core.state.stray.map((r) => r.uuid)).toEqual(["u1", "u2", "u3", "u4", "u5"]);
+  });
+
+  it("f06_stale_from_offset_is_dropped — 응답의 from_offset 이 지금 offset 과 다르면 버리고 다시 읽음(두 번 셈 0)", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file.push(h.rec(1), h.rec(2));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 2, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(2);
+    h.st.file.push(h.rec(3));
+    h.st.staleFrom = 0; // 옛 오프셋(0)에서 읽은 응답이 지금(2) 읽기의 답으로 옴
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 3, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(3); // 뮤턴트(from_offset 대조 제거) = 5(u1·u2 두 번)
+    expect(h.n("chat_transcript_tail")).toBe(3); // 버리고 한 번 더
+  });
+
+  it("c_old_gen_or_other_seat_event_is_ignored — 세대·좌석이 다른 사건은 읽지 않음", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file.push(h.rec(1));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen + 9, size: 1, reset: false });
+    h.emit({ surface_id: 6, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: false });
+    await h.advance(10);
+    expect(h.n("chat_transcript_tail")).toBe(0);
+  });
+
+  it("c_reset_event_rewatches — reset 사건 → watch 끊고 시작점 다시 → 다시 걸기(옛 레코드 0)", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file = [h.rec(7)]; // 같은 경로가 다른 내용으로
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: true });
+    await h.advance(10);
+    expect(h.n("chat_transcript_unwatch")).toBe(1);
+    expect(h.calls.filter((c) => c.cmd === "chat_transcript" && (c.args as { fromEnd: boolean }).fromEnd).length).toBe(2);
+    expect(h.n("chat_transcript_watch")).toBe(2);
+    expect(h.seen()).toBe(0);
+  });
+
+  it("c3_rebind_on_registered_session_change — 3초 조회의 결속 id 가 바뀌면 unwatch → 시작점 → 새 id 로 watch · 옛 파일 레코드 0", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.session = "sess-0002-bbbb";
+    h.st.master.registered_session_id = "sess-0002-bbbb";
+    h.st.file = [h.rec(1), h.rec(2)]; // 새 세션 파일(끝에서 시작)
+    await h.core.poll();
+    await h.advance(10);
+    expect(h.n("chat_transcript_unwatch")).toBe(1);
+    const w = h.calls.filter((c) => c.cmd === "chat_transcript_watch");
+    expect(w.length).toBe(2);
+    expect((w[1].args as { sessionId: string }).sessionId).toBe("sess-0002-bbbb");
+    expect(h.seen()).toBe(0);
+    h.st.file.push(h.rec(3));
+    h.emit({ surface_id: 5, session_id: "sess-0002-bbbb", gen: h.st.watchGen, size: 3, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(1);
+  });
+
+  it("c3_no_binding_no_watch — 결속 id 없음(옛 데몬·미등록) = watch 0 · 1.1.18 읽기 길 그대로", async () => {
+    const h = chHarness({ regSid: null });
+    await watched(h);
+    expect(h.n("chat_transcript_watch")).toBe(0);
+    h.st.file.push(h.rec(1));
+    h.st.master.working = true;
+    await h.core.poll();
+    h.st.master.working = false;
+    await h.core.poll();
+    await h.advance(10);
+    expect(h.n("chat_transcript_tail")).toBe(0);
+    expect(h.seen()).toBe(1);
+  });
+
+  it("c4_align_reads_when_event_read_failed — 사건 뒤 읽기가 실패해도 1초 맞춤이 다시 읽음 · 사건 없으면 맞춤 0(검증 V5: 옛 이름 「event_missed」 가 본문과 달라 고침)", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.core.pollTick(); // 사건 없음 → 맞춤 0
+    await h.advance(10);
+    expect(h.n("chat_transcript_tail")).toBe(0);
+    h.st.file.push(h.rec(1));
+    h.st.tailFail = 1;
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(0);
+    await h.advance(1000);
+    h.core.pollTick();
+    await h.advance(10);
+    expect(h.seen()).toBe(1);
+  });
+
+  it("c4_align_after_held_poll — 1초 틱 안 순서 = 붙잡은 말 문턱(상태 조회) 먼저, 맞춤 다음", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.master.working = true;
+    await h.core.poll();
+    h.core.submit("안녕");
+    await h.advance(10);
+    expect(h.core.state.msgs[0]?.step).toBe("held");
+    h.st.master.working = false;
+    h.st.file.push(h.rec(1));
+    h.st.tailFail = 1; // 사건 읽기는 실패 → 맞춤이 남음
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: false });
+    await h.advance(1100);
+    const mark = h.calls.length;
+    h.core.pollTick();
+    await h.flush();
+    const after = h.calls.slice(mark).map((c) => c.cmd);
+    expect(after.indexOf("feed_list")).toBeGreaterThanOrEqual(0);
+    expect(after.indexOf("chat_transcript_tail")).toBeGreaterThan(after.indexOf("feed_list"));
+  });
+
+  it("c_watch_only_while_chat_visible — 작업 화면 살핌 = unwatch · 내린 뒤 사건 = 읽기 0 · 다시 켜면 다시 걸기", async () => {
+    const h = chHarness();
+    await watched(h);
+    expect(h.core.watchStart()).toBe(true); // 대화 → 작업(새 화면 먼저)
+    h.core.detach(); // 옛 화면 내림(살핌 중이라 그대로)
+    await h.flush();
+    expect(h.n("chat_transcript_unwatch")).toBe(1);
+    h.st.file.push(h.rec(1));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: false });
+    await h.advance(10);
+    expect(h.n("chat_transcript_tail")).toBe(0);
+    h.core.attach(); // 작업 → 대화
+    h.core.watchStop();
+    await h.advance(10);
+    expect(h.n("chat_transcript_watch")).toBe(2);
+    h.core.detach();
+    await h.flush();
+    expect(h.n("chat_transcript_unwatch")).toBe(2);
+    h.st.file.push(h.rec(2));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 2, reset: false });
+    await h.advance(10);
+    expect(h.calls.filter((c) => c.cmd === "chat_transcript_tail").length <= 1).toBe(true); // 다시 켠 뒤 따라잡기 1회만
+  });
+
+  it("c_compat_1118_no_watch — 되돌리기 켬 = watch·tail 0 · 1.1.18 읽기 길 · 던지면 끔(watch 함)", async () => {
+    const h = chHarness({ compat: true });
+    await watched(h);
+    h.st.file.push(h.rec(1));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: 1, size: 1, reset: false });
+    h.core.pollTick();
+    await h.advance(10);
+    expect(h.n("chat_transcript_watch") + h.n("chat_transcript_tail")).toBe(0);
+    const t = chHarness({
+      compat: () => {
+        throw new Error("x");
+      },
+    });
+    await watched(t);
+    expect(t.n("chat_transcript_watch")).toBe(1);
+  });
+
+  it("c_watch_failure_backs_off — watch 가 못 걸리면 3초 조회마다 다시 걸지 않음(30초 뒤 1회)", async () => {
+    const h = chHarness();
+    h.st.watchOk = false;
+    await watched(h);
+    expect(h.n("chat_transcript_watch")).toBe(1);
+    for (let i = 0; i < 5; i++) {
+      await h.advance(3000);
+      await h.core.poll();
+    }
+    expect(h.n("chat_transcript_watch")).toBe(1);
+    h.st.watchOk = true;
+    await h.advance(30_000);
+    await h.core.poll();
+    await h.advance(10);
+    expect(h.n("chat_transcript_watch")).toBe(2);
+  });
+
+  it("c4_align_reads_when_event_missed — 사건이 아예 안 와도(구독 전·emit 실패) 3초 조회 안전망 tail(RPC 0)이 읽음(검증 V5)", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file.push(h.rec(1), h.rec(2)); // 사건 없음
+    const rpc0 = h.n("chat_transcript");
+    await h.advance(3000);
+    await h.core.poll();
+    await h.advance(10);
+    expect(h.seen()).toBe(2);
+    expect(h.n("chat_transcript")).toBe(rpc0); // 데몬 RPC 0(tail)
+  });
+
+  it("v4_unwatch_carries_gen — 건 세대를 알면 unwatch 에 그 세대를 싣는다(늦게 처리돼도 새 watch 를 안 내림)", async () => {
+    const h = chHarness();
+    await watched(h);
+    const g = h.st.watchGen;
+    h.core.detach();
+    await h.flush();
+    expect(h.calls.filter((c) => c.cmd === "chat_transcript_unwatch").map((c) => c.args)).toEqual([{ gen: g }]);
+  });
+
+  it("a0_fresh_seat_no_file_reads_from_zero — 처음부터 기록 파일이 없던 좌석(결속 id 있음): 끔 = 파일이 생기면 첫 말·답을 0 에서 · 없는 동안 watch 0 · 켬 = 1.1.18 그대로(이 결함 남음 · master#f03515c6 N2)", async () => {
+    for (const compat of [false, true]) {
+      const h = chHarness({ compat });
+      const deps = (h.core as unknown as { d: Deps }).d;
+      const real = deps.invoke;
+      let noFile = true;
+      // 가로챈 호출도 장부에 적는다(검증 고침2 ④ — 장부 밖 호출이면 「watch 0」 이 뜻 없는 단언)
+      deps.invoke = async (cmd, args) => {
+        if (noFile && (cmd === "chat_transcript" || cmd === "chat_transcript_watch")) {
+          h.calls.push({ cmd, args });
+          return { status: "unknown", why: "no_file", session_id: h.st.session };
+        }
+        return real(cmd, args);
+      };
+      await watched(h);
+      for (let i = 0; i < 5; i++) {
+        await h.advance(3000);
+        await h.core.poll();
+      }
+      expect(h.n("chat_transcript_watch")).toBe(0); // 파일 없는 동안 watch 시도 0(N1)
+      h.core.submit("안녕"); // 첫 입력 = 파일이 생김
+      await h.advance(10);
+      noFile = false;
+      h.st.file.push({ uuid: "user-1", parent: null, role: "user", text: "안녕", ts: null }, h.rec(1));
+      await h.advance(1100); // 보낸 뒤 +1초 읽기
+      expect(h.seen()).toBe(compat ? 0 : 2); // 끔 = 0 에서 읽음 · 켬 = 1.1.18 처럼 끝에서 시작(잃음)
+      if (!compat) {
+        await h.advance(3000);
+        await h.core.poll();
+        await h.advance(10);
+        expect(h.n("chat_transcript_watch")).toBe(1); // 파일을 본 뒤 3초 조회가 건다
+      }
+    }
+  });
+
+  it("c_superseded_is_not_failure — Tauri 가 앞 unwatch 를 뒤에 처리해 watch 가 superseded = 실패 아님(다음 3초 조회에 다시 · 30초 물러남 0)", async () => {
+    const h = chHarness();
+    h.st.superseded = 1;
+    await watched(h);
+    expect(h.n("chat_transcript_watch")).toBe(1);
+    await h.advance(3000);
+    await h.core.poll();
+    await h.advance(10);
+    expect(h.n("chat_transcript_watch")).toBe(2);
+  });
+
+  it("c4_align_no_spin_on_open_line — 미완 줄(next_offset < size)이면 사건 읽기 1번 · 1초 맞춤은 새 바이트가 올 때까지 0", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file.push(h.rec(1));
+    h.st.openTail = 1; // 쓰는 중인 줄
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 2, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(1);
+    expect(h.n("chat_transcript_tail")).toBe(1); // 이어 읽기 사슬이 헛돌지 않음
+    const polls0 = h.n("org_status");
+    for (let i = 0; i < 3; i++) {
+      await h.advance(1000);
+      h.core.pollTick();
+      await h.advance(10);
+    }
+    // 1초 맞춤은 헛돌지 않는다 — 늘어난 tail 은 3초 조회 안전망(검증 V5 · 조회 1번에 1번)뿐
+    expect(h.n("chat_transcript_tail") - 1).toBe(h.n("org_status") - polls0);
+    expect(h.n("chat_transcript_tail")).toBeLessThan(3);
+    h.st.openTail = 0;
+    h.st.file.push(h.rec(2));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 2, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(2);
+  });
+
+  it("c_tail_shorter_than_path_is_reset — tail(쥔 핸들) 길이 < 사건(경로 stat) 길이 = 다른 파일(윈 터널링 · 더 긴 재생성) → reset · 다시 걸기(고착 0)", async () => {
+    const h = chHarness();
+    await watched(h);
+    h.st.file.push(h.rec(1));
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 1, reset: false });
+    await h.advance(10);
+    expect(h.seen()).toBe(1);
+    h.st.heldLen = 1; // 경로는 다른 파일(더 김) · 핸들은 옛 파일(길이 1)
+    h.st.file = [h.rec(7), h.rec(8), h.rec(9)];
+    h.emit({ surface_id: 5, session_id: "sess-0001-aaaa", gen: h.st.watchGen, size: 3, reset: false });
+    await h.advance(10);
+    expect(h.n("chat_transcript_unwatch")).toBe(1);
+    expect(h.n("chat_transcript_watch")).toBe(2);
+    h.st.heldLen = null;
+    for (let i = 0; i < 3; i++) {
+      await h.advance(1000);
+      h.core.pollTick();
+      await h.advance(10);
+    }
+    expect(h.n("chat_transcript_tail")).toBeLessThan(5); // 매초 헛도는 맞춤 0
+  });
+
+  it("c_names_match_rust — 사건 이름(TS·Rust 두 정의) 같음 · core 가 부르는 새 명령 4개 = main.rs 등재 · tail 응답 칸 이름 = Rust", () => {
+    const rs = readFileSync(new URL("../../../src-tauri/src/viewcore.rs", import.meta.url), "utf8");
+    expect(/pub\(crate\) const CHAT_TRANSCRIPT_CHANGED: &str = "([^"]+)";/.exec(rs)?.[1]).toBe(CHAT_TRANSCRIPT_CHANGED);
+    const main = readFileSync(new URL("../../../src-tauri/src/main.rs", import.meta.url), "utf8");
+    const reg = main.slice(main.indexOf("tauri::generate_handler!["), main.indexOf("\n        ])", main.indexOf("tauri::generate_handler![")));
+    const core = readFileSync(new URL("./core.ts", import.meta.url), "utf8") + readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    for (const c of ["chat_transcript_watch", "chat_transcript_unwatch", "chat_transcript_tail", "chat_compat_env"]) {
+      expect(core.includes(`invoke("${c}"`)).toBe(true);
+      expect(reg.split("\n").some((l) => l.trim().startsWith(`viewcore::${c},`))).toBe(true);
+      expect(rs.includes(`pub async fn ${c}(`) || rs.includes(`pub fn ${c}(`)).toBe(true);
+    }
+    for (const k of ['"from_offset"', '"to_offset"', '"more"', '"gen"', '"surface_id"', '"reset"', '"size"']) expect(rs).toContain(k);
+  });
+
+  it("index.ts 배선 — chat_compat_env 를 처음 물을 때 1회 · Deps.compat1118 로 넘김 · 저장 키 0", () => {
+    const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+    expect(src.match(/invoke\("chat_compat_env"/g)?.length).toBe(1);
+    expect(/\n    compat1118[,:]/.test(src)).toBe(true); // ChatCore Deps 에 넘김
+    expect(src.includes("cys-chat-compat-1118")).toBe(false);
   });
 });

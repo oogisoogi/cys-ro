@@ -20,7 +20,8 @@ function fnBody(name: string): string {
   const end = code.indexOf("\n}\n", i);
   return code.slice(i, end > i ? end + 3 : undefined);
 }
-const panel = html.slice(html.indexOf('<div id="cc-view-trash"'), html.indexOf('<div id="cc-view-office"'));
+// (1.1.19 · cysr-1119-s10b MD-CC) 휴지통 뒤에 있던 오피스 뷰가 빠졌다 — 패널 끝 = 바로 뒤 #cc-footer.
+const panel = html.slice(html.indexOf('<div id="cc-view-trash"'), html.indexOf('<div id="cc-footer">'));
 
 describe("탭과 패널의 마크업(index.html)", () => {
   it("#cc-tabs 안에 data-view=trash 단추가 있고, 그에 대응하는 패널이 숨김으로 있다", () => {
@@ -50,7 +51,7 @@ describe("탭과 패널의 마크업(index.html)", () => {
 
 describe("탭 전환과 주기 갱신의 배선(main.ts)", () => {
   it("CcTab 에 trash 가 있고 setCcTab 이 패널을 토글하고 진입 시 목록을 읽는다", () => {
-    expect(code.includes('| "board" | "tasks" | "feed" | "alarms" | "trash" | "office";')).toBe(true);
+    expect(code.includes('type CcTab = "feed" | "alarms" | "trash";')).toBe(true); // (1.1.19 MD-CC 12 → 3)
     const b = fnBody("setCcTab");
     expect(b.includes('document.getElementById("cc-view-trash")!.hidden = view !== "trash";')).toBe(true);
     expect(b.includes('if (view === "trash") void refreshTrash();')).toBe(true);
@@ -71,7 +72,7 @@ describe("탭 전환과 주기 갱신의 배선(main.ts)", () => {
 
 describe("데몬이 부르는 명령만 쓰고, 이름은 그대로 돌려보낸다 (★S8 재착륙 §1 — 동기 미리보기 퇴역)", () => {
   it("invoke 집합은 trash_list·trash_order·trash_delete + **비동기** preview 둘이고, 동기 trash_preview 는 없다", () => {
-    const block = code.slice(code.indexOf("function trashStopPoll("), code.indexOf("async function refreshBoard("));
+    const block = code.slice(code.indexOf("function trashStopPoll("), code.indexOf("\nlet fontSize = Number(")); // (1.1.19 · cysr-1119-s10b) 뒤의 스킬 보드가 빠져 끝 = 다음 최상위 선언
     const calls = [...block.matchAll(/invoke\("([a-z_]+)"/g)].map((m) => m[1]);
     expect([...new Set(calls)].sort()).toEqual([
       "trash_delete",
@@ -193,7 +194,7 @@ describe("확인 관문 — 클릭만으로 넘어가는 길이 없다", () => {
     expect(f.includes("취소했습니다 — 아무 것도 지우지 않았습니다.")).toBe(true);
   });
   it("★선택은 항목마다 손으로 한다 — 선택 집합에 넣는 곳은 체크박스 처리기 **하나**다(전체선택이 코드에도 없다)", () => {
-    const block = code.slice(code.indexOf("function trashStopPoll("), code.indexOf("async function refreshBoard("));
+    const block = code.slice(code.indexOf("function trashStopPoll("), code.indexOf("\nlet fontSize = Number(")); // (1.1.19 · cysr-1119-s10b) 뒤의 스킬 보드가 빠져 끝 = 다음 최상위 선언
     expect((block.match(/trashSelected\.add\(/g) ?? []).length).toBe(1);
     expect(fnBody("renderTrash").includes("if (cb.checked) trashSelected.add(e.name);")).toBe(true);
     // 고를 수 없는 항목에는 체크박스를 만들지 않는다(사유는 표지가 말한다).

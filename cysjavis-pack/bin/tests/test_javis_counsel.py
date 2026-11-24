@@ -40,6 +40,8 @@ import javis_counsel as jc  # noqa: E402
 
 SCRIPT = os.path.join(BIN, "javis_counsel.py")
 NOW = 1791200000.0   # 2026-10-05T…Z 고정 시각
+# (cysr-1119-s10b AG5n) 개인정보 안내문 끝 문장 정본 — DESIGN §8-3-1 한 줄(따옴표 U+2018·U+2019 · 화살표 U+2192).
+NOTICE_TAIL_1119 = "끄려면 화면 설정 \u2192 \u2018자동 보고\u2019를 끄세요."
 POSIX_FAKE_CYS = "가짜 cys = #!/bin/sh 스크립트(윈 shutil.which 는 PATHEXT 만 찾아 실행 불가 · POSIX 전용 검체)"
 
 
@@ -2122,7 +2124,9 @@ class HelpReport(Base):
         notes = [e["notice"] for e in ev if e["event"] == "help-notice"]
         self.assertEqual(notes, [jc.HELP_NOTICE])
         self.assertIn("문제를 빨리 찾아 고치기 위해", jc.HELP_NOTICE)
-        self.assertIn("‘상담소 끄기’", jc.HELP_NOTICE)
+        # (cysr-1119-s10b AG5n · DESIGN §8-3-1) 끝 문장 = 정본 문자열 하나 — 「상담소 끄기」 단추는 1.1.19 에서 없어졌다(자동 보고 = 화면 설정 한 줄).
+        self.assertTrue(jc.HELP_NOTICE.endswith(NOTICE_TAIL_1119), "안내문 끝 문장이 정본(§8-3-1)과 다르다")
+        self.assertNotIn("상담소", jc.HELP_NOTICE)
         self.assertIn(re.sub(r"\s+", "", jc.HELP_NOTICE), re.sub(r"\s+", "", jc.__doc__ or ""), "도움말(모듈 설명)에 같은 문장이 없다")
 
     # ── 안내문 ↔ 실제로 보내는 칸(TICKET=cysr-counsel-notice · 박사님 11-12 「7번 권고대로」) ──
@@ -2315,6 +2319,26 @@ class AutoSwitch(Base):
             self.assertEqual(jc.notice_seen_version(self.cfg), 1, "판 칸이 꼴 밖이면 옛 판(1)으로 본다 — 다시 띄우는 쪽")
         self.config(json.dumps({"counsel": {"auto": False}}))
         self.assertFalse(jc.auto_status(self.cfg)["needs_notice"], "끈 기기에는 다시 띄우지 않는다")
+
+    def test_notice_v3_1119_reshows_once_for_v2_viewers(self):
+        """(cysr-1119-s10b AG5n) 안내문 끝 문장이 바뀌어 판 3 — 판 2 를 본 미가입 기기 = 한 번 더(needs_notice) · 본 뒤 = 더 묻지 않음 ·
+        가입 기기 = 1.1.18 그대로 안내 없음(needs_notice 식 무변경)."""
+        self.assertEqual(jc.NOTICE_VERSION, 3)
+        os.makedirs(os.path.join(self.cfg, "counsel"), exist_ok=True)
+        with open(os.path.join(self.cfg, "counsel", jc.NOTICE_FILE), "w", encoding="utf-8") as f:
+            json.dump({"shown": "2026-11-12T00:00:00.000Z", "notice": "옛 판 2 글", "notice_version": 2}, f, ensure_ascii=False)
+        self.assertEqual(jc.auto_status(self.cfg), {"auto": True, "notice_seen": True, "needs_notice": True})
+        with open(os.path.join(self.cfg, "participant.json"), "w", encoding="utf-8") as f:
+            f.write("{}")
+        self.assertFalse(jc.auto_status(self.cfg)["needs_notice"], "가입 기기 = 1.1.18 처럼 안내 없음")
+        os.remove(os.path.join(self.cfg, "participant.json"))
+        self.assertTrue(jc.mark_notice_seen(self.cfg))
+        self.assertEqual(jc.auto_status(self.cfg)["needs_notice"], False)
+
+    def test_notice_tail_is_byte_same_in_pack_places_1119(self):
+        """(cysr-1119-s10b AG5n) 정본 끝 문장 = HELP_NOTICE · 모듈 설명 바이트 그대로(앱 REPORT_NOTICE ↔ HELP_NOTICE 대조 = ui counselwiring.test.ts)."""
+        self.assertTrue(jc.HELP_NOTICE.endswith(NOTICE_TAIL_1119))
+        self.assertIn(NOTICE_TAIL_1119, jc.__doc__ or "", "모듈 설명에 정본 끝 문장이 바이트 그대로 없다")
 
     def test_off_without_client_writes_agora_fields_and_stops_everything(self):
         self.config(json.dumps({"keep": 1, "counsel": {"other": "x"}}))

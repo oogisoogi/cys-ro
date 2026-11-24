@@ -19,10 +19,11 @@ describe("(1h) 부서 0개 = 부서 흔적 화면 0", () => {
     expect(body("applyDeptPresence")).toContain('document.body.classList.toggle("no-depts", !deptsPresent());');
     expect(body("renderWsTabs")).toContain("applyDeptPresence();");
   });
-  test("숨김 = CSS 한 줄(요소는 남는다) · 안내 줄·작업 탭 설명문의 「부서」 조각에 dept-only", () => {
+  // (1.1.19 · cysr-1119-s10b MD-CC) Control Center 「작업」 탭(설명문의 「모든 부서의」 조각)은 탭과 함께 빠졌다 — 남은 dept-only = 사이드바 안내 줄.
+  test("숨김 = CSS 한 줄(요소는 남는다) · 안내 줄의 「부서」 조각에 dept-only · 작업 탭 설명문은 없음", () => {
     expect(css).toContain("body.no-depts .dept-only { display: none !important; }");
     expect(html).toContain('<div id="ws-dept-hint" class="dept-only">새 부서가 필요하면 마스터에게 말로 부탁하세요</div>');
-    expect(html).toContain('<div class="cc-board-note"><span class="dept-only">모든 부서의 </span>모든 노드가');
+    expect(html.includes("cc-view-tasks")).toBe(false);
   });
   test("팔레트 「부서 워크스페이스 추가」 = 부서가 있거나 전문가 모드일 때만 · 같은 문(launchDept)", () => {
     const b = body("buildPaletteItems");

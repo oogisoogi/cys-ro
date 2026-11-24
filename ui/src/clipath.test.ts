@@ -3602,8 +3602,11 @@ describe("main.ts 배선 핀 — 토스트 등급색·CLI 클릭 분기", () => 
   it("(I2) 라벨 산출도 같은 래치를 먹는다(툴팁·라벨과 클릭 분기가 한 판정에서 나온다)", () => {
     pinHas("applyCliButtonView", mainFnBody("applyCliButtonView"), "cliButtonView(cliStatus.button, cliNoticeLines(cliStatus), cliLastInstall)");
   });
-  it("(I2) 래치는 Control Center 를 열 때 풀린다(해제 경로가 영구히 막히지 않는다)", () => {
-    pinHas("setCcOpen", mainFnBody("setCcOpen"), "cliLastInstall = null");
+  // ★(1.1.19 · cysr-1119-s10b MD-CC) 단추 요소가 Control Center 머리에서 화면 설정 소유로 옮겨 가며 「처음부터」 경계 = 화면 설정을 열고
+  //   전문가 구획이 처음 보일 때(probeCliIfShown)로 옮겼다 — CC 를 여는 것은 더는 셸 설치와 무관하다.
+  it("(I2) 래치는 화면 설정 「전문가」 구획이 (팝오버당) 처음 보일 때 풀린다(해제 경로가 영구히 막히지 않는다)", () => {
+    pinHas("openThemePopover", mainFnBody("openThemePopover"), "cliLastInstall = null");
+    pinLacks("setCcOpen", mainFnBody("setCcOpen"), "cliLastInstall = null");
   });
   it("(I3②) 해제 확인 문구에 현재 상태(notes)와 잔존 백업(backups)을 함께 넘긴다", () => {
     pinHas(
@@ -3624,7 +3627,7 @@ describe("main.ts 배선 핀 — 토스트 등급색·CLI 클릭 분기", () => 
     pinLacks("main.ts", MAIN_CODE, "showCliToast(installResultToast(rep))");
     pinLacks("main.ts", MAIN_CODE, "showCliToast(uninstallResultToast(rep))");
   });
-  it("(G2) 상시 경로(CC 열기)는 그대로 고지를 낸다 — 억제한 것은 중복뿐이다", () => {
+  it("(G2) 상시 경로(1.1.19: 화면 설정 전문가 구획 · 옛 CC 열기)는 그대로 고지를 낸다 — 억제한 것은 중복뿐이다", () => {
     pinHas("refreshCliInstallState", mainFnBody("refreshCliInstallState"), "statusNoticePlan(cliStatus)");
   });
 
@@ -3896,8 +3899,9 @@ describe("★MAJOR-3 — 상태 조회 동시성 가드(중복 억제 + 세대 �
 
   it("액션 직후 재조회만 억제를 건너뛴다(force) — 라벨·고지 줄이 낡지 않게", () => {
     pinHas("main.ts", MAIN_CODE, "refreshCliInstallState({ notice: false, force: true })");
-    // 상시 경로(CC 열기)는 force 가 없다 — 여기에 force 를 붙이면 억제가 통째로 무력해진다.
-    pinHas("setCcOpen", mainFnBody("setCcOpen"), "void refreshCliInstallState();");
+    // 상시 경로(1.1.19: 화면 설정 전문가 구획이 보일 때)는 force 가 없다 — 여기에 force 를 붙이면 억제가 통째로 무력해진다.
+    pinHas("openThemePopover", mainFnBody("openThemePopover"), "void refreshCliInstallState();");
+    pinLacks("openThemePopover", mainFnBody("openThemePopover"), "refreshCliInstallState({ force");
   });
 
   it("★타이머·폴링을 새로 만들지 않았다(이 코드베이스의 상시 원칙)", () => {

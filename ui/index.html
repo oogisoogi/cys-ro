@@ -19,10 +19,8 @@
          00:3x 「"피드백"으로 변경한다.」 = 단추 글자만 · 여는 창의 제목·안내는 그대로):
          아쉬운 점·문제를 운영팀에 보내는 창을 연다. 사이드바(사용량 패널 아래)에서 옮겨 왔다 — 한 곳에만 둔다. -->
     <button id="btn-feedback" type="button" title="피드백 — 아쉬운 점이나 문제를 사진·영상과 함께 운영팀에 보냅니다">피드백</button>
-    <!-- (1.1.9 T4 · TICKET=cysr-119-t4-app → cysr-menu-top-row 박사님 2026-10-21 「상담소, 아고라 메뉴 위치가 왼쪽 메뉴바면 애매하다.
-         상단 피드백과 함께 배치하자. 순서는 피드백 상담소 아고라 순을 제안한다.」) 상담소·아고라 = 피드백 바로 뒤 · 사이드바에서 옮겨 왔다(한 곳에만 둔다).
-         라벨·툴팁 정본 = counsel.ts COUNSEL_COPY·AGORA_COPY(counselwiring.test.ts 가 이 글자와 같은지 잰다). 뱃지 숫자는 main.ts 가 textContent 로만 넣는다. -->
-    <button id="btn-counsel" title="상담소 — cysr 사용자들이 묻고 받은 답을 한곳에서 봅니다(보기 전용)">상담소 <span id="counsel-badge" class="badge" hidden>0</span></button><button id="btn-agora" title="아고라 — AI 동료들이 토론하는 광장을 봅니다(보기 전용) · 참여는 마스터에게 말로 부탁하세요">아고라</button>
+    <!-- (1.1.19 · cysr-1119-s10b · DESIGN §8-3 AG4·AG5) 「상담소」·「아고라」 단추는 화면에서 뺐다(1.1.9 T4 → 1.1.10 상단바 → 1.1.19 삭제).
+         「자동 보고」 켜기/끄기 = 화면 설정 한 줄 · 첫 안내 창은 그대로 · 상담소·아고라 글은 마스터에게 말로. 저장 배치에 두 id 가 남은 기기도 파서가 버린다. -->
     <button id="btn-equalize" title="모든 pane 을 좌우로 나란히 같은 폭으로 정렬 — 개수 무관 1행 가로 균등 · 수동 크기 조절엔 영향 없음">정렬</button>
     <!-- v116-recut-newsplit(박사님 09-25 23:2x 「new split은 그대로 두자」): 창 만들기 세 단추를 1.1.5 모습 그대로
          되살렸다 — 윈에서는 전문가 칸이 기본 꺼짐이고 터미널 초점 중 단축키를 xterm 이 먹어, 손으로 창을 만드는
@@ -38,9 +36,10 @@
     <button id="btn-close" title="창 닫기 (⌘W) — 아직 켜져 있는 창이면 한 번 더 묻습니다">창 닫기</button>
     <button id="btn-files" title="파일 목록 — 선택한 창의 폴더">파일</button>
     <button id="btn-cc" title="Control Center — 실시간 플릿·사용량·시스템 모니터링 · 승인 Feed">Control Center <span id="cc-pending-badge" class="badge" hidden>0</span></button>
-    <button id="btn-restart-daemon" title="데몬 재시작 — 진행 중인 노드에 저장(drain) 신호를 보낸 뒤 데몬을 새로 켜고, 부서·노드를 대화 기억까지 자동 복원합니다(피닉스). 마지막 미저장분은 손실될 수 있습니다.">↻ 재시작</button>
     <button id="btn-factory-reset" title="완전 초기화(팩토리 리셋) — 모든 부서·세션·대화기억·작업기억·훅을 격리 보관(복구 가능·그대로 보관되고 삭제는 휴지통에서 명령)하고 설치 초기 상태로 되돌립니다. 라이선스·직접 넣은 파일은 보존됩니다.">완전 초기화</button>
     <button id="btn-theme" title="화면 설정 — 글자·배경·상단 단추">화면 설정</button>
+    <!-- (cysr-1119-s10b MD-T9) ↻ 재시작 = 맨 오른쪽 · 흐린 글자(topbarlayout.ts topbarDimIds · 확인 창 그대로) — 엔진이 멈췄을 때 사람이 누를 마지막 밸브라 남기되 무게만 낮춘다 -->
+    <button id="btn-restart-daemon" title="데몬 재시작 — 진행 중인 노드에 저장(drain) 신호를 보낸 뒤 데몬을 새로 켜고, 부서·노드를 대화 기억까지 자동 복원합니다(피닉스). 마지막 미저장분은 손실될 수 있습니다.">↻ 재시작</button>
   </header>
   <!-- (1.1.8 U4 · 📌18) 좌석 0 상태 창 고정 안내 1줄 — 닫기 단추 없음 · 문구는 main.ts 가 textContent 로만 넣는다 -->
   <div id="update-hold-note" role="status" hidden></div>
@@ -51,7 +50,9 @@
       <!-- 「워크스페이스」 라벨은 오너 지시 2026-08-11로 삭제했다 — 사이드바가 무엇인지는 내용이
            말하고 있고, 그 자리를 버튼 글자를 키우는 데 쓴다(라벨 하나가 헤더 폭의 flex:1을 잡고
            있었다). 라벨을 지우면서 #wsbar-head > span 규칙도 함께 지웠다(가리킬 것이 없는 선택자). -->
-      <div id="wsbar-head"><button id="btn-ws-font-minus" title="사이드바 글자 축소">A−</button><button id="btn-ws-font-plus" title="사이드바 글자 확대">A＋</button><button id="btn-ws-new" title="새 워크스페이스 — 같은 조직(현재 데몬)의 화면 그룹입니다. 마스터는 조직당 1명이라 여기서 두 번째 마스터 선언은 거부됩니다. 독립 부서장(별도 마스터)을 세우려면 ＋부서를 쓰세요.">＋</button></div>
+      <!-- (1.1.19 · cysr-1119-s10b · DESIGN §8-3 MD-S1S2) 막대 머리 단추 3(A− · A＋ · ＋ 새 워크스페이스) = 0 — 입구는 화면 설정 「전문가」 구획
+           (사이드바 글자 크기 A− A＋ · ＋ 새 워크스페이스 = 같은 함수 applyWsbarFontStep·newWorkspaceFromUser). 빈 머리 칸은 hidden(views.css 짝 규칙). -->
+      <div id="wsbar-head" hidden></div>
       <!-- v110-sidebar ⓑ′(박사님 판정 2026-09-20 = 854 권고 A 그대로): 조직 단추 3종(▶CEO·▶부서장·
            ＋부서)은 **기본 화면에서 보이지 않는다**. 기본 길은 「마스터에게 말로 부탁」 한 줄이고,
            직접 조작이 필요한 사람만 Control Center 의 전문가 모드를 켜서 이 칸을 연다.
@@ -77,123 +78,18 @@
       <div id="cc-header">
         <span class="cc-pulse"></span>
         <span class="cc-title">JAVIS Control Center</span>
-        <span id="cc-livebadge" class="cc-badge idle" title="LIVE = 작업 중 노드 1개 이상 / IDLE = 전체 대기">IDLE</span>
-        <button id="btn-cc-density" title="한눈에 보기 / 상세 보기 전환 (⌘G)">👁 한눈에</button>
-        <button id="btn-cc-glance-face" title="한눈에 면 전환: Live ↔ 작업">📋 작업</button>
-        <button id="btn-install-cli" hidden title="외부 터미널에서 cysr 명령 쓰기(1회 관리자 승인)">셸에 cysr 설치</button>
-        <span id="cc-clock"></span>
+        <!-- (1.1.19 · cysr-1119-s10b MD-CC) 머리 단추 = 닫기 1 — LIVE 표지·한눈에·작업면·시계는 Live 와 함께 빠졌고, 셸 설치 단추는 화면 설정 소유(#sp-owned)로 옮겼다 -->
         <button id="btn-cc-close" title="닫기">×</button>
       </div>
+      <!-- (1.1.19 · cysr-1119-s10b · DESIGN §8-5 MD-CC 12 → 3) 남은 탭 = 승인 Feed(첫 탭 · 기본) · 알람 · 휴지통 — Live·비용·스킬·세션·추세·학습·
+           스킬 보드·작업·오피스는 화면에서 뺐다(계정 한도 = 왼쪽 상황판 · 전문가 모드·계정 숨기기·가림·셸 설치 = 화면 설정 「전문가」 · 분석은 마스터에게 말로) -->
       <div id="cc-tabs">
-        <button class="cc-tab" data-view="live">Live</button>
-        <button class="cc-tab" data-view="eff">비용·효율</button>
-        <button class="cc-tab" data-view="skills">스킬·에이전트</button>
-        <button class="cc-tab" data-view="sessions">세션</button>
-        <button class="cc-tab" data-view="weekly">추세·주간</button>
-        <button class="cc-tab" data-view="learn">학습</button>
-        <button class="cc-tab" data-view="board" hidden>스킬 보드</button>
-        <button class="cc-tab" data-view="tasks">작업</button>
-        <button class="cc-tab" data-view="feed">승인 Feed <span id="cc-feed-tabbadge" class="badge" hidden>0</span></button>
+        <button class="cc-tab active" data-view="feed">승인 Feed <span id="cc-feed-tabbadge" class="badge" hidden>0</span></button>
         <button class="cc-tab" data-view="alarms">🔔 알람</button>
         <button class="cc-tab" data-view="trash">휴지통</button>
-        <button class="cc-tab active" data-view="office">🏢 오피스</button>
       </div>
       <div id="cc-body">
-        <div id="cc-view-live">
-          <div id="cc-alerts" class="cc-alerts"></div>
-          <div class="cc-gauges">
-            <div class="cc-radar" id="cc-radar" title="활성 노드 비율 = 작업중 노드 / 온라인 노드">
-              <span class="cc-radar-sweep"></span>
-              <span class="cc-radar-val" id="cc-radar-val">0%</span>
-              <span class="cc-radar-sub" id="cc-radar-sub">0/0 활성</span>
-            </div>
-            <div class="cc-uptime">
-              <span class="cc-uptime-val" id="cc-uptime-val">00:00:00</span>
-              <span class="cc-sub">가동시간</span>
-            </div>
-          </div>
-          <div class="cc-kpi" id="cc-kpi"></div>
-          <div class="cc-section"><div class="cc-h">계정 Rate Limit <button id="btn-cc-acct-redact" title="계정 라벨(이메일) 가림 — 스크린샷 공유용">🔒</button></div><div id="cc-accounts"></div></div>
-          <div class="cc-section"><div class="cc-h">플릿 현황</div><div id="cc-fleet"></div></div>
-          <div class="cc-section"><div class="cc-h">토큰 · 비용</div>
-            <div id="cc-token-bars"></div>
-            <div class="cc-token-stats" id="cc-token-stats"></div>
-            <div class="cc-mix" id="cc-model-mix"></div>
-            <div class="cc-spark" id="cc-spark"></div>
-          </div>
-          <div class="cc-section"><div class="cc-h">하드웨어</div><div id="cc-hw"></div></div>
-          <!-- v110-sidebar ⓑ′ — 전문가 모드 토글(854 권고 2 「Control Center 안에 토글 1개」).
-               이름은 상태가 아니라 **행위**로 쓴다(권고 원문) — 무엇이 보이게 되는지가 이름에 있다.
-               기본 꺼짐이고 판정은 expertmode.ts(순수·localStorage 키 1개)가 한다. -->
-          <div class="cc-section"><div class="cc-h">설정</div>
-            <label id="cc-expert-row" class="cc-setting-row">
-              <input type="checkbox" id="cc-expert-toggle" />
-              <span>전문가 모드 — 부서·CEO 직접 조작 단추 표시</span>
-            </label>
-            <div class="cc-setting-note">꺼 두면 사이드바에 안내 한 줄만 보입니다. 부서는 마스터에게 말로 부탁하는 것이 기본 길입니다.</div>
-          </div>
-        </div>
-        <div id="cc-view-eff" hidden>
-          <div class="cc-eff-win" id="cc-eff-win">
-            <button class="cc-win active" data-window="today">오늘</button>
-            <button class="cc-win" data-window="7d">7일</button>
-            <button class="cc-win" data-window="all">전체</button>
-          </div>
-          <div class="cc-kpi" id="cc-eff-kpi"></div>
-          <div class="cc-section"><div class="cc-h">토큰 4분해</div><div id="cc-eff-tokens"></div></div>
-          <div class="cc-section"><div class="cc-h">모델별 비용</div><div id="cc-eff-models"></div></div>
-          <div class="cc-section"><div class="cc-h">에이전트 믹스</div><div id="cc-eff-agents"></div></div>
-          <div class="cc-section"><div class="cc-h">조직 단위 비용 (tier · 역할)</div><div id="cc-eff-tiers"></div></div>
-          <div class="cc-section"><div class="cc-h">생산성</div><div class="cc-token-stats" id="cc-eff-prod"></div></div>
-        </div>
-        <div id="cc-view-skills" hidden>
-          <div class="cc-eff-win" id="cc-skills-win">
-            <button class="cc-win active" data-window="today">오늘</button>
-            <button class="cc-win" data-window="7d">7일</button>
-            <button class="cc-win" data-window="all">전체</button>
-          </div>
-          <div class="cc-kpi" id="cc-skills-kpi"></div>
-          <div class="cc-section"><div class="cc-h">🔥 반복 실패 (exit≠0)</div><div id="cc-skills-fail"></div></div>
-          <div class="cc-section"><div class="cc-h">스킬 호출 TOP</div><div id="cc-skills-skills"></div></div>
-          <div class="cc-section"><div class="cc-h">툴 호출 TOP</div><div id="cc-skills-tools"></div></div>
-          <div class="cc-section"><div class="cc-h">서브에이전트 위임</div><div id="cc-skills-agents"></div></div>
-        </div>
-        <div id="cc-view-sessions" hidden>
-          <div class="cc-eff-win" id="cc-sessions-win">
-            <button class="cc-win" data-window="today">오늘</button>
-            <button class="cc-win active" data-window="7d">7일</button>
-            <button class="cc-win" data-window="all">전체</button>
-            <button class="cc-win" id="cc-sessions-star-filter">⭐만</button>
-            <button class="cc-win" id="cc-sessions-redact" title="세션 경로(PII)를 해시로 가림 — 공유·스크린샷용(집계만)">🔒 PII 가림</button>
-          </div>
-          <div id="cc-sessions-list"></div>
-          <div id="cc-session-detail" class="cc-section" hidden></div>
-        </div>
-        <div id="cc-view-weekly" hidden>
-          <div class="cc-kpi" id="cc-weekly-wow"></div>
-          <div class="cc-section"><div class="cc-h">이번주 vs 지난주 (일별 토큰)</div><div id="cc-weekly-daily"></div></div>
-          <div class="cc-section"><div class="cc-h">🔥 효율 리더 (노드/역할별)</div><div id="cc-weekly-leaders"></div></div>
-          <div class="cc-section"><div class="cc-h">스킬 자산</div><div id="cc-weekly-skills"></div></div>
-        </div>
-        <div id="cc-view-learn" hidden>
-          <div class="cc-kpi" id="cc-learn-kpi"></div>
-          <div class="cc-section"><div class="cc-h">📚 자산 성장</div><div id="cc-learn-assets"></div></div>
-          <div class="cc-section"><div class="cc-h">🔬 학습 라운드 타임라인</div><div id="cc-learn-timeline"></div></div>
-          <div class="cc-section"><div class="cc-h">♻️ 채택 · 롤백 (retention)</div><div id="cc-learn-retention"></div></div>
-          <div class="cc-section"><div class="cc-h">🧭 발견 누적 (Discovery)</div><div id="cc-learn-discovery"></div></div>
-          <div class="cc-section"><div class="cc-h">⏳ 자율추천 대기 (승인은 승인 Feed 탭)</div><div id="cc-learn-pending"></div></div>
-        </div>
-        <div id="cc-view-board" hidden>
-          <div class="cc-board-note">클릭 = 보이는 일회용 워커가 task-prompt 티켓(성공기준·4규칙) 경유로 실행합니다. 산출물은 "AI 보조 생성 · 오너 검수 전"입니다.</div>
-          <div class="cc-section"><div class="cc-h">최근 실행</div><div id="cc-board-runs"></div></div>
-          <div class="cc-section"><div class="cc-h">스킬 보드 (클릭 = 일회용 워커 실행)</div><input id="cc-board-search" placeholder="스킬 검색(카탈로그)" /><div id="cc-board-domains"></div></div>
-          <div class="cc-section"><div class="cc-h">산출물 회수 (<code>~/.cys/_round/skill-out</code>)</div><div id="cc-board-out"></div></div>
-        </div>
-        <div id="cc-view-tasks" hidden>
-          <div class="cc-board-note"><span class="dept-only">모든 부서의 </span>모든 노드가 지금 무슨 업무를 하는지 실시간 표시(관측 전용·입력 주입 없음). 📍자기보고 = 노드가 보고한 업무 · ⚙파생 = 활동 추론.</div>
-          <div id="cc-tasks-depts"></div>
-        </div>
-        <div id="cc-view-feed" hidden>
+        <div id="cc-view-feed">
           <div class="cc-board-note">노드·CSO·워커가 올린 승인 요청을 검토하고 Allow/Deny 합니다. 대기 건수는 상단 Control Center 버튼과 이 탭에 표시됩니다.</div>
           <div class="cc-section"><div class="cc-h">승인 Feed</div><div id="cc-feed-items"></div></div>
         </div>
@@ -215,14 +111,14 @@
             <div id="cc-trash-result" class="cc-trash-result"></div>
           </div>
         </div>
-        <div id="cc-view-office" hidden>
-          <div id="cc-office-hint" class="cc-board-note" hidden><span id="cc-office-hint-text">오피스를 준비하고 있습니다… 자동으로 다시 확인합니다.</span>
-            <button id="cc-office-repair" type="button" hidden>복구</button></div>
-          <iframe id="cc-office-frame" title="Metaverse Office"></iframe>
-        </div>
         <div id="cc-footer"></div>
       </div>
     </aside>
+  </div>
+  <!-- (1.1.19 · cysr-1119-s10b) 화면 설정 소유 칸 — 셸에 cysr 설치 단추 요소(id·처리기 그대로 · 맥만 hidden 해제)가 산다.
+       보이는 입구 = 화면 설정 「전문가」 의 셸 설치 줄(이 요소를 비추고 누른다 · 재진입 막기·확인 창·라벨 판정 = 이 요소의 처리기 한 곳). -->
+  <div id="sp-owned" hidden>
+    <button id="btn-install-cli" hidden title="외부 터미널에서 cysr 명령 쓰기(1회 관리자 승인)">셸에 cysr 설치</button>
   </div>
   <div id="toasts"></div>
   <script type="module" src="./main.js"></script>

@@ -115,6 +115,7 @@ function harness(workspaces = [ws(1, SOURCE, [42])]) {
     render: () => { calls.push({ command: "render", args: {} }); },
     renderWsTabs: () => { calls.push({ command: "renderWsTabs", args: {} }); },
     setFocus: (sid: number) => { calls.push({ command: "setFocus", args: { sid } }); scope.focusedSid = sid; },
+    setFocusedSid: (v: number | null) => { scope.focusedSid = v; }, // (cysr-1119-s7 SEL-1) 실제 구현의 값 대입만(표시 동기화 = 이 검체 축 밖)
     toast: (...args: unknown[]) => { toasts.push(args.join(" | ")); },
     stickyToast: (...args: unknown[]) => { toasts.push(args.join(" | ")); },
     dismissToast: (_id: string) => {},
@@ -563,5 +564,41 @@ describe("S6 actual batch deletion and purge", () => {
     expectRetained(h, w, 42, rt); expect(h.scope.workspaces).toContain(w);
     expect(h.closeCalls()).toEqual([]); expect(h.scope.purgingDept).toBe(false);
     expect(h.toasts.join("\n")).toContain("PURGE_DENIED");
+  });
+});
+
+// (TICKET=cysr-1119-s11 · S12 HANDOFF §6 남은 것 ③ · H3 경계) K-2 「보기 칸에서 좌석으로 가는 입력 0」 = 「보기 칸에서 **새로 시작한** 입력 0」(S12 어긋남 7 ·
+//   master 판정 = 불변식 우선). 보기 전에 사람이 시작한 전출(인계 지시 send_input · machineOrigin)은 그 좌석이 보기 칸에 열려도 끝까지 간다 —
+//   이 시험은 그 경계를 못 박는다(코드 무변경 · 전출 쪽에 보기 표지 검사를 넣으면 붉어진다).
+describe("cysr-1119-s11 H3 경계 — 보기 전에 시작한 전출 지시", () => {
+  test("보기 전에 시작한 전출 지시는 보기 동안에도 끝까지 간다(인계 지시 send_input 1 · machineOrigin)", async () => {
+    const source = ws(1, SOURCE, [42]); const dest = ws(2, DEST, []); const h = harness([source, dest]);
+    const rt = h.runtimes.get(key(42, SOURCE));
+    h.scope.setTimeout = (callback: () => void, ms: number) => {
+      if (ms === 3000) { callback(); return 0; }
+      h.timers.push({ callback, ms, cancelled: false }); return h.timers.length;
+    };
+    const home = deferred<string>(); const asked = deferred<null>();
+    h.script((cmd, args) => {
+      // cwd "/" = 루트류 → 인계 파일 자리를 홈에서 찾는다(home_dir_path) — 이 응답을 붙잡아 「전출은 시작됐고 지시는 아직」 순간을 만든다
+      if (cmd === "list_surfaces" && args.socket === SOURCE)
+        return { surfaces: [{ surface_id: 42, live_cwd: "/", role: "worker", agent: "claude" }] };
+      if (cmd === "home_dir_path") { asked.resolve(null); return home.promise; }
+      if (cmd === "list_surfaces" && args.socket === DEST) return { surfaces: [] };
+      if (cmd === "send_input" && args.socket === DEST) return new Error("H3 fixture: stop after the source instruction");
+    });
+    const run = h.api.transferCrossDept(42, source, dest);
+    await asked.promise;
+    const sourceSends = () => h.calls.filter(c => c.command === "send_input" && c.args.socket === SOURCE);
+    expect(sourceSends()).toEqual([]); // 전제: 보기 전에는 아직 지시가 나가지 않았다
+    // 그 사이 사람이 대화 화면에서 그 좌석을 보기 칸으로 엶(대역 = 런타임 보기 표지 · openPeek 가 rt.setPeek(true) 로 켜는 값)
+    rt.peek = true; h.scope.peekSid = 42;
+    home.resolve("/fixture-home");
+    await run; h.noSetupFaults();
+    const sent = sourceSends();
+    expect(sent.length).toBe(1);
+    expect([sent[0].args.surfaceId, sent[0].args.clearFirst, sent[0].args.machineOrigin]).toEqual([42, true, true]);
+    expect(String(sent[0].args.data)).toContain("HANDOFF_CONTRACT 5필드로 /fixture-home/.cys/transfers/transfer-42-");
+    expect(rt.peek).toBe(true); // 보기 칸은 그대로 열려 있다(전출이 표지를 건드리지 않음)
   });
 });

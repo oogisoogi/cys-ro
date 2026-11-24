@@ -5,7 +5,7 @@
 //   (대화 화면 가용 판정·마스터 조회·세션 읽기는 전부 대화 화면을 누른 뒤에만 돈다.)
 
 import type { ViewDescriptor } from "./contract";
-import { ChatCore, POLL_MS, type ChatState, type LimitView, type Store } from "./core";
+import { ChatCore, POLL_MS, type ChatState, type LimitView, type PeekPort, type Store } from "./core";
 import { chatView } from "./chat/index";
 import { workView, type WorkExtra } from "./work/adapter";
 import { createWorkBand } from "./work/band"; // (s79 조각 9) 작업 화면 띠
@@ -26,6 +26,8 @@ export interface BootDeps {
   restoring?(): boolean;
   /** (TICKET=cysr-1118u-chat ①) 대화 화면 머리 한도 줄 — main.ts 가 상황판과 같은 캐시·판정(statusboard.chatLimitRows)으로. 없으면 줄 없음. */
   limits?(): readonly LimitView[];
+  /** (TICKET=cysr-1119-s12 · CV-PEEK) 워커 창 보기 — main.ts 가 그 좌석 터미널을 옮겨 붙인다. 없으면 카드 누름 0. */
+  peek?: PeekPort;
 }
 
 const MIN_CHAT = { confirms: "[data-min=confirms]", lastSendStep: "[data-min=lastSendStep]", masterHealth: "[data-min=masterHealth]", errors: "[data-min=errors]", switcher: "shared" } as const;
@@ -66,8 +68,25 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
   const host = document.getElementById("view-host");
   const bodyRow = document.getElementById("body-row");
   if (!switchHost || !host || !bodyRow) return null; // 자리가 없는 옛 index.html — 작업 화면 그대로
+  // (1.1.19 · TICKET=cysr-1119-s3 · CH-E · master#ca4edc8b) 되돌리기 값 원천 = Tauri `chat_compat_env`(CYS_CHAT_COMPAT_1118 · 앱 시작 뒤 처음 읽은 값).
+  //   처음 물을 때 1회만 invoke(대화 화면을 안 고르면 invoke 0 불변식 그대로) · 답 오기 전 = 켬(1.1.18 꼴 · watch 안 함) · 답 = 그 값 · 던짐 = 끔.
+  let compatEnv: boolean | null = null;
+  let compatAsked = false;
+  const compat1118 = (): boolean => {
+    if (!compatAsked) {
+      compatAsked = true;
+      void Promise.resolve()
+        .then(() => deps.invoke("chat_compat_env"))
+        .then(
+          (v) => void (compatEnv = v === true),
+          () => void (compatEnv = false),
+        );
+    }
+    return compatEnv !== false;
+  };
   const core = new ChatCore({
     invoke: deps.invoke,
+    compat1118,
     now: () => Date.now(),
     setTimeout: (fn, ms) => setTimeout(fn, ms),
     clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -84,6 +103,7 @@ export function bootViews(deps: BootDeps): { core: ChatCore; registry: Registry<
     openHelp: () => deps.openHelp?.(),
     restoring: () => deps.restoring?.() === true,
     limits: () => deps.limits?.() ?? [], // (TICKET=cysr-1118u-chat ①)
+    peek: deps.peek, // (TICKET=cysr-1119-s12 · CV-PEEK)
     workHint: (text) => paintWorkHint(switchHost, text, () => void booted?.registry.choose("chat")),
   });
   // (s79 조각 9 · FR-C7) 작업 화면이 켜져 있는 동안만 붙는 띠 — 대화 화면을 이번 실행에서 켠 적이 없으면 조회 0·띠 0(watchStart = false).

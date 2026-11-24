@@ -10,6 +10,7 @@ U1 왕복: env `CYS_UPDATE_VERIFY_BIN` = `update-verify` 를 가진 **디버그*
 각 거부 조건은 뮤테이션 1개로 음성 대조한다(양성 = 통과 · 음성 = 정확히 그 이유로 거부).
 """
 import base64
+import hashlib
 import json
 import os
 import shutil
@@ -24,6 +25,9 @@ from unittest import mock
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 UPD = os.path.join(ROOT, "scripts", "update")
 FAKE = os.path.join(ROOT, "scripts", "tests", "fixtures", "fake_minisign.py")
+# 1.1.18(838f24421) scripts/update/sign-release.sh 의 바이트 동일 사본 + 그 sha256(test_co_l3_no_flag_same_as_1118 의 비교 대상).
+SIGN_1118_FIXTURE = os.path.join(ROOT, "scripts", "tests", "fixtures", "sign-release-1.1.18-838f24421.sh")
+SIGN_1118_SHA256 = "09d76522ee0f9fdad252488a91deea6c08763cc0cc89fe2ccb7e72800b51ad27"
 sys.path.insert(0, UPD)
 sys.path.insert(0, os.path.dirname(FAKE))
 import update_common as uc  # noqa: E402
@@ -1358,6 +1362,339 @@ class TestOfflineRitual(Base):
                  "--key", os.path.join(self.mnt, "r.key"), "--keyring", self.fx.keyring,
                  "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    # ── 1.1.19 CO-L3(DESIGN §11-5 · TICKET=cysr-1119-s16): 함수 안 명시 검사 · 매체 잔여물 0 · 작업트리 검사(--expect-head) ──
+    def _shim_env(self, fail_cp="", fail_mv=""):
+        """PATH 앞에 cp·mv 대역 — 인자 하나가 패턴(case 꼴)에 맞으면 그 호출만 실패(rc 1) · 나머지는 /bin 실물."""
+        d = os.path.join(self.tmp, "shim")
+        os.makedirs(d, exist_ok=True)
+        for cmd, pat in (("cp", fail_cp), ("mv", fail_mv)):
+            body = '#!/bin/sh\nfor a in "$@"; do case "$a" in %s) echo "shim: %s 실패 주입 $a" >&2; exit 1 ;; esac; done\nexec /bin/%s "$@"\n' % (
+                pat or "__never__", cmd, cmd)
+            open(os.path.join(d, cmd), "w").write(body)
+            os.chmod(os.path.join(d, cmd), 0o755)
+        return dict(self.env, PATH=d + os.pathsep + os.environ.get("PATH", ""))
+
+    def _media_residue(self):
+        return [n for n in os.listdir(self.mnt) if n.startswith(".cys-sign")]
+
+    def _sign_env(self, body, out, env, extra=()):
+        return run(["bash", os.path.join(self.dev, "sign-release.sh"), "--body", body, "--media", self.mnt,
+                    "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring, "--out-dir", out,
+                    "--wait-eject", "0", *extra], env=env)
+
+    def _counting_minisign(self, tamper=False):
+        """가짜 minisign 감싸개 — 부른 횟수를 적고(tamper 면 서명 뒤 -m 파일 1바이트 덧붙임 = 매체 쪽 대상 바뀜)."""
+        log = os.path.join(self.tmp, "mini-calls.txt")
+        w = os.path.join(self.tmp, "mini-count.sh")
+        open(w, "w").write(
+            '#!/bin/sh\necho "$1" >> "%s"\nm=""; prev=""\nfor a in "$@"; do [ "$prev" = "-m" ] && m="$a"; prev="$a"; done\n'
+            '"%s" "%s" "$@" || exit $?\n%s\n' % (log, sys.executable, FAKE,
+                                                  '[ "$1" = "-S" ] && printf x >> "$m"' if tamper else ":"))
+        os.chmod(w, 0o755)
+        return w, log
+
+    def test_co_l3_mv_failure_is_not_success(self):
+        """⑴ 실결함: 서명을 산출 자리로 옮기는 mv 가 실패하면 1.1.18 은 함수가 0 을 돌려 「✅ U 의식 통과」(서명 없이 본문만) — 이제 rc 2 · 산출 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env(fail_mv="*.minisig"))
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        # (codex 1R B5) 주입이 실제로 mv 지점에 닿았음을 단언 — 앞 단계의 다른 실패로 초록이 되지 않게
+        self.assertIn("shim: mv 실패 주입", r.stderr)
+        self.assertIn("서명을 산출 자리로 옮기지 못했다(mv 실패)", r.stderr)
+        self.assertNotIn("통과", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+        self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json")))
+        self.assertEqual(self._media_residue(), [])
+
+    def test_co_l3_sig_copy_out_failure_stops_before_eject(self):
+        """⑴ 매체에서 서명을 꺼내는 cp(:110) 실패 = 그 자리에서 rc 2(빈 서명으로 매체 빼기·검증까지 가지 않음) · 매체 잔여물 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env(fail_cp="*/.cys-sign-*/doc.minisig"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("서명을 꺼내지 못했다", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+        self.assertEqual(self._media_residue(), [])
+
+    def test_co_l3_doc_copy_failure_refuses_before_minisign(self):
+        """⑵ 서명 대상을 매체로 옮기는 cp(:101) 실패 = minisign 을 부르지 않고(비밀번호를 묻지 않음) rc 2 · 매체 잔여물 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        w, log = self._counting_minisign()
+        env = dict(self._shim_env(fail_cp="*/.cys-sign-*/doc"), MINISIGN=w)
+        r = self._sign_env(b, out, env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("매체로 옮기지 못했다", r.stderr)
+        self.assertFalse(os.path.exists(log), "서명 대상이 없는데 minisign 을 불렀다")
+        self.assertEqual(self._media_residue(), [])
+
+    def test_co_l3_media_doc_changed_leaves_no_residue(self):
+        """⑶ 매체 쪽 서명 대상이 서명 중 바뀜 = 거부(rc 2) · 매체에 doc·doc.minisig·작업 폴더 잔여물 0 · 산출 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        w, _ = self._counting_minisign(tamper=True)
+        r = self._sign_env(b, out, dict(self.env, MINISIGN=w))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("바뀌었다", r.stderr)
+        self.assertEqual(self._media_residue(), [])
+        self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+
+    def _git_tree(self, script_text=None):
+        """git 저장소 안의 시험 사본 트리(<g>/scripts/update = 실 파일 심링크 · lib = 실 lib + 시험 대역) · 커밋 1. → (g, head, sign 경로)."""
+        g = os.path.join(self.tmp, "g")
+        upd = os.path.join(g, "scripts", "update")
+        os.makedirs(os.path.join(upd, "lib"))
+        for n in os.listdir(UPD):
+            if n not in ("lib", "__pycache__", "sign-release.sh"):
+                os.symlink(os.path.join(UPD, n), os.path.join(upd, n))
+        if script_text is None:
+            os.symlink(os.path.join(UPD, "sign-release.sh"), os.path.join(upd, "sign-release.sh"))
+        else:
+            open(os.path.join(upd, "sign-release.sh"), "w").write(script_text)
+        open(os.path.join(upd, "lib", "offline-sign.sh"), "w").write(
+            '. "%s"\n. "%s"\n' % (os.path.join(UPD, "lib", "offline-sign.sh"), os.path.join(UPD, "lib", "offline-sign-dev.sh")))
+        open(os.path.join(g, "README"), "w").write("x\n")
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="t",
+                    GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        for a in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "t"]):
+            self.assertEqual(run(["git", "-C", g, *a], env=genv).returncode, 0, a)
+        head = run(["git", "-C", g, "rev-parse", "HEAD"]).stdout.strip()
+        return g, head, os.path.join(upd, "sign-release.sh")
+
+    def _sign_at(self, script, body, out, extra=()):
+        return run(["bash", script, "--body", body, "--media", self.mnt, "--key", os.path.join(self.mnt, "u.key"),
+                    "--keyring", self.fx.keyring, "--out-dir", out, "--wait-eject", "0", *extra], env=self.env)
+
+    def test_co_l3_expect_head_clean_tree_passes(self):
+        """(L4) --expect-head = HEAD 와 같고 작업트리가 깨끗하면 통과(rc 0 · 서명 검증)."""
+        g, head, script = self._git_tree()
+        b = self.unsigned_body()
+        r = self._sign_at(script, b, os.path.join(self.tmp, "out"), ("--expect-head", head))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+
+    def test_co_l3_expect_head_refuses_dirty_or_other_head(self):
+        """(L4) HEAD 다름 · 추적 파일 바뀜 · 추적 안 된 새 파일 = 각각 rc 2 · 산출 0 · 매체에 손대기 전."""
+        g, head, script = self._git_tree()
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        other = ("0" if head[0] != "0" else "1") + head[1:]
+        r = self._sign_at(script, b, out, ("--expect-head", other))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("HEAD", r.stderr)
+        open(os.path.join(g, "README"), "a").write("y\n")
+        r = self._sign_at(script, b, out, ("--expect-head", head))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("커밋 안 된 변경", r.stderr)
+        run(["git", "-C", g, "checkout", "-q", "--", "README"])
+        open(os.path.join(g, "new.txt"), "w").write("n\n")
+        r = self._sign_at(script, b, out, ("--expect-head", head))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+        self.assertEqual(self._media_residue(), [])
+
+    def test_co_l3_expect_head_outside_git_is_refused(self):
+        """(L4 · master#26ecbe64 조건 ②) 인자를 줬는데 git 저장소가 아니면 통과가 아니라 rc 2(닫힌 쪽) — 기존 사본 트리 = git 밖."""
+        b = self.unsigned_body()
+        self.assertNotEqual(run(["git", "-C", os.path.dirname(os.path.dirname(self.dev)), "rev-parse", "--show-toplevel"]).stdout.strip(),
+                            os.path.realpath(os.path.dirname(os.path.dirname(self.dev))))
+        r = run(
+            ["bash", os.path.join(self.dev, "sign-release.sh"), "--body", b, "--media", self.mnt, "--key", os.path.join(self.mnt, "u.key"),
+             "--keyring", self.fx.keyring, "--out-dir", os.path.join(self.tmp, "out"), "--wait-eject", "0", "--expect-head", "a" * 40], env=self.env)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("git 작업트리가 아니다", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+
+    def test_co_l3_no_flag_same_as_1118(self):
+        """(L4 · master#26ecbe64 조건 ①) 인자를 안 주면 1.1.18(838f24421) sign-release.sh 와 같은 동작 — 더러운 git 트리에서도 끝 코드·출력 같음."""
+        # 1.1.18 판 = 고정 자료(바이트 동일 사본) — CI 체크아웃은 얕은 받기라 838f24421 객체가 없다(TICKET=cysr-1119-integ2 · run 45374218639).
+        raw = open(SIGN_1118_FIXTURE, "rb").read()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), SIGN_1118_SHA256, "고정 자료가 바뀌었다")
+        spec = "838f24421:scripts/update/sign-release.sh"
+        if run(["git", "-C", ROOT, "cat-file", "-e", spec]).returncode == 0:  # 객체가 있는 환경(전체 받기) = 자료 == 원본
+            base = subprocess.run(["git", "-C", ROOT, "show", spec], capture_output=True)
+            self.assertEqual(base.returncode, 0, base.stderr)
+            self.assertEqual(base.stdout, raw, "고정 자료 ≠ git show " + spec)
+        res = []
+        for tag, text in (("new", None), ("old", raw.decode("utf-8"))):
+            g, head, script = self._git_tree(text)
+            open(os.path.join(g, "README"), "a").write("dirty\n")  # 더러움 — 인자 없으면 검사 0
+            out = os.path.join(self.tmp, "out-" + tag)
+            r = self._sign_at(script, self.unsigned_body(), out)
+            res.append((r.returncode, r.stdout.replace(out, "<OUT>"), r.stderr.replace(out, "<OUT>")))
+            shutil.rmtree(g)
+        self.assertEqual(res[0][0], 0, res[0][2])
+        self.assertEqual(res[0], res[1])
+
+    # ── codex 1R(TICKET=fix-1119-codex-r1) B1·B2: --expect-head 가 검사를 조용히 건너뛰거나 더러움을 못 보는 길 ──
+    def _git(self, g, *a):
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="t",
+                    GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        r = run(["git", "-C", g, *a], env=genv)
+        self.assertEqual(r.returncode, 0, (a, r.stderr))
+        return r.stdout
+
+    def test_co_l3_b1_expect_head_empty_or_missing_value_refused(self):
+        """B1: 인자를 「줬는가」 와 「값」 을 따로 본다 — 빈 값 · 값 없이 끝남 · 두 번째에 빈 값 = 전부 rc 2(검사를 건너뛰지 않음 · 산출 0)."""
+        g, head, script = self._git_tree()
+        open(os.path.join(g, "README"), "a").write("dirty\n")  # 더러운 트리 — 검사를 건너뛰면 서명까지 간다
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        for extra, why in ((("--expect-head", ""), "40자 소문자 sha"), (("--expect-head",), "값이 없다"),
+                           (("--expect-head", head, "--expect-head", ""), "두 번 줬다")):
+            with self.subTest(extra=extra):
+                r = self._sign_at(script, b, out, extra)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertIn("--expect-head", r.stderr)
+                self.assertIn(why, r.stderr)
+                self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+                self.assertEqual(self._media_residue(), [])
+
+    def test_co_l3_b2_hidden_dirt_refused(self):
+        """B2: git 설정·색인 표시·무시 규칙으로 숨은 더러움 = rc 2. 각 칸은 대조로 「옛 검사(git status --porcelain)에는 안 보임」 을 먼저 단언한다."""
+        g, _, script = self._git_tree()
+        open(os.path.join(g, ".gitignore"), "w").write("__pycache__/\n*.log\n")
+        self._git(g, "add", ".gitignore")
+        self._git(g, "commit", "-q", "-m", "ignore")
+        head = self._git(g, "rev-parse", "HEAD").strip()
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+
+        def plain_status():
+            return self._git(g, "status", "--porcelain")
+
+        def case_show_untracked_no():
+            self._git(g, "config", "status.showUntrackedFiles", "no")
+            open(os.path.join(g, "new.txt"), "w").write("n\n")
+            return lambda: (os.remove(os.path.join(g, "new.txt")), self._git(g, "config", "--unset", "status.showUntrackedFiles"))
+
+        def case_ignored_under_update():
+            open(os.path.join(g, "scripts", "update", "stray.log"), "w").write("x\n")
+            return lambda: os.remove(os.path.join(g, "scripts", "update", "stray.log"))
+
+        def case_assume_unchanged():
+            open(os.path.join(g, "README"), "a").write("hidden\n")
+            self._git(g, "update-index", "--assume-unchanged", "README")
+            return lambda: (self._git(g, "update-index", "--no-assume-unchanged", "README"), self._git(g, "checkout", "-q", "--", "README"))
+
+        def case_skip_worktree():
+            open(os.path.join(g, "README"), "a").write("hidden\n")
+            self._git(g, "update-index", "--skip-worktree", "README")
+            return lambda: (self._git(g, "update-index", "--no-skip-worktree", "README"), self._git(g, "checkout", "-q", "--", "README"))
+
+        def case_stat_preserved_edit():
+            # 색인 표시 0 · 크기·mtime 같게 고치고 사용자 설정 core.checkStat=minimal·trustctime=false → status 는 stat 만 믿고 「깨끗」
+            rp = os.path.join(g, "README")
+            time.sleep(1.1)  # 앞 칸 checkout 직후의 「racy」 항목(git 이 내용을 다시 읽음)을 피함 → 색인 stat 을 안정된 값으로 다시 적음
+            self._git(g, "update-index", "--refresh")
+            st = os.stat(rp)
+            data = open(rp, "rb").read()
+            open(rp, "wb").write(data.replace(b"x", b"z", 1))
+            os.utime(rp, ns=(st.st_atime_ns, st.st_mtime_ns))
+            self._git(g, "config", "core.checkStat", "minimal")
+            self._git(g, "config", "core.trustctime", "false")
+            return lambda: (self._git(g, "config", "--unset", "core.checkStat"), self._git(g, "config", "--unset", "core.trustctime"),
+                            open(rp, "wb").write(data), self._git(g, "update-index", "--refresh"))
+
+        def case_clean_filter():
+            # 로컬 .git/info/attributes + 로컬 설정의 clean 필터가 작업 파일을 HEAD 내용으로 「씻어」 status 에 안 보이게 함
+            rp = os.path.join(g, "README")
+            orig = open(rp, "rb").read()
+            open(rp, "wb").write(orig.replace(b"x", b"q", 1))  # 같은 크기(크기가 바뀌면 git 은 필터 없이 「바뀜」 판정 = 숨지 않음)
+            os.makedirs(os.path.join(g, ".git", "info"), exist_ok=True)
+            open(os.path.join(g, ".git", "info", "attributes"), "w").write("README filter=hide\n")
+            self._git(g, "config", "filter.hide.clean", "printf 'x\\n'")
+            def undo():
+                os.remove(os.path.join(g, ".git", "info", "attributes"))
+                self._git(g, "config", "--remove-section", "filter.hide")
+                open(rp, "wb").write(orig)
+                self._git(g, "update-index", "--refresh")
+            return undo
+
+        def case_flag_only():
+            # 내용은 그대로지만 assume-unchanged 표시만 있음 — 표시 자체가 다음 수정을 숨기므로 거부(브리프 규칙)
+            self._git(g, "update-index", "--assume-unchanged", "README")
+            return lambda: self._git(g, "update-index", "--no-assume-unchanged", "README")
+
+        # 이 칸에서 꼭 나와야 할 거부 글(어느 겹이 잡았는지) — None = 겹이 여럿이라 어느 것이든
+        for name, case, why in (("status.showUntrackedFiles=no", case_show_untracked_no, "커밋 안 된 변경"),
+                                ("scripts/update 아래 무시된 파일", case_ignored_under_update, "서명 코드 자리"),
+                                ("assume-unchanged", case_assume_unchanged, None),
+                                ("skip-worktree", case_skip_worktree, None),
+                                ("stat 보존 수정(checkStat=minimal)", case_stat_preserved_edit, "내용 ≠ HEAD README"),
+                                ("clean 필터(info/attributes)", case_clean_filter, "내용 ≠ HEAD README"),
+                                ("표시만(내용 같음)", case_flag_only, "색인에")):
+            with self.subTest(case=name):
+                undo = case()
+                out = os.path.join(self.tmp, "out-" + str(abs(hash(name))))  # 칸마다 산출 자리 따로(한 칸 실패가 다음 칸으로 번지지 않게)
+                try:
+                    self.assertEqual(plain_status(), "", "대조 실패: 이 우회가 옛 검사에 이미 보인다 — 시험이 우회를 재현하지 못함")
+                    r = self._sign_at(script, b, out, ("--expect-head", head))
+                    self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                    self.assertIn("거부", r.stderr)
+                    if why:
+                        self.assertIn(why, r.stderr)
+                    self.assertFalse(os.path.exists(os.path.join(out, "cysr-release-5.json.minisig")))
+                    self.assertEqual(self._media_residue(), [])
+                finally:
+                    undo()
+                self.assertEqual(plain_status(), "")
+
+    def test_co_l3_b2_checkout_eol_conversion_is_clean(self):
+        """B2 거짓 거부 0: 저장소 .gitattributes 의 `*.nsh text eol=crlf`(실 저장소 :70 · src-tauri/nsis-hooks.nsh) — 색인 LF · 작업 파일 CRLF 는 깨끗.
+        같은 파일 내용을 고치면 거부(바이트 대조가 git 내장 변환으로만 풀림)."""
+        g, _, script = self._git_tree()
+        open(os.path.join(g, ".gitattributes"), "w").write("* text=auto eol=lf\n*.nsh text eol=crlf\n")
+        open(os.path.join(g, "hooks.nsh"), "wb").write(b"!macro A\r\n!macroend\r\n")
+        self._git(g, "add", ".gitattributes", "hooks.nsh")
+        self._git(g, "commit", "-q", "-m", "crlf")
+        head = self._git(g, "rev-parse", "HEAD").strip()
+        self.assertEqual(run(["git", "-C", g, "cat-file", "-p", head + ":hooks.nsh"]).stdout, "!macro A\n!macroend\n")  # 색인 = LF
+        self.assertEqual(open(os.path.join(g, "hooks.nsh"), "rb").read(), b"!macro A\r\n!macroend\r\n")  # 작업 파일 = CRLF
+        self.assertEqual(self._git(g, "status", "--porcelain"), "")
+        b = self.unsigned_body()
+        r = self._sign_at(script, b, os.path.join(self.tmp, "out-a"), ("--expect-head", head))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        open(os.path.join(g, "hooks.nsh"), "wb").write(b"!macro B\r\n!macroend\r\n")
+        r = self._sign_at(script, b, os.path.join(self.tmp, "out-b"), ("--expect-head", head))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "out-b", "cysr-release-5.json.minisig")))
+
+    def test_co_l3_b2_ignored_outside_and_pycache_allowed_but_not_read(self):
+        """B2 경계: 서명 코드 자리 밖의 무시된 파일(빌드 산출 꼴) · scripts/update/__pycache__ 는 막지 않는다 —
+        단 __pycache__ 는 읽히지도 않아야 한다(PYTHONPYCACHEPREFIX): update_common 을 가로채는 pyc 를 심어도 서명이 정상 통과."""
+        g, _, script = self._git_tree()
+        open(os.path.join(g, ".gitignore"), "w").write("__pycache__/\n*.log\ntarget/\n")
+        self._git(g, "add", ".gitignore")
+        self._git(g, "commit", "-q", "-m", "ignore")
+        head = self._git(g, "rev-parse", "HEAD").strip()
+        os.makedirs(os.path.join(g, "target"))
+        open(os.path.join(g, "target", "build.log"), "w").write("x\n")
+        src = os.path.join(g, "scripts", "update", "update_common.py")
+        hijack = run(["python3", "-c", (
+            "import importlib.util as u, importlib._bootstrap_external as e, os, sys\n"
+            "src = sys.argv[1]; st = os.stat(src)\n"
+            "code = compile('import sys\\nprint(\\'PYC-HIJACK\\', file=sys.stderr)\\nsys.exit(7)\\n', src, 'exec')\n"
+            "pyc = u.cache_from_source(src); os.makedirs(os.path.dirname(pyc), exist_ok=True)\n"
+            "open(pyc, 'wb').write(e._code_to_timestamp_pyc(code, int(st.st_mtime), st.st_size))\n"
+            "print(pyc)\n"), src])
+        self.assertEqual(hijack.returncode, 0, hijack.stderr)
+        pyc = hijack.stdout.strip()
+        self.assertTrue(pyc.startswith(os.path.join(g, "scripts", "update", "__pycache__")), pyc)
+        # 대조: 가로채기 pyc 가 실제로 먹힌다(PYTHONPYCACHEPREFIX 없이 같은 python3 로 import)
+        probe = run(["python3", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import update_common",
+                     os.path.dirname(src)], env={k: v for k, v in os.environ.items() if not k.startswith("PYTHONPYCACHE")})
+        self.assertEqual(probe.returncode, 7, probe.stderr)
+        self.assertIn("PYC-HIJACK", probe.stderr)
+        self.assertEqual(self._git(g, "status", "--porcelain"), "")
+        before = open(pyc, "rb").read()
+        r = self._sign_at(script, self.unsigned_body(), os.path.join(self.tmp, "out"), ("--expect-head", head))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("PYC-HIJACK", r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
+        self.assertEqual(open(pyc, "rb").read(), before)  # 서명 실행이 source 트리 pyc 를 읽지도 고쳐 쓰지도 않음
 
     # ── codex 1R #3: 시험 손잡이는 개발 모드 전용 · 개발 모드는 실 키 거부 · 키 생성도 매체 안 ─────────────
     def real_env(self, **extra):

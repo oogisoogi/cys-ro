@@ -13,8 +13,13 @@
      S1 좌석 표시 occupied + ps 죽음 → 부활 대상 편입 · 세션핀 일치여도 VERIFIED 아님 · force_fresh 기록
      S2 다음 사이클 → cys restore(resume) 없이 곧장 fresh 재기동(launch-agent) · ps 살아남 → fresh 확정
      S3 대조군: ps 살아있음 → 생존(NOOP · 오강등 0)
-  M. 뮤턴트 3(변이 적용 선-assert 동반) — 각각 위 축 중 하나 이상 적색이어야 한다
+  W. 호출부 comm 배선(1.1.19 PH-NIT · DESIGN §11-2 · VERIFY-628e4ce28 §5-4 x5·x6·효율) — 공백 경로 CLI 좌석(좌석 pid 자신)
+     W1 verify 호출부 surface_agent_verdict 가 `ps -o comm=`(대역)을 넘김 → alive(comm 없으면 dead 인 칸)
+     W2 복원 대상 산정 호출부(_proc_verdict)가 comm 을 넘김 → 부활 대상 0 · NOOP
+     W3 한 회차 안 `_ps_comm` = 좌석 pid 당 1번(표·좌석 pid 와 같은 회차 스냅샷 · 종전 = _role_liveness 3회 × 2)
+  M. 뮤턴트 6(변이 적용 선-assert 동반) — 각각 위 축 중 하나 이상 적색이어야 한다
      M1 verify ps 축 제거 · M2 대상 산정 ps 축 제거 · M3 순수 판정이 'dead' 대신 'alive'
+     M4 verify 호출부 comm 미전달(x5) · M5 대상 산정 호출부 comm 미전달(x6) · M6 comm 회차 캐시 제거
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_a3_ps_axis.py → 종료 토큰 PHOENIX-A3-PS-AXIS-OK
 """
@@ -66,13 +71,8 @@ def unit_axes(m, sink=None):
     check("U5 표 없음·pid 미상·셸 부재 = unknown(종전 동작 유지)", got == ["unknown"] * 3, got, sink)
 
 
-def scenario_axes(m, root, sink=None):
-    """run_restore 2 사이클. m 의 전역을 대역으로 치환한다(데몬·cys·ps 실호출 0)."""
-    sockdir = os.path.join(root, "sock")
-    os.makedirs(os.path.join(sockdir, "phoenix"), exist_ok=True)
-    sock = os.path.join(sockdir, "cys.sock")
-    calls = {"restore": 0, "fresh": 0}
-    state = {"table": T_DEAD}
+def stub_world(m, root, state, calls):
+    """m 의 전역을 대역으로 치환한다(데몬·cys·ps 실호출 0) — S·W 축 공용."""
     m.CYS = os.path.join(root, "nonexistent-cys")
     m.log = lambda msg: None
     m._emit_evt = lambda *a, **k: None
@@ -101,6 +101,17 @@ def scenario_axes(m, root, sink=None):
     m.stage_g2_ack = lambda s, role, surf, stub: (True, "g2-stub")
     m.SPAWN_SETTLE = 0.0
     m.SPAWN_BACKOFF = 0.0
+
+
+def scenario_axes(m, root, sink=None):
+    """run_restore 2 사이클."""
+    sockdir = os.path.join(root, "sock")
+    os.makedirs(os.path.join(sockdir, "phoenix"), exist_ok=True)
+    sock = os.path.join(sockdir, "cys.sock")
+    calls = {"restore": 0, "fresh": 0}
+    state = {"table": T_DEAD}
+    stub_world(m, root, state, calls)
+    m._ps_comm = lambda pid: None  # S 축 표 = 공백 경로 없음 · 실 ps 호출 0
 
     # S1 — 좌석 표시는 살아있고(occupied) 세션핀도 일치하지만 ps 로는 죽었다(run7)
     r1 = m.run_restore(sock, ticket="a3", stub=False, no_breaker=True, print_result=False)
@@ -146,11 +157,44 @@ def scenario_axes(m, root, sink=None):
           r3.get("phoenix_restore"), sink)
 
 
+# 공백 경로 CLI 가 좌석 pid 자신(exec 좌석) — 맥 `ps args` 는 공백을 묶지 않아 comm 없이는 실행 파일 경계를 잃는다(dead)
+SPACE_EXE = "/opt/A B/.local/bin/claude"
+T_SPACE = {664: (1, SPACE_EXE + " --resume S1")}
+
+
+def wiring_axes(m, root, sink=None):
+    """호출부가 comm 을 실제로 넘기는가(x5·x6) + 회차 안 comm 1번(효율)."""
+    sockdir = os.path.join(root, "sockw")
+    os.makedirs(os.path.join(sockdir, "phoenix"), exist_ok=True)
+    sock = os.path.join(sockdir, "cys.sock")
+    calls = {"restore": 0, "fresh": 0}
+    state = {"table": T_SPACE}
+    stub_world(m, root, state, calls)
+    comm_calls = {}
+
+    def _comm(pid):
+        comm_calls[pid] = comm_calls.get(pid, 0) + 1
+        return SPACE_EXE if pid == 664 else None
+    m._ps_comm = _comm
+    # 전제: 이 칸은 comm 이 있어야만 alive(없으면 dead) — 칸이 배선을 실제로 가르는지 먼저 본다
+    pre = (m.agent_process_verdict(664, "claude", T_SPACE, SPACE_EXE), m.agent_process_verdict(664, "claude", T_SPACE))
+    check("W0 전제: 공백 경로 좌석 = comm 있으면 alive · 없으면 dead", pre == ("alive", "dead"), pre, sink)
+    v = m.surface_agent_verdict(sock, "surface:1", "claude")
+    check("W1 verify 호출부(surface_agent_verdict) comm 배선 → alive", v == "alive", v, sink)
+    comm_calls.clear()
+    r = m.run_restore(sock, ticket="a3w", stub=False, no_breaker=True, print_result=False)
+    check("W2 대상 산정 호출부(_proc_verdict) comm 배선 → 부활 대상 0 · NOOP",
+          r.get("target_roles") == [] and r.get("phoenix_restore") == "NOOP",
+          (r.get("target_roles"), r.get("phoenix_restore"), calls), sink)
+    check("W3 한 회차 _ps_comm = 좌석 pid 당 1번", comm_calls == {664: 1}, comm_calls, sink)
+
+
 root = tempfile.mkdtemp(prefix="phoenix-a3-")
 try:
     live = load(PH, "_ph_a3_live")
     unit_axes(live)
     scenario_axes(live, os.path.join(root, "live"))
+    wiring_axes(live, os.path.join(root, "live"))
 
     src = io.open(PH, encoding="utf-8").read()
     mutants = [
@@ -160,6 +204,11 @@ try:
          "            if False:\n"),
         ("M3 순수 판정 dead→alive", '        stack.extend(children.get(pid, []))\n    return "dead"\n',
          '        stack.extend(children.get(pid, []))\n    return "alive"\n'),
+        ("M4 verify 호출부 comm 미전달(x5)", "    return agent_process_verdict(pid, agent, table, _ps_comm(pid) if table else None)\n",
+         "    return agent_process_verdict(pid, agent, table)\n"),
+        ("M5 대상 산정 호출부 comm 미전달(x6)", ', _ps_cache["t"], _ps_cache["c"][_pid])\n', ', _ps_cache["t"])\n'),
+        ("M6 comm 회차 캐시 제거", '        if _pid not in _ps_cache.setdefault("c", {}):\n',
+         '        if _ps_cache.setdefault("c", {}) is not None:\n'),
     ]
     for i, (name, old, new) in enumerate(mutants):
         n = src.count(old)
@@ -174,6 +223,7 @@ try:
             mm = load(mp, "_ph_a3_mut%d" % i)
             unit_axes(mm, sink)
             scenario_axes(mm, os.path.join(root, "mut%d" % i), sink)
+            wiring_axes(mm, os.path.join(root, "mut%d" % i), sink)
         except Exception as e:  # noqa: BLE001 — 변이가 크래시를 내도 적색(= 잡힘)
             sink.append("크래시 %s: %s" % (type(e).__name__, e))
         check("%s → 적색(KILLED) — %s" % (name, sink[:3]), bool(sink), sink)

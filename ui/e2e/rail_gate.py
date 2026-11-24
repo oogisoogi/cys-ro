@@ -119,6 +119,11 @@ def main() -> int:
           return c && t ? { line: getComputedStyle(c).color, help: getComputedStyle(t).color, run: getComputedStyle(document.documentElement).getPropertyValue('--cv-run').trim() } : null; }""")
         check(col is not None and col["line"] != col["help"] and col["line"] == "rgb(45, 91, 203)", f"(검증 X2) 「일하는 중」 상태 줄 = 파랑(--cv-run) · 보조 줄 회색과 다름 {col}")
         pg.screenshot(path=str(OUT / "a-1280.png"))
+        # (TICKET=cysr-1119-s5 · CV-RAIL ⑤-1) 결과가 생기면 결과 자리 = 왼쪽 칸에 보임(숨김 판정 = 결과 수 · 자식 수 아님)
+        pg.evaluate("() => window.__emit('daemon-event', { name: 'skill.run_finished', socket_slug: 'base', payload: { run_id: 'rr', status: 'done', artifact_dir: '/sandbox/home/cys-runs/rr' } })")
+        pg.clock.run_for(3_300)
+        rr = pg.evaluate("() => { const x = document.querySelector('.cv-rail [data-rail=results]'); return { hidden: x?.hidden ?? null, shown: !!x && getComputedStyle(x).display !== 'none', inRail: !!x?.querySelector('.cv-results') }; }")
+        check(rr == {"hidden": False, "shown": True, "inRail": True}, f"결과 1 = 왼쪽 칸 결과 자리 보임 {rr}")
 
         print("== B 팀 = 작업 화면 묶음 이름과 같음")
         s4 = json.loads(seat(BASE, 4, "worker-4", home))

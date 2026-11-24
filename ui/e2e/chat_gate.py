@@ -135,6 +135,10 @@ def main() -> int:
         print("== B 보내기 1 → 쓰기 1(원자) → 전달됨 → 마스터 답")
         pg.click("#view-switch button[data-view=chat]")
         pg.clock.run_for(100)
+        # (TICKET=cysr-1119-s5 · CV-EX3) 빈 화면 = 제목 · 예시 단추 3(P2-mock 글 그대로 · 44px 이상)
+        ex = pg.evaluate("""() => ({ title: document.querySelector('.cv-empty .cv-empty-title')?.textContent ?? null,
+            btns: [...document.querySelectorAll('.cv-empty .cv-ex-btn')].map((b) => [b.textContent, Math.round(b.getBoundingClientRect().height)]) })""")
+        check(ex["title"] == "마스터에게 맡길 일을 적어 주세요" and [b[0] for b in ex["btns"]] == ["교회 추수감사 행사 안내 페이지 만들어 줘", "이번 주 주보 PDF 정리해 줘", "다음 달 교사 모임 일정을 표로 만들어 줘"] and all(b[1] >= 44 for b in ex["btns"]), f"빈 화면 = 제목 · 예시 단추 3 · 44px 이상 {ex}")
         st = pg.evaluate("""() => ({ host: document.getElementById('view-host').hidden, body: getComputedStyle(document.getElementById('body-row')).display,
             view: JSON.parse(localStorage.getItem('cys-view') || 'null'), mins: ['confirms', 'lastSendStep', 'masterHealth', 'errors'].map((k) => !!document.querySelector(`#view-host [data-min=${k}]`)),
             health: document.querySelector('[data-min=masterHealth]')?.textContent, focus: document.activeElement?.className })""")
@@ -151,7 +155,7 @@ def main() -> int:
             C.file.push({ uuid: 'u1', parent: 'p0', role: 'user', text: '안녕', ts: t }, { uuid: 'a1', parent: 'u1', role: 'assistant', text: '네, 듣고 있어요', ts: t }); C.master.idle_secs = 0; }""")
         pg.clock.run_for(1_100)
         check(last_step(pg) in ("전달됨", "답하는 중"), f"전문 일치 → 전달됨/답하는 중 ({last_step(pg)})")
-        mtxt = pg.evaluate("() => [...document.querySelectorAll('.cv-master .cv-text')].map((e) => e.textContent)")
+        mtxt = pg.evaluate("() => [...document.querySelectorAll('.cv-master .cv-md')].map((e) => e.textContent)")
         check(mtxt == ["네, 듣고 있어요"], f"마스터 답 말풍선 {mtxt}")
         pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
         pg.clock.run_for(3_100)
@@ -168,6 +172,24 @@ def main() -> int:
         p2 = ph()
         check(p0 is not None and p0["dis"] is False and p0["exp"] == "false" and p1["exp"] == "true" and p1["steps"] > 0 and p2["exp"] == "false" and p2["steps"] == 0 and writes(pg) == w0,
               f"진행 줄 머리 = 펼침 전용(과정 있는 말 · 누름 → 펼침 · 다시 → 접힘 · 쓰기 0) ({p0} → {p1} → {p2} · 쓰기 {w0}→{writes(pg)})")
+        # (TICKET=cysr-1119-s4 · CH-D · V4c) 끝난 말 · 글 답만(도구 0) · 걸린 시간 3초 미만 → 요약 조각 없음 · 경과 없음 = 「과정 보기」(펼침 단추 자리) · 옛 「과정 N단계」 0
+        ptxt = pg.evaluate("() => document.querySelector('.cv-me .cv-prog-text')?.textContent ?? null")
+        check(ptxt == "과정 보기", f"진행 줄 글 = 과정 보기(글 단계는 요약 글에 안 보임 · 3초 미만 경과 없음) ({ptxt})")
+        # (TICKET=cysr-1119-s4 · V4) 대화 화면 18px 미만 0 — 펼친 과정 목록까지 포함해 .cv 안 글 있는 요소 전부 getComputedStyle 측정
+        pg.click(".cv-me button.cv-prog-head")
+        pg.clock.run_for(50)
+        small = pg.evaluate("""() => { const out = []; let n = 0;
+            for (const e of [document.querySelector('.cv'), ...document.querySelectorAll('.cv *')]) {
+              if (!e || e.getClientRects().length === 0) continue;
+              const own = [...e.childNodes].some((c) => c.nodeType === 3 && c.textContent.trim() !== '') || e.matches('input, textarea, button');
+              if (!own) continue; n += 1;
+              const px = parseFloat(getComputedStyle(e).fontSize); if (px < 18) out.push(`${e.tagName.toLowerCase()}.${[...e.classList].join('.')} ${px}px`);
+            }
+            return { n, out, prog: parseFloat(getComputedStyle(document.querySelector('.cv-prog')).fontSize), items: document.querySelectorAll('.cv-me .cv-steps li').length }; }""")
+        pg.click(".cv-me button.cv-prog-head")
+        pg.clock.run_for(50)
+        check(small["n"] > 10 and small["items"] > 0 and small["prog"] == 18 and small["out"] == [],
+              f"대화 화면 18px 미만 0(글 있는 요소 {small['n']} · 펼친 단계 {small['items']} · 진행 줄 {small['prog']}px · 미만 {small['out']})")
 
         print("== C 문턱 → 쓰기 0 · 붙잡음")
         pg.evaluate("() => { window.__CHAT.approvals = [1]; }")
@@ -231,8 +253,13 @@ def main() -> int:
         # (integ-1120 · s2 × s79 의미 충돌) 작업 화면으로 돌아온 순간 s2 의 onWorkShown → render() 가 좌석을 한 번 맞춘다(resize_surface · 크기 그대로 · 좌석당 1회).
         #   그 한 바퀴 때문에 주기 맞춤의 위상이 밀려 30초 창에 한 바퀴가 더 든다 → 허용 폭 = 「전환 순간 한 바퀴 = 그려진 좌석 수」 만큼만(그 밖 증가는 그대로 붉음).
         n_panes = pg.evaluate("() => document.querySelectorAll('.pane').length")
-        bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript") and not (k == "resize_surface" and v <= n_panes)}
-        check(not bad_kinds and all(v <= 11 for v in extra.values()), f"★작업 화면 30초 = 모든 invoke 종류 대조(기준 창 뺌) · 허용 3종 밖 증가 0(resize_surface = 전환 순간 좌석 {n_panes} 한 바퀴까지) · 종류마다 ≤ 11 {dict((k, v) for k, v in extra.items() if v)} · 밖 {bad_kinds}")
+        # (1.1.19 · S10b AG5 · DESIGN §8-3 D-11 · TICKET=fix-1119-e2e-red3) 작업 화면 첫 진입 = 「자동 보고」 안내 확인 1회(counsel_auto_status · 화면마다 실행당 1회 · main.ts noteViewEntryForReportNotice).
+        #   이 실행에서 작업 화면이 처음 보이는 순간이 이 창 안이므로 기대 = **정확히 1**(0 = 계기 빠짐 · 2↑ = 진입 한 번에 여러 번 확인 · 둘 다 붉음).
+        #   ⚠ 이 창은 기준 창(대화 화면 켜기 전 30초)을 빼고 세므로 주기 호출(반복 타이머)은 여기서 안 보인다 — 반복 타이머 0 = counselwiring.test.ts 「D-11」 몫.
+        counsel_n = extra.get("counsel_auto_status", 0)
+        bad_kinds = {k: v for k, v in extra.items() if v > 0 and k not in ("feed_list", "org_status", "chat_transcript", "counsel_auto_status") and not (k == "resize_surface" and v <= n_panes)}
+        check(not bad_kinds and all(v <= 11 for v in extra.values()), f"★작업 화면 30초 = 모든 invoke 종류 대조(기준 창 뺌) · 허용 3종 밖 증가 0(resize_surface = 전환 순간 좌석 {n_panes} 한 바퀴까지 · counsel_auto_status = 아래 줄) · 종류마다 ≤ 11 {dict((k, v) for k, v in extra.items() if v)} · 밖 {bad_kinds}")
+        check(counsel_n == 1, f"작업 화면 첫 진입 = 안내 확인 counsel_auto_status 정확히 1(D-11 · 화면마다 실행당 1회) ({counsel_n})")
         org_views = pg.evaluate("() => window.__CHAT.org ?? 0") - org0 - org_base
         check(org_views <= 11, f"작업 화면 30초 org_status(공통층 몫 = 전체 − 기준 창) ≤ 11 ({org_views})")
         c1 = pg.evaluate("() => window.__CHAT.calls.length")
@@ -420,7 +447,7 @@ def main() -> int:
           C.file.push({{ uuid: 'j4', parent: 'j3', role: 'assistant', text: '고리 답', ts }});
           C.file.push({{ uuid: 'j5', parent: 'nowhere', role: 'assistant', text: '떠돌이 답', ts: new Date({t_mid}).toISOString() }}); }}""")
         pg.clock.run_for(8_000)
-        order = pg.evaluate("() => [...document.querySelectorAll('.cv-log > li')].map((li) => li.querySelector('.cv-text')?.textContent ?? '')")
+        order = pg.evaluate("() => [...document.querySelectorAll('.cv-log > li')].map((li) => li.querySelector('.cv-text, .cv-md')?.textContent ?? '')")
         b2 = bubble(pg, 2)
         check(b2["step"] in ("전달됨", "답하는 중", "답함") and order.index("고리 답") == order.index("고리 말") + 1, f"감싼 기록 + 고리 → 그 말에 답이 붙음 ({b2['step']} · {order})")
         check(order.index("떠돌이 답") < order.index("고리 말"), f"안 묶인 답 = 시각순(뒤 말 앞) ({order})")

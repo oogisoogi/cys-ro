@@ -30,6 +30,11 @@ import {
   WAKE_TEXT,
   WAKE_TIMEOUT_MS,
   wokeUp,
+  AUTH_RULES,
+  LIMIT_LOGIN_BANDS,
+  pickStall,
+  usageLimit,
+  type LimitRead,
   type DeadAxis,
   type Denial,
   type ReviveBand,
@@ -87,6 +92,9 @@ export class ReviveBook {
   private org: unknown = undefined;
   private dead: { sid: number; axis: DeadAxis } | null = null;
   private idle: { sid: number; at: number } | null = null;
+  /** (BA1) 마지막 로그인 룰 사건 · rate_limited 사건(본부 · 좌석 번호 · 받은 시각) */
+  private login: { sid: number; rule: string; at: number } | null = null;
+  private rateHit: { sid: number; at: number } | null = null;
   private neverSince: number | null = null;
   /** 지금 이어지는 빈 좌석 증거 종류 — 바뀌면 90초를 새로 센다(codex 2R M5) */
   private emptyKind: "never" | "vacant" | null = null;
@@ -192,6 +200,15 @@ export class ReviveBook {
         if ((role ?? "master") !== "master" || sid === null) return;
         this.idle = { sid, at: this.d.now() };
         break;
+      case "health.alert": {
+        // (BA1) 로그인 룰 4종 · rate_limited — 그 좌석·받은 시각만 기억(판정 = judge pickStall · 창 300초)
+        const rule = typeof p.rule === "string" ? p.rule : null;
+        if (sid === null || rule === null) return;
+        if (AUTH_RULES.includes(rule)) this.login = { sid, rule, at: this.d.now() };
+        else if (rule === "rate_limited") this.rateHit = { sid, at: this.d.now() };
+        else return;
+        break;
+      }
       case "role.claim_denied":
         if (role !== "master" || p.path !== "surface.create") return;
         this.lastDenial = { at: this.d.now(), ev: { seat_blocked: p.seat_blocked, takeover_cancelled: p.takeover_cancelled, seat_human_recent: p.seat_human_recent } };
@@ -233,8 +250,22 @@ export class ReviveBook {
       neverSince: this.neverSince,
       seenSame: this.sameSeen,
       idle: this.idle,
+      stall: this.stall(),
       now: this.d.now(),
     });
+  }
+
+  /** (BA1) 지금 마스터 좌석의 멈춘 까닭 — 한도 = org.status 마스터 행 usage(새 조회 0) · 로그인·rate_limited = 그 좌석 사건. */
+  private stall(): ReturnType<typeof pickStall> {
+    const m = this.master;
+    if (!LIMIT_LOGIN_BANDS || !m) return null;
+    const now = this.d.now();
+    const rows = (this.org as { surfaces?: unknown } | null | undefined)?.surfaces;
+    const r = Array.isArray(rows) ? (rows.find((x) => !!x && typeof x === "object" && (x as { surface_id?: unknown }).surface_id === m.surface_id) as { usage?: unknown } | undefined) : undefined;
+    const lim: LimitRead = usageLimit(r?.usage, now);
+    const login = this.login && this.login.sid === m.surface_id ? this.login : null;
+    const rate = this.rateHit && this.rateHit.sid === m.surface_id ? this.rateHit.at : null;
+    return pickStall(login, lim, rate, now);
   }
 
   view(): ReviveView {
@@ -457,6 +488,8 @@ export class ReviveBook {
 
   toWork(): void {
     this.d.goView?.("work");
+    const sit = this.situation();
+    if (sit.kind === "login") this.d.focusSeat?.(sit.sid); // (BA1) 로그인 띠 = 그 마스터 창으로
   }
 
   /** 관문 띠 「작업 화면에서 답하기」 — 전환 + 마스터 창 포커스 + 작업 화면 위 안내. */

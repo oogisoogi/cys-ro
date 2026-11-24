@@ -1,0 +1,22 @@
+[
+ "큰 제목중간 제목작은 제목#### 넷째는 글 그대로\n#붙은 샵은 글",
+ "첫 줄\n둘째 줄새 문단입니다",
+ "굵게 와 기울임 과 밑줄 굵게 와 밑줄 기울임 · snake_case_name 그대로 · 2 * 3 * 4 = 24 · a b c",
+ "npm install 과 a`b 그리고 닫히지 않은 `백틱 하나",
+ "const a = '<b>x</b>';\n**굵게 아님** [링크 아님](https://example.invalid)뒤 문단",
+ "앞 문단코드 1\n코드 2",
+ "하나둘 굵게들여쓴 셋더 깊은 넷별 다섯더하기 여섯\n이어진 줄",
+ "1. 첫째2. 둘째10) 열째",
+ "이름값a1b2 | 3",
+ "| a | b |\n| c | d |",
+ "ab1234뒤 글",
+ "결과다음과 같습니다:파일 a.ts 고침시험 3개항목수통과10cargo test끝.",
+ "<script>window.__pwn = 1</script>\n<script src=\"https://example.invalid/x.js\"></script>",
+ "<img src=x onerror=\"window.__pwn=1\"> 와 <svg onload=\"window.__pwn=1\"></svg> 와 <div onclick=\"window.__pwn=1\">눌러</div>",
+ "눌러 보세요 (javascript:window.__pwn=1) 와 대문자 (JaVaScRiPt:alert(1)) 와 vb (vbscript:msgbox(1))",
+ "데이터 (data:text/html;base64,PHNjcmlwdD4=) 와 ![그림](https://example.invalid/a.png) 와 ![d](data:image/svg+xml,<svg onload=alert(1)>)",
+ "문서 (https://example.invalid/docs?a=1&b=(2)) 와 <https://example.invalid/auto> 와 맨 주소 https://example.invalid/bare",
+ "<a href=\"https://example.invalid\" onclick=\"window.__pwn=1\">링크</a>\n<style>body{display:none}</style><iframe src=\"https://example.invalid\"></iframe>",
+ "> 인용 줄\n---\n***\n> 굵게는 그림",
+ "\\*별표 그대로\\* &lt;b&gt; &amp; D:\\work\\a.txt"
+]

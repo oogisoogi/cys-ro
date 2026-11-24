@@ -24,8 +24,8 @@ describe("ⓐ 표시명 cysr", () => {
     expect(html).toContain('<span id="brand">cysr</span>');
   });
 
-  it("Control Center 아래쪽 안내가 cysr 로 시작한다", () => {
-    expect(main).toContain("`cysr Control Center · v${");
+  // ★(1.1.19 · cysr-1119-s10b MD-CC) 아래쪽 안내(「cysr Control Center · v…」)는 대시보드 조회(Live)와 함께 빠졌다 — 옛 이름이 되살아나지 않는지만 본다.
+  it("Control Center 아래쪽 안내에 옛 이름(cys Control Center)이 없다", () => {
     expect(main).not.toContain("`cys Control Center · v${");
   });
 
@@ -56,15 +56,6 @@ describe("ⓔ Control Center 헤더 경보 배지 제거", () => {
     expect(main).not.toContain("cc-alertbadge");
     expect(main).not.toContain("cc-alert-badge");
     expect(css).not.toContain(".cc-alert-badge");
-  });
-
-  it("경보가 여러 개여도 렌더 함수는 스트립만 채운다", () => {
-    const start = main.indexOf("function renderAlerts(");
-    expect(start).toBeGreaterThan(-1);
-    const body = main.slice(start, main.indexOf("\n}\n", start));
-    expect(body).toContain('getElementById("cc-alerts")');
-    expect(body).not.toContain("badge");
-    expect(body).not.toContain(".length}");
   });
 
   it("승인 대기 배지·경보 스트립 스타일은 남아 있다 · (1.1.8 U4 · 설계 §5-2) 업데이트 배지·단추는 없다", () => {

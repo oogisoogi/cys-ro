@@ -514,6 +514,49 @@ pub(crate) fn strip_verbatim(p: &str) -> String {
     p.strip_prefix(r"\\?\").unwrap_or(p).to_owned()
 }
 
+/// (1.1.19 · TICKET=cysr-1119-s3 · CH-C) 좌석에 결속된 세션 기록을 찾아 연다 — `chat_transcript` 본문에서 그대로 옮긴 몫(데몬 RPC 2 ·
+/// `transcript_candidates` · `open_bound` · 다른 프로젝트 폴더 뒤지지 않음). `Ok(Err(v))` = 화면에 그대로 돌려줄 「모름」 응답(꼴 = 1.1.18 과 같음).
+/// `chat_transcript_watch` 가 같은 함수로 연다(허용 경로 규칙 한 벌 · P3 v4 §3-7 C-1).
+async fn bound_transcript(sock: &std::path::Path, surface_id: u64) -> Result<Result<(String, std::path::PathBuf, std::fs::File), Value>, String> {
+    let list = rpc_on(sock, "surface.list", json!({})).await?;
+    let org = rpc_on(sock, "org.status", json!({})).await?;
+    let Some(lrow) = row_of(&list, surface_id) else {
+        return Ok(Err(json!({"status": "unknown", "why": "no_seat"})));
+    };
+    let sid = row_of(&org, surface_id).and_then(|r| r["registered_session_id"].as_str()).map(str::to_owned);
+    // ★1.1.16(S3-2): cwd 를 실제 경로로 푼 값도 후보로(transcript_candidates 머리 주석) — 같은 세션 id 의 다른 프로젝트 폴더는 여전히 뒤지지 않는다.
+    let canonical = lrow["cwd"].as_str().and_then(|c| std::fs::canonicalize(c).ok()).and_then(|p| p.to_str().map(str::to_owned));
+    // (TICKET=cysr-1118-ui ①-4) 윈도 canonicalize 는 `\\?\` 접두(확장 길이 경로)를 붙인다 — Claude Code 는 보통 경로로 슬러그를 만드므로 접두를 걷은 값으로 후보를 만든다.
+    let canonical = canonical.map(|c| strip_verbatim(&c));
+    let paths = match transcript_candidates(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref(), canonical.as_deref()) {
+        Ok(p) => p,
+        Err(why) => return Ok(Err(json!({"status": "unknown", "why": why}))),
+    };
+    let sid = sid.unwrap_or_default();
+    // 다른 프로젝트 폴더는 뒤지지 않는다(codex 1R major — 같은 이름 파일이 다른 cwd 의 기록일 수 있음). 링크를 풀어 설정 폴더 안인지 확인.
+    let cfg = lrow["claude_config_dir"].as_str().unwrap_or_default();
+    let mut opened = Err("not_found");
+    for p in &paths {
+        opened = open_bound(std::path::Path::new(cfg), p).map(|f| (p.clone(), f));
+        if opened.is_ok() {
+            break;
+        }
+    }
+    Ok(match opened {
+        Ok((path, file)) => Ok((sid, path, file)),
+        Err(why) => Err(json!({"status": "unknown", "why": refine_open_why(why, &paths), "session_id": sid})),
+    })
+}
+
+/// (1.1.19 · TICKET=cysr-1119-s3 · 검증 V1) 「파일 없음」 = 후보 경로가 **정말 하나도 없을 때만**(윈 `status_reason` 은 모르는 오류도 no_file 로 접는다) —
+/// 있는데 못 연 것은 `open_failed`. 화면은 「결속 세션 있음 · 파일 아직 없음(첫 입력 때 생김)」 일 때만 새 파일을 0 에서 읽는다(있던 파일을 처음부터 다시 읽지 않게).
+pub(crate) fn refine_open_why(why: &'static str, paths: &[std::path::PathBuf]) -> &'static str {
+    if why == "no_file" && paths.iter().any(|p| std::fs::symlink_metadata(p).is_ok()) {
+        return "open_failed";
+    }
+    why
+}
+
 /// `chat_transcript` — 좌석에 결속된 세션 기록을 `after_offset` 부터 읽는다(`from_end` = 읽지 않고 끝 오프셋만).
 /// 꼴: `{status:"ok", session_id, next_offset, size, records[], bad_lines, reset}` · 못 읽으면 `{status:"unknown", why}`(화면 = 「전달 확인 중」).
 #[tauri::command]
@@ -525,33 +568,10 @@ pub async fn chat_transcript(socket: Option<String>, surface_id: u64, after_offs
         return Ok(json!({"status": "unknown", "why": "unsupported_platform"}));
     }
     let sock = resolve_socket(&socket);
-    let list = rpc_on(&sock, "surface.list", json!({})).await?;
-    let org = rpc_on(&sock, "org.status", json!({})).await?;
-    let Some(lrow) = row_of(&list, surface_id) else {
-        return Ok(json!({"status": "unknown", "why": "no_seat"}));
-    };
-    let sid = row_of(&org, surface_id).and_then(|r| r["registered_session_id"].as_str()).map(str::to_owned);
-    // ★1.1.16(S3-2): cwd 를 실제 경로로 푼 값도 후보로(transcript_candidates 머리 주석) — 같은 세션 id 의 다른 프로젝트 폴더는 여전히 뒤지지 않는다.
-    let canonical = lrow["cwd"].as_str().and_then(|c| std::fs::canonicalize(c).ok()).and_then(|p| p.to_str().map(str::to_owned));
-    // (TICKET=cysr-1118-ui ①-4) 윈도 canonicalize 는 `\\?\` 접두(확장 길이 경로)를 붙인다 — Claude Code 는 보통 경로로 슬러그를 만드므로 접두를 걷은 값으로 후보를 만든다.
-    let canonical = canonical.map(|c| strip_verbatim(&c));
-    let paths = match transcript_candidates(lrow["claude_config_dir"].as_str(), lrow["cwd"].as_str(), sid.as_deref(), canonical.as_deref()) {
-        Ok(p) => p,
-        Err(why) => return Ok(json!({"status": "unknown", "why": why})),
-    };
-    let sid = sid.unwrap_or_default();
-    // 다른 프로젝트 폴더는 뒤지지 않는다(codex 1R major — 같은 이름 파일이 다른 cwd 의 기록일 수 있음). 링크를 풀어 설정 폴더 안인지 확인.
-    let cfg = lrow["claude_config_dir"].as_str().unwrap_or_default();
-    let mut opened = Err("not_found");
-    for p in &paths {
-        opened = open_bound(std::path::Path::new(cfg), p);
-        if opened.is_ok() {
-            break;
-        }
-    }
-    let file = match opened {
-        Ok(f) => f,
-        Err(why) => return Ok(json!({"status": "unknown", "why": why, "session_id": sid})),
+    // (1.1.19 · TICKET=cysr-1119-s3) 경로 찾기·열기 = [`bound_transcript`] 한 곳(watch 와 같은 함수 · 이 명령의 동작·응답 꼴은 그대로).
+    let (sid, file) = match bound_transcript(&sock, surface_id).await? {
+        Ok((sid, _path, file)) => (sid, file),
+        Err(v) => return Ok(v),
     };
     if from_end.unwrap_or(false) {
         // 대화 화면을 처음 띄울 때 — 지난 기록을 다 읽지 않고 끝에서 시작한다(이후 새 바이트만).
@@ -645,6 +665,246 @@ pub(crate) fn next_newline_after(mut f: &std::fs::File, from: u64, size: u64) ->
         pos += n as u64;
     }
     Ok(None)
+}
+
+// ---------- (1.1.19 · TICKET=cysr-1119-s3 · CH-C) 기록 바뀌면 곧 보이기 — watch · tail · 되돌리기 환경 변수 ----------
+//
+// 설계 정본 = P3 v4 §3-7 C-1·C-2 · 카드 C · 통합 설계 DESIGN §3-2 F06 · §3-3 F10 · 카드 E ①(master#ca4edc8b).
+// - watch = 결속 파일을 **한 번** 열어(`bound_transcript` · 데몬 RPC 2 는 걸 때 1회) 핸들을 쥐고, 0.25초마다 **경로 stat**(F10 — 쥔 핸들 fstat 이 아님:
+//   같은 경로가 지워지고 다시 만들어지면 쥔 핸들은 옛 파일을 가리켜 바뀜을 못 본다) → 길이 늘어남 = 사건 · 줄어듦/식별 바뀜 = reset 사건.
+// - tail = 쥔 핸들에서 **RPC 없이** 이어 읽기(`read_transcript_from` 재사용) · 응답에 `from_offset`·`to_offset`(화면 읽기 길 하나의 대조 재료 · F06).
+// - 상태 = 이 모듈 정적 값(마스터 결속 파일 1개 · P3 §3-8) — `main.rs` 에는 명령 이름만(PLAN §2 S3 · HANDOFF 어긋남 ①).
+
+/// watch 박자(ms · P3 v4 §3-7 C-1 「0.25초」).
+pub(crate) const WATCH_TICK_MS: u64 = 250;
+/// watch 사건 이름 — 화면(core.ts)이 `listenApp` 으로 대화 화면이 켜진 동안만 받는다.
+pub(crate) const CHAT_TRANSCRIPT_CHANGED: &str = "chat-transcript-changed";
+/// 되돌리기 환경 변수(P3 v4 §5-2 · DESIGN §3-1 · 저장 키 없음 = F38).
+pub(crate) const CHAT_COMPAT_ENV: &str = "CYS_CHAT_COMPAT_1118";
+
+/// 경로 stat 한 번(또는 쥔 핸들 stat)의 결과 — `ident` = 유닉스 (장치, inode) · 윈 (만든 시각 100ns, 0).
+/// ⚠윈: 안정판 Rust 에 파일 번호가 없어 만든 시각을 쓴다 — 같은 이름을 지우고 15초 안에 다시 만들면 OS 가 만든 시각을 물려준다(파일 터널링)
+///   → 그 재생성은 식별로 못 잡고 **줄어듦으로만** 잡는다(HANDOFF 「알고 남긴 것」 ② · 시험 `t_u5_same_len_recreate_within_15s_verdicts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PathStat {
+    pub(crate) len: u64,
+    pub(crate) ident: (u64, u64),
+}
+
+/// 정규 파일이 아닌 것(링크로 바뀜 등)의 식별 — 어떤 실제 파일과도 같지 않게 두어 reset 으로 간다(다시 열기 = `open_bound` 가 거부).
+const NOT_A_FILE: (u64, u64) = (u64::MAX, u64::MAX);
+
+#[cfg(unix)]
+fn ident_of(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (m.dev(), m.ino())
+}
+#[cfg(windows)]
+fn ident_of(m: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    (m.creation_time(), 0)
+}
+#[cfg(not(any(unix, windows)))]
+fn ident_of(_m: &std::fs::Metadata) -> (u64, u64) {
+    NOT_A_FILE
+}
+
+/// 경로 stat(F10) — 링크를 따르지 않는다(`symlink_metadata`). 실패 = None(다음 박자) · 정규 파일 아님 = [`NOT_A_FILE`].
+pub(crate) fn path_stat(p: &std::path::Path) -> Option<PathStat> {
+    let m = std::fs::symlink_metadata(p).ok()?;
+    if !m.is_file() {
+        return Some(PathStat { len: 0, ident: NOT_A_FILE });
+    }
+    Some(PathStat { len: m.len(), ident: ident_of(&m) })
+}
+
+/// 쥔 핸들 stat — 걸 때 「경로 = 연 파일」 확인과 tail 의 식별 대조 기준값에만 쓴다(박자마다의 바뀜 판정에는 쓰지 않는다 · F10).
+pub(crate) fn handle_stat(f: &std::fs::File) -> Option<PathStat> {
+    let m = f.metadata().ok()?;
+    Some(PathStat { len: m.len(), ident: ident_of(&m) })
+}
+
+/// watch 한 박자의 관측 — **경로** stat(F10). 시험 `f10_recreated_file_is_reset_by_path_stat` 가 이 함수를 부른다(뮤턴트 = 쥔 핸들 stat → 붉음).
+pub(crate) fn watch_probe(path: &std::path::Path, _held: &std::fs::File) -> Option<PathStat> {
+    path_stat(path)
+}
+
+/// watch 사건 — 늘어남(size) · reset(size = 지금 길이).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WatchEvent {
+    Grew(u64),
+    Reset(u64),
+}
+
+/// watch 상태기계(순수 · T-U5) — stat 실패 = 그대로(다음 박자) · 식별 바뀜 ∨ 줄어듦 = reset · 늘어남 = 사건 · 같음 = 0.
+pub(crate) fn watch_step(prev: PathStat, now: Option<PathStat>) -> (PathStat, Option<WatchEvent>) {
+    let Some(n) = now else { return (prev, None) };
+    if n.ident != prev.ident || n.len < prev.len {
+        return (n, Some(WatchEvent::Reset(n.len)));
+    }
+    if n.len > prev.len {
+        return (n, Some(WatchEvent::Grew(n.len)));
+    }
+    (n, None)
+}
+
+/// 쥔 결속 파일(시험 가능한 몫 — 작업 손잡이는 [`Watched`]).
+pub(crate) struct WatchedFile {
+    pub(crate) surface_id: u64,
+    pub(crate) session_id: String,
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) file: std::fs::File,
+    /// 걸 때 쥔 핸들의 식별 — tail 이 경로 식별과 대조(다르면 옛 파일 = reset).
+    pub(crate) ident: (u64, u64),
+    pub(crate) gen: u64,
+}
+
+struct Watched {
+    f: WatchedFile,
+    task: tauri::async_runtime::JoinHandle<()>,
+}
+
+static CHAT_WATCH: std::sync::Mutex<Option<Watched>> = std::sync::Mutex::new(None);
+/// 마지막으로 시작된 watch/unwatch 의 세대 — 늦게 끝난 옛 watch(데몬 RPC 를 기다린 사이 unwatch·새 watch 가 옴)는 걸지 않는다.
+static WATCH_LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn watch_lock() -> std::sync::MutexGuard<'static, Option<Watched>> {
+    CHAT_WATCH.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// tail 본체(파일 IO · RPC 0) — 경로 식별이 쥔 핸들과 다르면 옛 파일을 읽지 않고 `reset:true` · 아니면 쥔 핸들에서 `after_offset` 부터.
+/// 응답 = `read_transcript_from` 꼴 + `session_id` · `from_offset`(실제 읽기 시작 · 파일이 줄었으면 0) · `to_offset`(= next_offset).
+pub(crate) fn tail_on(w: &WatchedFile, after_offset: u64) -> Result<Value, String> {
+    if matches!(path_stat(&w.path), Some(s) if s.ident != w.ident) {
+        return Ok(json!({
+            "status": "ok", "session_id": w.session_id, "next_offset": 0, "size": 0, "records": [], "bad_lines": 0,
+            "reset": true, "skipped_bytes": 0, "long_line_open": false, "from_offset": 0, "to_offset": 0,
+        }));
+    }
+    let f = w.file.try_clone().map_err(|e| e.to_string())?;
+    let mut v = read_transcript_from(f, after_offset)?;
+    let from = if v["reset"] == json!(true) { 0 } else { after_offset };
+    let size = v["size"].as_u64().unwrap_or(0);
+    v["from_offset"] = json!(from);
+    v["to_offset"] = v["next_offset"].clone();
+    // 읽기 상한(TRANSCRIPT_READ_MAX)에 걸려 남은 몫이 있는가 — 화면은 이때만 이어 읽는다(끝의 미완 줄은 「더」가 아님)
+    v["more"] = json!(size.saturating_sub(from) > TRANSCRIPT_READ_MAX);
+    v["session_id"] = json!(w.session_id);
+    Ok(v)
+}
+
+/// (검증 V4) unwatch 가 지금 쥔 watch 를 내려도 되는가(순수) — 세대를 준 unwatch 는 그 세대만(늦게 처리돼도 더 새 watch 를 안 내림) · 세대 없음 = 무엇이든.
+pub(crate) fn unwatch_hits(current_gen: Option<u64>, req_gen: Option<u64>) -> bool {
+    match (current_gen, req_gen) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(c), Some(r)) => c == r,
+    }
+}
+
+/// 쥔 watch 를 끝낸다(작업 abort · 핸들 닫음) — 내렸으면 true. `gen` = [`unwatch_hits`].
+fn stop_watch(gen: Option<u64>) -> bool {
+    let mut g = watch_lock();
+    if !unwatch_hits(g.as_ref().map(|w| w.f.gen), gen) {
+        return false;
+    }
+    match g.take() {
+        Some(w) => {
+            w.task.abort();
+            true
+        }
+        None => false,
+    }
+}
+
+/// `chat_transcript_watch` — 화면이 3초 조회로 받은 결속(`registered_session_id`)으로 마스터 결속 파일을 한 번 열어 쥐고 0.25초 경로 stat 를 시작한다.
+/// 꼴: `{status:"ok", session_id, size, gen}` · 못 걸면 `{status:"unknown", why}`(화면 = 1.1.18 읽기 길 그대로).
+#[tauri::command]
+pub async fn chat_transcript_watch(app: tauri::AppHandle, socket: Option<String>, surface_id: u64, session_id: String) -> Result<Value, String> {
+    use std::sync::atomic::Ordering;
+    let gen = WATCH_LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    if !transcript_supported() {
+        return Ok(json!({"status": "unknown", "why": "unsupported_platform"}));
+    }
+    if !session_id_ok(&session_id) {
+        return Ok(json!({"status": "unknown", "why": "bad_session_id"}));
+    }
+    let sock = resolve_socket(&socket);
+    let (sid, path, file) = match bound_transcript(&sock, surface_id).await? {
+        Ok(x) => x,
+        Err(v) => return Ok(v),
+    };
+    if sid != session_id {
+        return Ok(json!({"status": "unknown", "why": "session_mismatch", "session_id": sid}));
+    }
+    let Some(start) = handle_stat(&file) else {
+        return Ok(json!({"status": "unknown", "why": "stat_failed"}));
+    };
+    if path_stat(&path).map(|s| s.ident) != Some(start.ident) {
+        return Ok(json!({"status": "unknown", "why": "path_changed"})); // 연 사이 경로가 다른 파일이 됨
+    }
+    let mut g = watch_lock();
+    if WATCH_LATEST.load(Ordering::SeqCst) != gen {
+        return Ok(json!({"status": "unknown", "why": "superseded"}));
+    }
+    if let Some(old) = g.take() {
+        old.task.abort();
+    }
+    let probe_path = path.clone();
+    let probe_file = file.try_clone().map_err(|e| e.to_string())?;
+    let sid_ev = sid.clone();
+    // 한 박자를 끝낸 **뒤** 다음 박자를 잰다(sleep · interval 아님 = 밀린 박자가 몰려 돌지 않음 · 겹침 0).
+    let task = tauri::async_runtime::spawn(async move {
+        let mut prev = start;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(WATCH_TICK_MS)).await;
+            let (next, ev) = watch_step(prev, watch_probe(&probe_path, &probe_file));
+            prev = next;
+            let payload = match ev {
+                Some(WatchEvent::Grew(size)) => json!({"surface_id": surface_id, "session_id": sid_ev, "gen": gen, "size": size, "reset": false}),
+                Some(WatchEvent::Reset(size)) => json!({"surface_id": surface_id, "session_id": sid_ev, "gen": gen, "size": size, "reset": true}),
+                None => continue,
+            };
+            let _ = tauri::Emitter::emit(&app, CHAT_TRANSCRIPT_CHANGED, payload);
+        }
+    });
+    *g = Some(Watched { f: WatchedFile { surface_id, session_id: sid.clone(), path, file, ident: start.ident, gen }, task });
+    Ok(json!({"status": "ok", "session_id": sid, "size": start.len, "gen": gen}))
+}
+
+/// `chat_transcript_unwatch` — 대화 화면이 내려감 · 결속 바뀜 · 되돌리기. `gen` 을 주면 그 watch 만(검증 V4 · 늦게 처리돼도 더 새 watch 를 안 내림) ·
+/// 주지 않으면(거는 중에 끊음) 늦게 끝날 watch 도 걸리지 않게 세대를 올리고 무엇이든 내린다.
+#[tauri::command]
+pub async fn chat_transcript_unwatch(gen: Option<u64>) -> Result<Value, String> {
+    if gen.is_none() {
+        WATCH_LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    Ok(json!({"status": "ok", "was": stop_watch(gen)}))
+}
+
+/// `chat_transcript_tail` — 쥔 결속 파일을 `after_offset` 부터(데몬 RPC 0). 쥔 것이 없거나 다른 좌석이면 `{status:"unknown", why:"not_watching"}`.
+#[tauri::command]
+pub async fn chat_transcript_tail(surface_id: u64, after_offset: u64) -> Result<Value, String> {
+    let g = watch_lock();
+    match g.as_ref() {
+        Some(w) if w.f.surface_id == surface_id => tail_on(&w.f, after_offset).map(|mut v| {
+            v["gen"] = json!(w.f.gen);
+            v
+        }),
+        _ => Ok(json!({"status": "unknown", "why": "not_watching"})),
+    }
+}
+
+/// 되돌리기 값 판정(순수) — 정확히 `"1"` 만 켬.
+pub(crate) fn compat_env_on(v: Option<&str>) -> bool {
+    v == Some("1")
+}
+
+/// `chat_compat_env` — 앱 시작 뒤 처음 읽은 `CYS_CHAT_COMPAT_1118` 값(켬 = C·D 를 1.1.18 꼴로 · P3 v4 §5-2 · 카드 E ①).
+#[tauri::command]
+pub fn chat_compat_env() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| compat_env_on(std::env::var(CHAT_COMPAT_ENV).ok().as_deref()))
 }
 
 // ---------- (s79 · TICKET=cysr-1116-s79-1119 · 조각 7) 결과 열기·폴더 보기 ----------
@@ -1910,5 +2170,226 @@ mod stream_owner_tests {
         assert!(ends_with_lag_marker(&t));
         t.push(b'x');
         assert!(!ends_with_lag_marker(&t));
+    }
+}
+
+/// (1.1.19 · TICKET=cysr-1119-s3 · CH-C) watch · tail · 되돌리기 — T-U5 · F10 · F06(Rust 몫) · 카드 C 「tail = RPC 0」 · 카드 E ①.
+#[cfg(test)]
+mod chat_watch_tests {
+    use super::*;
+
+    fn st(len: u64, a: u64) -> PathStat {
+        PathStat { len, ident: (1, a) }
+    }
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("vc-cw-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+    const L1: &[u8] = b"{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"content\":\"one\"}}\n";
+    const L2: &[u8] = b"{\"type\":\"assistant\",\"uuid\":\"a2\",\"message\":{\"content\":\"two\"}}\n";
+
+    #[test]
+    fn t_u5_watch_step_state_machine() {
+        // 늘어남 → 사건 1 · 같음 → 0 · 줄어듦 → reset · 식별 바뀜 → reset · stat 실패 → 0(그대로) · 실패 뒤 늘어남 → 사건
+        assert_eq!(watch_step(st(10, 7), Some(st(12, 7))), (st(12, 7), Some(WatchEvent::Grew(12))));
+        assert_eq!(watch_step(st(12, 7), Some(st(12, 7))), (st(12, 7), None));
+        assert_eq!(watch_step(st(12, 7), Some(st(3, 7))), (st(3, 7), Some(WatchEvent::Reset(3))));
+        assert_eq!(watch_step(st(12, 7), Some(st(40, 8))), (st(40, 8), Some(WatchEvent::Reset(40))), "식별이 바뀌면 길어져도 reset");
+        assert_eq!(watch_step(st(12, 7), None), (st(12, 7), None), "stat 실패 = 다음 박자");
+        assert_eq!(watch_step(st(12, 7), Some(st(20, 7))).1, Some(WatchEvent::Grew(20)));
+        // reset 뒤 같은 관측은 다시 reset 을 내지 않는다(새 파일이 기준)
+        let (p, _) = watch_step(st(12, 7), Some(st(3, 8)));
+        assert_eq!(watch_step(p, Some(st(3, 8))).1, None);
+        assert_eq!(WATCH_TICK_MS, 250);
+    }
+
+    #[test]
+    fn t_u5_same_len_recreate_within_15s_verdicts() {
+        // master#5c1d346c: 「같은 길이 · 15초 안 재생성」 지금 판정을 값으로 남긴다(고침 아님 · 기록).
+        // ⑴ 유닉스(이 기계 실파일 · 옛 파일을 쥔 채 = inode 재사용 불가 · watch 도 쥔다) → 잡음
+        let d = tmp("len");
+        let p = d.join("s.jsonl");
+        std::fs::write(&p, L1).unwrap();
+        let held = std::fs::File::open(&p).unwrap();
+        let start = handle_stat(&held).unwrap();
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(&p, L2).unwrap(); // 같은 길이
+        assert_eq!(L1.len(), L2.len());
+        let unix_verdict = match watch_step(start, watch_probe(&p, &held)).1 {
+            Some(WatchEvent::Reset(_)) => "잡음",
+            _ => "못 잡음",
+        };
+        #[cfg(unix)]
+        assert_eq!(unix_verdict, "잡음");
+        let _ = unix_verdict;
+        // ⑵ 윈 꼴(식별 = 만든 시각 · 터널링이 옛 만든 시각을 물려줌 = 식별 같음 · 길이 같음) → 못 잡음(알고 남긴 것 ② · 줄어듦일 때만 잡음)
+        let tunneled = PathStat { len: L1.len() as u64, ident: (133_000_000_000_000_000, 0) };
+        let win_same_len = match watch_step(tunneled, Some(tunneled)).1 {
+            Some(WatchEvent::Reset(_)) => "잡음",
+            _ => "못 잡음",
+        };
+        assert_eq!(win_same_len, "못 잡음");
+        let win_shorter = match watch_step(tunneled, Some(PathStat { len: 5, ..tunneled })).1 {
+            Some(WatchEvent::Reset(_)) => "잡음",
+            _ => "못 잡음",
+        };
+        assert_eq!(win_shorter, "잡음");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn f10_recreated_file_is_reset_by_path_stat() {
+        // F10: 쥔 핸들 fstat 이 아니라 경로 stat — 지우고 더 길게 다시 만들어도 reset(쥔 핸들 stat 은 옛 파일 = 못 봄 → 뮤턴트 붉음)
+        let d = tmp("f10");
+        let p = d.join("s.jsonl");
+        std::fs::write(&p, L1).unwrap();
+        let held = std::fs::File::open(&p).unwrap();
+        let start = handle_stat(&held).unwrap();
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all_compat(L2);
+        let (prev, ev) = watch_step(start, watch_probe(&p, &held));
+        assert_eq!(ev, Some(WatchEvent::Grew((L1.len() + L2.len()) as u64)), "덧붙이기 → 사건 1");
+        assert_eq!(watch_step(prev, watch_probe(&p, &held)).1, None, "같음 → 0");
+        std::fs::remove_file(&p).unwrap();
+        let mut big = L1.to_vec();
+        big.extend_from_slice(L2);
+        big.extend_from_slice(L2);
+        std::fs::write(&p, &big).unwrap();
+        assert!(matches!(watch_step(prev, watch_probe(&p, &held)).1, Some(WatchEvent::Reset(_))), "재생성(더 김) → reset");
+        assert_eq!(watch_step(prev, handle_stat(&held)).1, None, "대조: 쥔 핸들 stat 으로는 재생성이 안 보인다");
+        std::fs::remove_file(&p).unwrap();
+        assert_eq!(watch_step(prev, watch_probe(&p, &held)).1, None, "경로 없음(stat 실패) → 다음 박자");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    trait WriteAllCompat {
+        fn write_all_compat(self, b: &[u8]);
+    }
+    impl WriteAllCompat for std::fs::File {
+        fn write_all_compat(mut self, b: &[u8]) {
+            use std::io::Write;
+            self.write_all(b).unwrap();
+        }
+    }
+
+    #[test]
+    fn tail_reports_from_and_to_offset() {
+        let d = tmp("tail");
+        let p = d.join("s.jsonl");
+        std::fs::write(&p, L1).unwrap();
+        let file = std::fs::File::open(&p).unwrap();
+        let ident = handle_stat(&file).unwrap().ident;
+        let w = WatchedFile { surface_id: 5, session_id: "sess-1".into(), path: p.clone(), file, ident, gen: 1 };
+        let a = tail_on(&w, 0).unwrap();
+        assert_eq!((a["from_offset"].as_u64(), a["to_offset"].as_u64()), (Some(0), Some(L1.len() as u64)));
+        assert_eq!(a["records"][0]["uuid"], "a1");
+        assert_eq!(a["session_id"], "sess-1");
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all_compat(L2);
+        let b = tail_on(&w, L1.len() as u64).unwrap();
+        assert_eq!(b["from_offset"].as_u64(), Some(L1.len() as u64));
+        assert_eq!(b["to_offset"], b["next_offset"]);
+        assert_eq!(b["records"].as_array().map(|r| r.len()), Some(1));
+        assert_eq!(b["records"][0]["uuid"], "a2");
+        assert_eq!(b["more"], false, "상한 안 = 더 없음");
+        // 읽기 상한을 넘는 쌓임 → more = true · 이어 읽으면 false
+        let n = (TRANSCRIPT_READ_MAX as usize / L1.len()) + 10;
+        std::fs::OpenOptions::new().append(true).open(&p).unwrap().write_all_compat(&L1.repeat(n));
+        let big = tail_on(&w, (L1.len() + L2.len()) as u64).unwrap();
+        assert_eq!(big["more"], true);
+        let rest = tail_on(&w, big["to_offset"].as_u64().unwrap()).unwrap();
+        assert_eq!(rest["more"], false);
+        assert!(rest["records"].as_array().map(|r| !r.is_empty()).unwrap_or(false));
+        let c = tail_on(&w, 100_000_000).unwrap(); // 화면 오프셋이 파일보다 큼 = 줄어듦
+        assert_eq!((c["reset"].as_bool(), c["from_offset"].as_u64()), (Some(true), Some(0)));
+        // 경로가 다른 파일이 됨 → 옛 핸들을 읽지 않고 reset(records 0)
+        std::fs::remove_file(&p).unwrap();
+        std::fs::write(&p, L2).unwrap();
+        let e = tail_on(&w, L1.len() as u64).unwrap();
+        assert_eq!(e["reset"], true);
+        assert_eq!(e["records"].as_array().map(|r| r.len()), Some(0));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn body_of<'a>(src: &'a str, head: &str) -> &'a str {
+        let i = src.find(head).unwrap_or_else(|| panic!("{head} 소실"));
+        &src[i..i + src[i..].find("\n}\n").expect("fn 끝")]
+    }
+
+    #[test]
+    fn chat_transcript_tail_has_no_rpc() {
+        // 카드 C 「tail = RPC 0」 · watch 박자 작업도 RPC 0(데몬 조회는 걸 때 bound_transcript 1회뿐)
+        let src = include_str!("viewcore.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("시험 모듈 경계")];
+        for head in ["pub async fn chat_transcript_tail(", "pub(crate) fn tail_on(", "pub(crate) fn watch_probe(", "pub(crate) fn path_stat("] {
+            let b = body_of(prod, head);
+            for bad in ["rpc_on(", "rpc_full", "connect_to(", "resolve_socket("] {
+                assert!(!b.contains(bad), "{head} 안에 {bad}");
+            }
+        }
+        let w = body_of(prod, "pub async fn chat_transcript_watch(");
+        let task = &w[w.find("tauri::async_runtime::spawn(").expect("박자 작업")..];
+        for bad in ["rpc_on(", "rpc_full", "bound_transcript("] {
+            assert!(!task.contains(bad), "박자 작업 안에 {bad}");
+        }
+        assert_eq!(w.matches("bound_transcript(").count(), 1, "걸 때 1회");
+    }
+
+    #[test]
+    fn chat_watch_loop_sleeps_not_interval() {
+        // 한 박자 끝난 뒤 다음 박자(겹침 0 · 밀린 박자 몰림 0) · 박자 관측 = 경로 stat(watch_probe)
+        let src = include_str!("viewcore.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("시험 모듈 경계")];
+        let w = body_of(prod, "pub async fn chat_transcript_watch(");
+        assert!(w.contains("tokio::time::sleep(std::time::Duration::from_millis(WATCH_TICK_MS)).await;"));
+        assert!(!w.contains("interval("));
+        assert_eq!(w.matches("tauri::async_runtime::spawn(").count(), 1);
+        assert!(w.contains("watch_step(prev, watch_probe(&probe_path, &probe_file))"));
+        assert!(body_of(prod, "pub(crate) fn watch_probe(").contains("path_stat(path)"));
+    }
+
+    #[test]
+    fn chat_transcript_and_watch_open_through_one_function() {
+        // 허용 경로 규칙 한 벌(P3 v4 §3-7 C-1) — 두 명령 모두 bound_transcript 로 열고, 직접 RPC·open_bound 를 부르지 않는다
+        let src = include_str!("viewcore.rs");
+        let prod = &src[..src.find("#[cfg(test)]\nmod tests {").expect("시험 모듈 경계")];
+        for head in ["pub async fn chat_transcript(", "pub async fn chat_transcript_watch("] {
+            let b = body_of(prod, head);
+            assert_eq!(b.matches("bound_transcript(").count(), 1, "{head}");
+            assert!(!b.contains("rpc_on(") && !b.contains("open_bound("), "{head}");
+        }
+        let h = body_of(prod, "async fn bound_transcript(");
+        assert!(h.contains(r#"rpc_on(sock, "surface.list""#) && h.contains(r#"rpc_on(sock, "org.status""#));
+        assert!(h.contains("transcript_candidates(") && h.contains("open_bound("));
+    }
+
+    #[test]
+    fn v4_unwatch_with_gen_only_hits_that_watch() {
+        assert!(unwatch_hits(Some(3), Some(3)));
+        assert!(!unwatch_hits(Some(4), Some(3)), "늦게 처리된 옛 세대 unwatch 는 새 watch 를 안 내림");
+        assert!(unwatch_hits(Some(4), None), "세대 없음 = 무엇이든(거는 중 끊기)");
+        assert!(!unwatch_hits(None, None) && !unwatch_hits(None, Some(1)));
+    }
+
+    #[test]
+    fn v1_no_file_only_when_no_candidate_exists() {
+        // 윈 status_reason 은 모르는 오류도 no_file — 후보가 있는데 못 열었으면 open_failed(화면이 있던 파일을 0 에서 다시 읽지 않게)
+        let d = tmp("why");
+        let a = d.join("a.jsonl");
+        let b = d.join("b.jsonl");
+        assert_eq!(refine_open_why("no_file", &[a.clone(), b.clone()]), "no_file");
+        std::fs::write(&b, L1).unwrap();
+        assert_eq!(refine_open_why("no_file", &[a.clone(), b.clone()]), "open_failed");
+        assert_eq!(refine_open_why("symlinked_path", &[a, b]), "symlinked_path", "다른 사유는 그대로");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn chat_compat_env_only_exact_1() {
+        assert!(compat_env_on(Some("1")));
+        for v in [None, Some(""), Some("0"), Some("true"), Some(" 1"), Some("1 "), Some("yes")] {
+            assert!(!compat_env_on(v), "{v:?}");
+        }
+        assert_eq!(CHAT_COMPAT_ENV, "CYS_CHAT_COMPAT_1118");
     }
 }

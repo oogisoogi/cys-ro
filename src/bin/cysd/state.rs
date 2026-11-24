@@ -2794,6 +2794,10 @@ pub struct Surface {
     /// 최선 노력이다 — 창 안에 시작돼 창이 닫힌 뒤 줄바꿈으로 완성되는 미완성 줄 하나는 룰을 탈 수 있고(기존 에코 제외와 같은 한계),
     /// 창은 유한해 영구 봉인은 없다. leaf 락.
     pub repaint_echo: Mutex<crate::repaint::RepaintEcho>,
+    /// ★(TICKET=cysr-1119-obs3 · 견줌 열쇠) 룰 묶음(고침 2·2b · [`health_verdict_key`] — 기본 not_logged_in·login_required 둘은 한 묶음 · 기본 그 밖은 룰 이름 · 사용자 룰은 `user:<이름>`) → 이 좌석에서 그 묶음이 **실제로 판정을 통과한**(담화 아님 · 주입 2초 에코 뒤 · 흔들기 창 밖)
+    /// 마지막 줄의 단조 줄 번호(`line_count` 기준). GUI 크기 변경 창 안의 매치는 이 줄이 아직 줄 버퍼 안이고 이 배치보다 앞일 때만 재방송으로 거른다
+    /// (걸러진 줄 번호로 갱신 — 원본이 버퍼 밖으로 밀려도 사본이 근거를 잇는다). leaf 락(health_rules 아래에서만 잡는다 · 안에서 다른 락 0).
+    pub(crate) health_verdict_line: Mutex<HashMap<String, u64>>,
     /// ★(T-0147-7 W2 · B6) **각성 래치** — 이 surface 가 처음 `status.set`(=cys set-status)을 보낸
     /// epoch초. 단일 write path = status.set 핸들러의 `get_or_insert`(1회성 래치 · 이후 불변).
     ///
@@ -3572,6 +3576,9 @@ pub struct HealthRule {
     pub threshold: u32,
     /// pause-queue 지속 시간
     pub pause_secs: u64,
+    /// ★(obs3 고침 2 · 507 N-F2) 기본 룰(`default_health_rules`)이 만든 룰인가 — 판정 기록 열쇠([`health_verdict_key`])가 이름 문자열이 아니라 이것으로
+    /// 기본 룰을 가른다(`cys health add-rule` 이 기본 룰과 같은 이름으로 덮은 사용자 룰은 false — 기본 룰의 옛 판정 기록과 열쇠가 겹치지 않는다).
+    pub builtin: bool,
 }
 
 /// T5-6 strand-2 오염 격리 — 비정상 종료한 자식 프로세스의 재사용 가능성 2분 분류.
@@ -8631,6 +8638,7 @@ impl Daemon {
             repaint_in_flight: AtomicBool::new(false),
             resize_gate: Mutex::new(crate::repaint::ResizeGate::default()),
             repaint_echo: Mutex::new(crate::repaint::RepaintEcho::default()),
+            health_verdict_line: Mutex::new(HashMap::new()),
             // ★W2 B6: 래치는 항상 None 으로 시작한다 — 생성 시점엔 아직 어떤 각성 증거도 없다.
             // restore 경로의 하이드레이션은 surface.create 핸들러가 topology 값으로 명시 주입한다
             // (여기서 유추하지 않는다 — 유추는 곧 위양성 래치이고, 그건 재주입 스킵 오판이 된다).
@@ -9196,14 +9204,16 @@ impl Daemon {
                 let total = before + completed.len() as u64;
                 crate::repaint::echo_record_lines(surface, before, total, total.saturating_sub(sb.len() as u64));
             }
+            // ★(obs3) 건강 룰 견줌 열쇠의 재료 — 이 배치 첫 줄 번호와 줄 버퍼에 남은 가장 오래된 줄 번호(같은 scrollback 락 아래 한 관측점).
+            let oldest = (before + completed.len() as u64).saturating_sub(sb.len() as u64);
             drop(sb);
             self.persist_for_recall(surface, &completed);
-            self.run_health_rules(surface, &completed);
+            self.run_health_rules(surface, &completed, before, oldest);
         }
     }
 
-    /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 제외 창 안인가 — 창 안이면 건강 룰·회상 색인을 건너뛴다(사유는
-    /// `Surface::repaint_echo` doc). 창이 지났으면 지워 둔다(이후 락 1회 비용 0).
+    /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 제외 창 안인가(사유는 `Surface::repaint_echo` doc) — ★(obs3) 흔들기 창(Full)·GUI 창(Gui) **어느 쪽이든 참**이다.
+    /// 건너뛸지는 소비자가 [`crate::repaint::echo_mode`] 로 가른다(건강 룰 = Full 이면 배치째 · Gui 면 줄마다 판정 기록 · 회상 색인 = Full 일 때만). 창이 지났으면 지워 둔다(이후 락 1회 비용 0).
     pub(crate) fn repaint_echo_active(surface: &Surface) -> bool {
         crate::repaint::echo_active(surface)
     }
@@ -9211,7 +9221,8 @@ impl Daemon {
     /// FTS 영속: 의미 있는 라인만 (3자 미만·연속 중복 스킵 — TUI 리드로우 노이즈 억제).
     /// ★(0.14.45 · F2-A2) 다시 그리기 요청의 반향 창 안이면 색인하지 않는다(재방송 줄의 중복 색인 차단).
     fn persist_for_recall(&self, surface: &Surface, lines: &[String]) {
-        if Self::repaint_echo_active(surface) {
+        // ★(obs3 · 독립 검증 F8) GUI 크기 변경 창은 색인을 가리지 않는다(기준판 그대로 — 창 동안 진짜 새 줄 색인이 빠지는 손실 차단).
+        if crate::repaint::echo_mode(surface) == crate::repaint::EchoMode::Full {
             return;
         }
         let role = surface.role.lock().unwrap().clone();
@@ -9282,7 +9293,7 @@ impl Daemon {
         self.health_quote_until.lock().unwrap().get(&(surface_id, *r)).is_some_and(|until| *until > now)
     }
 
-    fn run_health_rules(&self, surface: &Surface, lines: &[String]) {
+    fn run_health_rules(&self, surface: &Surface, lines: &[String], batch_start: u64, oldest: u64) {
         let surface_id = surface.id;
         // 에코 제외: 직전 원격 주입 후 2초 내 도착한 라인 배치는 룰 평가에서 제외
         if let Some(t) = *surface.last_injected.lock().unwrap() {
@@ -9292,19 +9303,52 @@ impl Daemon {
         }
         // ★(0.14.45 · F2-A2) 다시 그리기 요청(크기 흔들기)의 반향 창 — 다시 그려진 화면은 옛 줄의 재방송이라 룰을 타지 않는다
         //   (옛 "rate limit"·"Error" 줄이 경보·조치 바인딩을 다시 당기는 폭주 ① 차단). 창 = 흔들기 시작 ~ 되돌린 뒤 최소 3초 · 재방송이 이어지면 마지막 출력 + 1초(상한 60초).
-        if Self::repaint_echo_active(surface) {
+        // ★(TICKET=cysr-1119-obs3) GUI 크기 변경 창(EchoMode::Gui)은 배치째 건너뛰지 않는다 — 룰에 걸린 줄마다 아래 판정 기록(`health_verdict_line`)으로 가린다.
+        let echo_mode = crate::repaint::echo_mode(surface);
+        if echo_mode == crate::repaint::EchoMode::Full {
             return;
         }
+        let gui_window = echo_mode == crate::repaint::EchoMode::Gui;
         let rules = self.health_rules.lock().unwrap();
-        for line in lines {
+        // ★(obs3 고침 1b · master#b9a1990f) 룰별 재방송 판정은 배치마다 한 번 — 그 배치의 첫 매치 때 정해 두고 뒤 매치는 따른다
+        //   (걸러진 첫 줄이 기록을 이 배치 줄 번호로 갱신하면 같은 배치 둘째 재방송 줄이 n ≥ batch_start 로 새어 거짓 경보가 됐다).
+        //   (고침 2 · 정적 2R MAJOR) 메모 열쇠 = 판정 기록과 같은 룰 묶음([`health_verdict_key`]) — 로그인 묶음(둘)은 배치마다 한 번.
+        let mut gui_replay: Vec<(std::borrow::Cow<'_, str>, bool)> = Vec::new();
+        for (li, line) in lines.iter().enumerate() {
+            let line_no = batch_start + li as u64;
             for rule in rules.iter() {
                 // ★T2: is_match → find. 매칭 **구간**을 알아야 ⓐ 마스킹·ⓑ 인용/서술 판정이 가능하다.
                 // (find는 is_match와 같은 1-pass — `for line × for rule` 핫패스 비용 동등.)
                 if let Some(m) = rule.regex.find(line) {
                     // ⓑ 수신 격리 — "경보를 논하는 라인"은 경보가 아니다(자기증폭 차단).
                     // 룰 이름 표식은 `rules`를 직접 훑는다(핫패스 할당 0 — 매칭 시에만 실행).
+                    // ★(obs3 고침 2 · 정적 2R BLOCK) 담화·출처 창 판정을 GUI 거름보다 **먼저** 구한다 — 담화 줄이 GUI 거름을 타면 판정 기록을 이어받아
+                    //   원본이 버퍼에서 밀린 뒤의 진짜 실패까지 가린다. 담화 줄은 창 안에서도 아래 기존 담화 처리(억제 계수 · 산문 계열 인터록 보존)로 간다.
                     let discourse = alert_discourse_reason(line, m.start(), m.end(), &rules)
                         .or_else(|| self.in_quote_window(surface_id, &rule.name).then_some("injected-quote"));
+                    // ★(TICKET=cysr-1119-obs3 · B 안 · 견줌 열쇠 = 판정 기록) GUI 크기 변경 뒤 다시 그려진 화면은 옛 줄의 재방송이다 — 이 좌석에서
+                    //   같은 룰 묶음이 **실제로 판정을 통과한** 줄(`health_verdict_line`)이 아직 줄 버퍼 안(≥ oldest)이고 이 배치보다 앞이면 그 재방송으로 보고
+                    //   거른다(경보·recent_health 인터록·조치 바인딩 0 · 억제 계수만 · 기록은 이 줄 번호로 갱신). 기록이 없으면(주입 에코·담화·흔들기 창에
+                    //   가려 판정을 안 탄 줄뿐이면) 새 사실 — 그대로 아래 판정으로 간다. 열쇠 = 같은 글이 아니라 같은 룰 묶음(폭이 바뀌면 줄 끊김·공백 꼴이 달라진다).
+                    //   담화가 아닌 매치에만 적용한다(위 BLOCK 고침).
+                    if gui_window && discourse.is_none() {
+                        let key = health_verdict_key(rule);
+                        let mut seen = surface.health_verdict_line.lock().unwrap_or_else(|e| e.into_inner());
+                        let replay = match gui_replay.iter().find(|(k, _)| *k == key) {
+                            Some(&(_, r)) => r,
+                            None => {
+                                let r = seen.get(key.as_ref()).is_some_and(|&n| n >= oldest && n < batch_start);
+                                gui_replay.push((key.clone(), r));
+                                r
+                            }
+                        };
+                        if replay {
+                            seen.insert(key.into_owned(), line_no);
+                            drop(seen);
+                            *self.health_suppressed.lock().unwrap().entry((rule.name.clone(), "gui-resize-replay")).or_insert(0) += 1;
+                            continue;
+                        }
+                    }
                     if let Some(reason) = discourse {
                         // 관측 가능성 유지: 억제 사실만 남기고(원문·트리거 미포함) 발화는 하지 않는다.
                         let mut sup = self.health_suppressed.lock().unwrap();
@@ -9330,6 +9374,10 @@ impl Daemon {
                     // ⓐ 발신 봉인 — 이 문자열만 데몬 밖으로 나간다(원문 트리거 유출 0).
                     let safe_line = mask_health_line(line, &rules);
                     let key = (surface_id, rule.name.clone());
+                    // ★(obs3) 판정 통과 기록 — 담화(산문·출처 창) 아닌 매치만(기계 에코는 위에서 이미 빠짐).
+                    if discourse.is_none() {
+                        surface.health_verdict_line.lock().unwrap_or_else(|e| e.into_inner()).insert(health_verdict_key(rule).into_owned(), line_no);
+                    }
                     // status 보드용 최근 alert 링 + ★auth 인터록 원장 (디바운스와 무관하게 기록, cap 50)
                     {
                         let mut recent = self.recent_health.lock().unwrap();
@@ -10243,6 +10291,23 @@ fn rate_limited_quote_regex() -> &'static Regex {
 }
 
 /// 오너 완화책 ① 기본 내장 룰: 로그인 만료·401·토큰 만료를 즉시 감지한다.
+/// ★(TICKET=cysr-1119-obs3 고침 2 · 정적 2R MAJOR) 판정 기록(`Surface::health_verdict_line`)·배치 메모의 열쇠 = 룰 묶음 — 기본 룰([`HealthRule::builtin`])의
+/// not_logged_in · login_required 둘은 한 묶음([`HEALTH_LOGIN_FAMILY_KEY`] · 고침 2b · master#9c54e743 — **같은 한 줄 글이 걸리는 룰끼리만** 묶는다:
+/// token_expired·auth_401 까지 묶으면 옛 「Not logged in」 기록이 창 안 진짜 401(다른 글 · auth 인터록 근거)을 가렸다 · 507 V16) · 기본 token_expired·auth_401·rate_limited 는
+/// 자기 이름 · 사용자 추가 룰은 `user:<이름>`(507 N-F2 — 기본 룰과 같은 이름으로 덮어도
+/// 기본 룰의 옛 판정 기록과 열쇠가 겹치지 않는다 · 사용자 룰끼리는 이름이 유일(upsert)). 같은 실패 화면이 다시 그려지며 공백 꼴이 바뀌어
+/// (`Notloggedin·Pleaserun/login` → `Not logged in · Please run /login`) 묶음의 **다른** 룰(not_logged_in)이 새로 맞아도 같은 근거로 가린다.
+fn health_verdict_key(rule: &HealthRule) -> std::borrow::Cow<'_, str> {
+    match (rule.builtin, rule.name.as_str()) {
+        (true, "not_logged_in" | "login_required") => HEALTH_LOGIN_FAMILY_KEY.into(),
+        (true, name) => name.into(),
+        (false, name) => format!("user:{name}").into(),
+    }
+}
+
+/// 로그인 묶음 열쇠(not_logged_in · login_required · [`health_verdict_key`]).
+const HEALTH_LOGIN_FAMILY_KEY: &str = "login-family";
+
 fn default_health_rules() -> Vec<HealthRule> {
     let defaults: &[(&str, &str)] = &[
         ("not_logged_in", r"(?i)not logged in"),
@@ -10275,6 +10340,7 @@ fn default_health_rules() -> Vec<HealthRule> {
                 action: None, // 내장 룰은 alert-only (조치 바인딩은 명시 opt-in)
                 threshold: 3,
                 pause_secs: 300,
+                builtin: true,
             })
         })
         .collect()
@@ -12594,6 +12660,736 @@ mod tests {
         let fired = feed_lines_collect_alerts(&daemon, &s, REAL_FAILURE_LINES);
         assert!(!fired.is_empty(), "정적 1초 뒤의 줄은 재방송이 아니다");
         assert!(s.repaint_echo.lock().unwrap().cap_until.is_none());
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// ★(TICKET=cysr-1119-obs3) obs3 줄 버퍼 꼴(공백이 빠진 Claude Code 「Not logged in · Please run /login」) — login_required 식만 맞는다.
+    const OBS3_LOGIN_LINE: &str = " ⎿\u{a0}Notloggedin·Pleaserun/login";
+
+    /// obs3 시험 공용 — 좌석 줄 버퍼에 옛 진짜 로그인 실패 줄을 한 번 넣고(그때의 진짜 경보 1건) 30초 디바운스를 지워 「한참 뒤」 를 흉내 낸다.
+    fn obs3_seat_with_old_login_line(tag: &str) -> (Arc<Daemon>, Arc<Surface>) {
+        let (daemon, s) = health_probe_daemon(tag);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(fired.iter().filter(|(r, _)| r == "login_required").count(), 1, "전제: 옛 진짜 줄은 그때 경보였다 {fired:?}");
+        daemon.health_debounce.lock().unwrap().clear();
+        (daemon, s)
+    }
+
+    /// (obs3 고침 2) 로그인 관련 기본 룰 넷 — 시험 도우미는 넷 **전체** 를 센다(정적 2R MAJOR · login_required 만 세면 다른 로그인 룰의 경보가 안 보인다 · 판정 기록 묶음(둘 · 고침 2b)과 별개 = 세는 범위가 더 넓은 쪽이 엄하다).
+    const OBS3_LOGIN_FAMILY: [&str; 4] = ["not_logged_in", "login_required", "token_expired", "auth_401"];
+
+    fn login_alerts(fired: &[(String, String)]) -> usize {
+        fired.iter().filter(|(r, _)| OBS3_LOGIN_FAMILY.contains(&r.as_str())).count()
+    }
+
+    fn recent_login_entries(daemon: &Daemon, sid: u64) -> usize {
+        daemon
+            .recent_health
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|e| e["rule"].as_str().is_some_and(|r| OBS3_LOGIN_FAMILY.contains(&r)) && e["surface_id"] == sid)
+            .count()
+    }
+
+    /// GUI 창이 닫힌 것으로 만든다(되돌린 시각을 바닥 3초 넘게 과거로 · 마지막 출력 지움) — 흔들기 칸은 안 건드린다.
+    fn obs3_close_gui_window(s: &Surface) {
+        let mut e = s.repaint_echo.lock().unwrap();
+        assert!(e.gui.restored_at.is_some(), "전제: GUI 창이 열려 있다 {e:?}");
+        e.gui.restored_at = Some(Instant::now() - std::time::Duration::from_millis(crate::repaint::REPAINT_ECHO_GRACE_MS + 100));
+        e.gui.last_output = None;
+    }
+
+    /// ★(obs3 T1) GUI 크기 변경(`apply_resize` = `surface.resize`) 뒤 Claude Code 가 다시 그린 옛 로그인 실패 줄은 경보가 아니다 —
+    /// 토스트·CSO 배달·「로그인 필요」 배지(BA1)·auth 인터록 원장(recent_health) 모두 0. 고치기 전 = 경보 1(1.1.18 부터의 거짓 경보).
+    #[test]
+    fn obs3_gui_resize_replay_old_login_line_no_alert() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t1");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        let recall_before = s.last_recall_line.lock().unwrap().clone();
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        // 직전 색인 줄(OBS3_LOGIN_LINE)과 **다른** 재방송 줄도 함께 — 연속 중복 제거만으로 초록이 되지 않게(정적 1R).
+        const DISTINCT: &str = "✻Cogitatedfor8s·done1:17PM";
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE, DISTINCT]);
+        assert_eq!(login_alerts(&fired), 0, "GUI 크기 변경 뒤 재방송된 옛 줄이 경보를 냈다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before, "재방송된 옛 줄이 auth 인터록 원장(recent_health)에 들어갔다");
+        // ★(독립 검증 F8 · master#84b5f558) GUI 창은 회상 색인을 가리지 않는다(기준판 그대로) — 창 안의 다른 줄도 색인된다.
+        let _ = recall_before;
+        assert_eq!(s.last_recall_line.lock().unwrap().as_str(), DISTINCT, "GUI 창이 회상 색인을 가렸다(창 동안 진짜 새 줄 색인 손실 · F8)");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T2 · 대조) 크기 변경 없이 온 같은 줄 = 진짜 새 실패 — 고친 뒤에도 경보 1.
+    #[test]
+    fn obs3_login_line_without_resize_still_alerts() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t2");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "크기 변경 없는 진짜 줄을 놓쳤다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T3) 같은 크기 재전송(맞춤·포커스)은 창을 열지 않는다 — 커널이 SIGWINCH 를 안 보내 다시 그리기도 없다. 경보 1.
+    #[test]
+    fn obs3_same_size_resize_opens_no_window() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t3");
+        let size = s.parser.lock().unwrap().screen().size();
+        crate::repaint::apply_resize(&s, size.0, size.1).expect("같은 크기");
+        assert!(!Daemon::repaint_echo_active(&s), "같은 크기 재전송이 반향 창을 열었다");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "같은 크기 재전송 뒤 진짜 줄을 놓쳤다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T4) GUI 창이 닫힌 뒤(바닥 3초 · 출력 정적) 온 줄은 진짜 새 실패다 — 경보 1(창은 영구 봉인이 아니다).
+    #[test]
+    fn obs3_login_line_after_gui_window_closes_alerts() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t4");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        obs3_close_gui_window(&s);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "창이 닫힌 뒤의 진짜 줄을 놓쳤다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T5 · T7) GUI 창은 줄 구간을 남기지 않는다 — 창이 열린 동안 워커가 낸 **진짜 새 완료 줄**을 wait_for(·델타 read)가 놓치지 않는다.
+    #[test]
+    fn obs3_gui_window_records_no_ranges_and_wait_for_sees_new_line() {
+        let (daemon, s) = health_probe_daemon("obs3-t7");
+        let start = s.line_count.load(Ordering::Relaxed);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        assert!(Daemon::repaint_echo_active(&s), "GUI 크기 변경 뒤 반향 창이 열려 있어야 한다");
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["DONE marker"]);
+        assert!(Daemon::repaint_echo_active(&s), "줄이 온 직후에도 창은 열려 있다(바닥 3초)");
+        let ranges = crate::repaint::echo_ranges(&s);
+        assert!(ranges.is_empty(), "GUI 창이 줄 구간을 남겼다(wait_for·델타 read 가 진짜 새 줄을 건너뛴다): {ranges:?}");
+        let lines: Vec<String> = {
+            let sb = s.scrollback.lock().unwrap();
+            let total = s.line_count.load(Ordering::Relaxed);
+            let oldest = total - sb.len() as u64;
+            sb.iter().skip((start - oldest) as usize).cloned().collect()
+        };
+        let re = regex::Regex::new("DONE").unwrap();
+        assert_eq!(
+            crate::repaint::wait_for_match(&lines, start, &ranges, &re).map(|(_, l)| l),
+            Some("DONE marker".to_string()),
+            "GUI 창 안의 진짜 새 완료 줄을 wait_for 가 놓쳤다"
+        );
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T8) 데몬 흔들기 창과 GUI 창이 겹치면 흔들기 쪽(줄 구간 기록)이 이긴다 — GUI 변경이 흔들기의 「되돌린 시각 없음」 도 덮지 않는다.
+    #[test]
+    fn obs3_overlap_with_nudge_window_keeps_ranges() {
+        let (daemon, s) = health_probe_daemon("obs3-t8");
+        let start = s.line_count.load(Ordering::Relaxed);
+        crate::repaint::open_echo_window(&s); // 흔들기 시작(되돌리기 전)
+        crate::repaint::apply_resize(&s, 24, 100).expect("흔들기 중 GUI 크기 변경");
+        assert!(s.repaint_echo.lock().unwrap().restored_at.is_none(), "GUI 변경이 흔들기의 되돌린 시각(None)을 덮었다");
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["old replay line"]);
+        let end = s.line_count.load(Ordering::Relaxed);
+        let ranges = crate::repaint::echo_ranges(&s);
+        assert!((start..end).all(|n| crate::repaint::line_in_echo(&ranges, n)), "겹친 창에서 흔들기 쪽 구간 기록이 사라졌다: {ranges:?}");
+        // 순서를 바꿔도(GUI 먼저 · 흔들기 뒤) 흔들기 쪽이 이긴다.
+        let (daemon2, s2) = health_probe_daemon("obs3-t8b");
+        let start2 = s2.line_count.load(Ordering::Relaxed);
+        crate::repaint::apply_resize(&s2, 24, 100).expect("GUI 크기 변경");
+        crate::repaint::open_echo_window(&s2);
+        let _ = feed_lines_collect_alerts(&daemon2, &s2, &["old replay line"]);
+        let end2 = s2.line_count.load(Ordering::Relaxed);
+        let ranges2 = crate::repaint::echo_ranges(&s2);
+        assert!((start2..end2).all(|n| crate::repaint::line_in_echo(&ranges2, n)), "GUI 뒤 흔들기 창이 구간을 안 남겼다: {ranges2:?}");
+        let _ = s.child.lock().unwrap().kill();
+        let _ = s2.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T9 · B 안) GUI 창 안 — 버퍼에 그 룰의 옛 매치가 없는 새 글 = 경보 1 · 옛 매치가 있는 룰의 글 = 0.
+    #[test]
+    fn obs3_gui_window_new_rule_alerts_existing_rule_filtered() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t9");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &["Error: rate limit exceeded"]);
+        assert_eq!(fired.iter().filter(|(r, _)| r == "rate_limited").count(), 1, "창 안의 새 글(버퍼에 옛 매치 없는 룰)을 놓쳤다: {fired:?}");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 0, "창 안의 기존 글(옛 매치 있는 룰)이 경보를 냈다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T10 · 보강 1) 버퍼의 옛 줄이 좁은 폭(23칸)으로 끊긴 꼴이어도 같은 룰이 맞으면 재방송으로 본다 — 넓힌 뒤 한 줄로 다시 그려져도 경보 0.
+    #[test]
+    fn obs3_narrow_wrapped_old_line_then_widened_replay_filtered() {
+        let (daemon, s) = health_probe_daemon("obs3-t10");
+        // obs3 sb33 꼴 — 23칸에서 「⎿ Notloggedin·」 와 「Pleaserun/login」 이 두 줄로 갈렸다(뒤 조각만 login_required 에 걸린다).
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[" ⎿\u{a0}Notloggedin·", "  Pleaserun/login"]);
+        assert_eq!(login_alerts(&fired), 1, "전제: 좁은 폭 옛 줄은 그때 경보였다 {fired:?}");
+        daemon.health_debounce.lock().unwrap().clear();
+        crate::repaint::apply_resize(&s, 24, 100).expect("넓히기");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 0, "꼴이 다른 재방송(한 줄)이 경보를 냈다 — 열쇠가 같은 글이면 생기는 거짓 경보: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T11 · 맞물림 고정) 갓 만든 좌석(버퍼에 로그인 매치 0) → GUI 맞춤 → 창 안 첫 로그인 실패 = 경보 1 + recent_health 1건.
+    /// (A 안이었다면 0 — 새로 띄운·되살린 좌석의 첫 요청 실패를 놓친다 · master#3f666deb.)
+    #[test]
+    fn obs3_fresh_seat_first_login_failure_in_gui_window_alerts() {
+        let (daemon, s) = health_probe_daemon("obs3-t11");
+        crate::repaint::apply_resize(&s, 30, 120).expect("GUI 첫 맞춤");
+        assert!(Daemon::repaint_echo_active(&s), "전제: 창이 열렸다");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "갓 만든 좌석의 창 안 첫 로그인 실패를 놓쳤다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before + 1, "첫 실패가 auth 인터록 원장에 없다");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T12) 걸러진 재방송 줄은 recent_health(auth 인터록 원장) 0건 — 거짓 인터록 0 · 억제는 health_suppressed 의 새 사유로 보인다.
+    #[test]
+    fn obs3_filtered_replay_never_reaches_interlock_and_is_counted() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-t12");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let _ = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE, OBS3_LOGIN_LINE]);
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before, "걸러진 재방송이 인터록 원장에 들어갔다");
+        let sup = daemon.health_suppressed.lock().unwrap();
+        assert_eq!(sup.get(&("login_required".to_string(), "gui-resize-replay")).copied(), Some(2), "억제 계수(보이는 억제)가 없다: {sup:?}");
+        drop(sup);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 T13 · 비용) 줄 버퍼 1만 줄(매치 0)에서 창 안 매치 1회 — 견줌 열쇠가 판정 기록(O(1))이라 버퍼 훑기가 없다. 걸린 시간을 찍는다(수치 1줄 · 상한 1초).
+    #[test]
+    fn obs3_scan_cost_on_full_buffer() {
+        let (daemon, s) = health_probe_daemon("obs3-t13");
+        {
+            let mut sb = s.scrollback.lock().unwrap();
+            for i in 0..SCROLLBACK_LINES {
+                sb.push_back(format!("filler line {i} ✻Cogitatedfor8s·done1:17PM ❯ 지침 각성 확인 핑"));
+            }
+            s.line_count.fetch_add(SCROLLBACK_LINES as u64, Ordering::Relaxed);
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let t = Instant::now();
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["plain new line without any rule"]);
+        let no_match = t.elapsed();
+        let t = Instant::now();
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        let with_match = t.elapsed();
+        assert_eq!(login_alerts(&fired), 1, "1만 줄 버퍼에 옛 매치가 없으니 새 실패다");
+        eprintln!("[obs3 T13] 1만 줄 버퍼 · 창 안 매치 1회 = {with_match:?} · 매치 없는 줄 = {no_match:?}");
+        assert!(with_match < std::time::Duration::from_secs(1), "훑기 1회가 너무 느리다: {with_match:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 1R · 대조) 같은 로그인 룰에 맞지만 **담화**로 판정되는 옛 줄만 있는 좌석 → GUI 창 안 첫 진짜 실패 = 경보 1 · recent_health +1 · gui-resize-replay +0.
+    /// (담화 매치도 판정 기록에 넣는 구현은 여기서 붉다.)
+    #[test]
+    fn obs3_discourse_only_history_allows_first_real_login() {
+        let (daemon, s) = health_probe_daemon("obs3-disc");
+        const DISCOURSE: &str = r#"CSO 보고: 경보 문구 "Please run /login" 은 부트 순간의 오탐이다"#;
+        let rules = daemon.health_rules.lock().unwrap();
+        let rule = rules.iter().find(|r| r.name == "login_required").unwrap();
+        let m = rule.regex.find(DISCOURSE).expect("전제: 담화 표본이 login_required 식에 맞는다");
+        assert!(alert_discourse_reason(DISCOURSE, m.start(), m.end(), &rules).is_some(), "전제: 담화로 판정된다");
+        drop(rules);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[DISCOURSE]);
+        assert_eq!(login_alerts(&fired), 0, "전제: 담화는 경보가 아니다 {fired:?}");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "옛 담화만 있는 좌석의 창 안 첫 진짜 실패를 놓쳤다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before + 1, "첫 진짜 실패가 인터록 원장에 없다");
+        let sup = daemon.health_suppressed.lock().unwrap().get(&("login_required".to_string(), "gui-resize-replay")).copied();
+        assert_eq!(sup.unwrap_or(0), 0, "첫 진짜 실패가 재방송으로 걸러졌다");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 1R · 알려진 한계 고정) 옛 원본의 룰 글이 줄 경계에서 갈렸으면(`…/log` / `in`) 옛 줄 어느 것도 룰에 안 맞는다 →
+    /// 넓힌 뒤 한 줄로 재방송되면 **경보 1**(지금 동작 · 설계서 「남는 한계」). 이 기대값이 바뀌면 한계가 고쳐졌다는 뜻이다(그때 이 시험을 0 으로).
+    #[test]
+    fn obs3_wrapped_across_login_token_is_not_claimed_filtered() {
+        let (daemon, s) = health_probe_daemon("obs3-split");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[" ⎿\u{a0}Notloggedin·Pleaserun/log", "in"]);
+        assert_eq!(login_alerts(&fired), 0, "전제: 갈린 옛 조각은 어느 것도 룰에 안 맞는다 {fired:?}");
+        crate::repaint::apply_resize(&s, 24, 100).expect("넓히기");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "알려진 한계(줄 경계에 갈린 원본 → 경보 1)가 바뀌었다 — 설계서 「남는 한계」 와 이 시험을 함께 고쳐라: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 1R MAJOR · 비용) 1만 줄(매치 0) 버퍼 + GUI 창 안 한 배치에 같은 룰 매치 300줄 — 창 안 매치 300줄 배치 시간.
+    /// 매치마다 버퍼를 다시 훑는 구현(1709b2964)은 300 × (1만 줄 정규식) = 1.92초 실측 · 상한 500ms 에 붉다.
+    #[test]
+    fn obs3_scan_once_per_rule_per_batch() {
+        let (daemon, s) = health_probe_daemon("obs3-batch");
+        {
+            let mut sb = s.scrollback.lock().unwrap();
+            for i in 0..SCROLLBACK_LINES {
+                sb.push_back(format!("filler line {i} ✻Cogitatedfor8s·done1:17PM ❯ 지침 각성 확인 핑"));
+            }
+            s.line_count.fetch_add(SCROLLBACK_LINES as u64, Ordering::Relaxed);
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let chunk: String = (0..300).map(|_| format!("{OBS3_LOGIN_LINE}\n")).collect();
+        let t = Instant::now();
+        daemon.ingest_output(&s, chunk.as_bytes());
+        let spent = t.elapsed();
+        assert!(crate::repaint::echo_mode(&s) == crate::repaint::EchoMode::Gui, "전제: 잰 동안 GUI 창이었다");
+        eprintln!("[obs3 batch] 1만 줄 버퍼 · 창 안 매치 300줄 한 배치 = {spent:?}");
+        assert!(spent < std::time::Duration::from_millis(500), "매치마다 버퍼를 다시 훑는다(배치당 1회여야): {spent:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    // ===== 독립 검증 507(VERIFY-1119-obs3.md) 재현 시험 — 같은 뜻으로 옮김 · V1·V10 = 고침 대상(초록) · V1b·V3·V8·V11 = 남는 한계 고정 =====
+
+    /// (507 V1 · 고침) 주입 직후 2초 에코 제외로 판정을 안 탄 옛 줄은 재방송 근거가 아니다 → GUI 창 안 진짜 첫 로그인 실패 = 경보 1.
+    #[test]
+    fn obs3_v1_injected_echo_old_match_does_not_hide_real_failure() {
+        let (daemon, s) = health_probe_daemon("obs3-v1");
+        *s.last_injected.lock().unwrap() = Some(Instant::now());
+        let fired0 = feed_lines_collect_alerts(&daemon, &s, &["TICKET: if you see Not logged in, please run /login again then report"]);
+        assert_eq!(login_alerts(&fired0), 0, "전제: 주입 2초 에코 제외로 경보 0 {fired0:?}");
+        *s.last_injected.lock().unwrap() = Some(Instant::now() - std::time::Duration::from_secs(10));
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "판정을 안 탄 주입 에코 줄 때문에 GUI 창 안 진짜 첫 실패를 놓쳤다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (507 V1b · 남는 한계 고정) 옛 줄이 그때 **실제로 판정을 통과한**(경보를 낸) 무관한 글이면 — 룰 자체의 거짓 양성이라 가릴 수 없다 →
+    /// GUI 창 안 진짜 한도 실패는 재방송으로 걸러진다(경보 0 · 지금 동작). 설계서 「남는 한계」.
+    #[test]
+    fn obs3_v1b_unrelated_429_verdict_hides_real_rate_limit_known_limit() {
+        let (daemon, s) = health_probe_daemon("obs3-v1b");
+        let fired0 = feed_lines_collect_alerts(&daemon, &s, &["Merged PR #429 into main"]);
+        assert_eq!(fired0.iter().filter(|(r, _)| r == "rate_limited").count(), 1, "전제: 무관한 #429 글이 그때 실제로 경보(룰의 거짓 양성) {fired0:?}");
+        daemon.health_debounce.lock().unwrap().clear();
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &["Error: rate limit exceeded"]);
+        assert_eq!(fired.iter().filter(|(r, _)| r == "rate_limited").count(), 0, "알려진 한계(V1b)가 바뀌었다 — 설계서 「남는 한계」 와 함께 고쳐라: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (507 V3 · 남는 한계 고정 · 기존 잔존) 넓은 폭에서 따옴표로 담화였던 줄이 좁은 폭 재방송에서 따옴표가 끊기면 담화가 아니게 되어 경보 1(고치기 전부터).
+    #[test]
+    fn obs3_v3_wrapped_fragment_of_discourse_line_false_alarm_known_limit() {
+        let (daemon, s) = health_probe_daemon("obs3-v3");
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["CSO 메모 \"Please run /login\" 경보는 거짓 경보로 판정"]);
+        daemon.health_debounce.lock().unwrap().clear();
+        crate::repaint::apply_resize(&s, 24, 23).expect("좁히기");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &["CSO 메모 \"Please run /login", "\" 경보는 거짓 경보로 판정"]);
+        assert_eq!(login_alerts(&fired), 1, "알려진 한계(V3)가 바뀌었다 — 설계서 「남는 한계」 와 함께 고쳐라: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (507 V8 · 남는 한계 고정 · F3) 사용자 룰(pause-queue · threshold 2)에 옛 판정 줄이 있으면 GUI 창 안 진짜 연속 매치도 재방송과 못 가른다 →
+    /// 조치 바인딩(pause-queue) 안 걸림(지금 동작). B 의 원래 놓침의 한 꼴.
+    #[test]
+    fn obs3_v8_user_rule_pause_queue_in_gui_window_known_limit() {
+        let (daemon, s) = health_probe_daemon("obs3-v8");
+        daemon.health_rules.lock().unwrap().push(HealthRule {
+            name: "quota_x".into(),
+            regex: Regex::new("QUOTA-X-EXHAUSTED").unwrap(),
+            action: Some("pause-queue".into()),
+            threshold: 2,
+            pause_secs: 30,
+            builtin: false,
+        });
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["QUOTA-X-EXHAUSTED old"]);
+        daemon.health_hits.lock().unwrap().clear();
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let _ = feed_lines_collect_alerts(&daemon, &s, &["QUOTA-X-EXHAUSTED new 1", "QUOTA-X-EXHAUSTED new 2", "QUOTA-X-EXHAUSTED new 3"]);
+        assert!(s.queue_paused_until.lock().unwrap().is_none(), "알려진 한계(V8)가 바뀌었다 — 설계서 「남는 한계」 와 함께 고쳐라");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (507 V10 · 고침 · F1) 흔들기 창 꼬리(되돌린 지 2.9초 · 출력 없음 · 0.1초 뒤 닫힐 참)에 GUI 크기 변경 → 0.4초 뒤 = 흔들기 창은 자기 조건으로 닫힘 →
+    /// 갓 띄운 좌석의 첫 로그인 실패 = 경보 1 · 새 「DONE」 줄 = 반향 구간 0.
+    #[test]
+    fn obs3_v10_gui_resize_in_nudge_tail_does_not_extend_full() {
+        let (daemon, s) = health_probe_daemon("obs3-v10");
+        let start = s.line_count.load(Ordering::Relaxed);
+        {
+            let mut e = s.repaint_echo.lock().unwrap();
+            let now = Instant::now();
+            e.open_full_at(now - std::time::Duration::from_secs(10));
+            e.mark_restored_at(now - std::time::Duration::from_millis(2_900));
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("흔들기 꼬리에 GUI 크기 변경");
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        assert_eq!(crate::repaint::echo_mode(&s), crate::repaint::EchoMode::Gui, "흔들기 창이 GUI 변경으로 늘어났다");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE, "DONE marker"]);
+        let ranges = crate::repaint::echo_ranges(&s);
+        let end = s.line_count.load(Ordering::Relaxed);
+        let skipped = (start..end).filter(|n| crate::repaint::line_in_echo(&ranges, *n)).count();
+        assert_eq!(login_alerts(&fired), 1, "흔들기 꼬리 + GUI 변경에서 갓 띄운 좌석의 첫 실패를 놓쳤다: {fired:?}");
+        assert_eq!(skipped, 0, "새 줄이 반향 구간에 기록됐다: {ranges:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (507 V11 · 남는 한계 고정 · F5 기존 잔존) PTY 만 바뀌고 파서는 그대로(좌석 안 `stty cols` 등) → GUI 가 파서와 같은 크기를 보내면 창 0 → 재방송 옛 줄 경보 1.
+    #[test]
+    fn obs3_v11_pty_parser_size_mismatch_no_window_known_limit() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-v11");
+        crate::seat_proc::resize(&s.master, 24, 100).expect("PTY 만 바꿈(파서 무접촉)");
+        crate::repaint::apply_resize(&s, 24, 80).expect("GUI 가 파서와 같은 크기 전송");
+        assert_eq!(crate::repaint::echo_mode(&s), crate::repaint::EchoMode::Off);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "알려진 한계(V11)가 바뀌었다 — 설계서 「남는 한계」 와 함께 고쳐라: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 · 견줌 열쇠 경계) ① 판정 기록 줄이 줄 버퍼 밖으로 밀렸으면(< oldest) 근거가 아니다 → 창 안 줄 = 경보 1(1만 줄 넘는 좌석의 남는 거짓 경보 쪽 · 1.1.18 수준).
+    /// ② 같은 배치 안의 앞 줄은 근거가 아니다(n < batch_start) → 한 배치에 두 번 와도 둘 다 판정을 탄다(억제 0).
+    #[test]
+    fn obs3_verdict_key_bounds_oldest_and_batch_start() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-key1");
+        {
+            let mut sb = s.scrollback.lock().unwrap();
+            for i in 0..SCROLLBACK_LINES {
+                if sb.len() >= SCROLLBACK_LINES {
+                    sb.pop_front();
+                }
+                sb.push_back(format!("filler {i}"));
+            }
+            s.line_count.fetch_add(SCROLLBACK_LINES as u64, Ordering::Relaxed);
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "버퍼 밖으로 밀린 판정 기록을 근거로 썼다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+        // ②
+        let (daemon, s) = health_probe_daemon("obs3-key2");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        daemon.ingest_output(&s, format!("{OBS3_LOGIN_LINE}\n{OBS3_LOGIN_LINE}\n").as_bytes());
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before + 2, "같은 배치 앞 줄을 근거로 뒤 줄을 걸렀다");
+        let sup = daemon.health_suppressed.lock().unwrap().get(&("login_required".to_string(), "gui-resize-replay")).copied();
+        assert_eq!(sup.unwrap_or(0), 0);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 1b · master#b9a1990f) 한 배치 안 같은 룰 재방송 여러 줄 — 판정은 배치 첫 매치에서 한 번 정하고 뒤 매치는 그 메모를 따른다.
+    /// ① 옛 판정 줄 1 → GUI 창 → 한 배치에 재방송 3줄 = 경보 0 · recent_health +0 · suppressed 3(관찰 3 좌석: 옛 실패 줄 여럿 + 다시 그리기 한 덩어리).
+    /// ② 대조: 기록 없음 → 창 안 한 배치에 같은 룰 진짜 줄 2 = 경보 1(디바운스) · recent_health +2 · suppressed 0.
+    #[test]
+    fn obs3_same_batch_multiple_replay_lines_follow_first_verdict() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-1b");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let seq_before = daemon.bus.tail(1).first().and_then(|e| e["seq"].as_u64()).unwrap_or(0);
+        daemon.ingest_output(&s, format!("{OBS3_LOGIN_LINE}\nsome line\n{OBS3_LOGIN_LINE}\n{OBS3_LOGIN_LINE}\n").as_bytes());
+        let alerts = daemon.bus.replay_after(seq_before).into_iter()
+            .filter(|e| e["name"].as_str() == Some("health.alert") && e["payload"]["rule"] == "login_required").count();
+        assert_eq!(alerts, 0, "한 배치 둘째 재방송 줄이 거짓 경보를 냈다");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before, "한 배치 재방송 줄이 인터록 원장에 들어갔다");
+        let sup = daemon.health_suppressed.lock().unwrap().get(&("login_required".to_string(), "gui-resize-replay")).copied();
+        assert_eq!(sup, Some(3), "한 배치 재방송 3줄이 모두 걸러져야 한다");
+        let _ = s.child.lock().unwrap().kill();
+        // ② 대조
+        let (daemon, s) = health_probe_daemon("obs3-1b2");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        let seq_before = daemon.bus.tail(1).first().and_then(|e| e["seq"].as_u64()).unwrap_or(0);
+        daemon.ingest_output(&s, format!("{OBS3_LOGIN_LINE}\n{OBS3_LOGIN_LINE}\n").as_bytes());
+        let alerts = daemon.bus.replay_after(seq_before).into_iter()
+            .filter(|e| e["name"].as_str() == Some("health.alert") && e["payload"]["rule"] == "login_required").count();
+        assert_eq!(alerts, 1, "기록 없는 좌석의 한 배치 진짜 줄 2 = 경보 1(디바운스)");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before + 2);
+        let sup = daemon.health_suppressed.lock().unwrap().get(&("login_required".to_string(), "gui-resize-replay")).copied();
+        assert_eq!(sup.unwrap_or(0), 0);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2 · 시험 공용) 룰에 안 걸리는 채움 줄 `n` 개를 실제 배수 경로(ingest_output) 한 배치로 넣는다 — 1만 줄 퇴출·oldest 를 운영 계산 그대로.
+    fn obs3_feed_filler(daemon: &Arc<Daemon>, s: &Arc<Surface>, n: usize) {
+        if n == 0 {
+            return;
+        }
+        let mut chunk = String::with_capacity(n * 12);
+        for i in 0..n {
+            chunk.push_str(&format!("filler n{i}\n")); // 숫자 앞 낱말 글자 = `\b429\b`·`\b401\b` 경계 없음(「filler 429」 가 rate_limited 에 맞아 기록을 만들던 시험 잘못)
+        }
+        daemon.ingest_output(s, chunk.as_bytes());
+    }
+
+    /// (obs3 고침 2 · 정적 2R BLOCK ㉠ 정상 사본 대조) 진짜 재방송으로 기록 갱신 → 원본만 버퍼 밖으로 밀림 → 다음 재방송도 계속 거름(경보 0 · recent +0 · 억제 2).
+    #[test]
+    fn obs3_replay_copy_carries_verdict_after_original_evicted() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-f2a");
+        // 원본 = 줄 0 · 채움 1..=9998 → 버퍼 9,999줄(원본 아직 안)
+        obs3_feed_filler(&daemon, &s, SCROLLBACK_LINES - 2);
+        assert_eq!(s.line_count.load(Ordering::Relaxed), (SCROLLBACK_LINES - 1) as u64);
+        let recent_before = recent_login_entries(&daemon, s.id);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]); // 줄 9999 = 재방송 → 기록 9999
+        assert_eq!(login_alerts(&fired), 0, "첫 재방송이 경보를 냈다: {fired:?}");
+        obs3_feed_filler(&daemon, &s, 1); // 줄 10000 → oldest 1 · 원본 0 퇴출
+        assert_eq!(s.scrollback.lock().unwrap().front().map(String::as_str), Some("filler n0"), "전제: 원본(줄 0)이 버퍼 밖으로 밀렸다");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]); // 줄 10001 = 다음 재방송
+        assert_eq!(login_alerts(&fired), 0, "원본이 밀린 뒤 재방송 사본이 근거를 잇지 못했다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before, "재방송이 인터록 원장에 들어갔다");
+        let sup = daemon.health_suppressed.lock().unwrap().get(&("login_required".to_string(), "gui-resize-replay")).copied();
+        assert_eq!(sup, Some(2));
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2 · 정적 2R BLOCK ㉡ 담화 음성 대조) 옛 적격 기록 있음 → GUI 창에서 새 **담화** 줄 → 원본 밀려남 → 진짜 실패 = 경보 1 · recent_health +1.
+    /// (담화 판정보다 GUI 거름을 먼저 하면 담화 줄이 기록을 이어받아 진짜 실패를 가린다 — 고침 1b 판에서 붉다.)
+    #[test]
+    fn obs3_discourse_in_gui_window_does_not_carry_verdict() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-f2b");
+        obs3_feed_filler(&daemon, &s, SCROLLBACK_LINES - 2);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        const DISCOURSE: &str = r#"CSO 보고: 경보 문구 "Please run /login" 은 부트 순간의 오탐이다"#;
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[DISCOURSE]); // 줄 9999 = 담화
+        assert_eq!(login_alerts(&fired), 0, "담화가 경보를 냈다: {fired:?}");
+        let sup_disc: u64 = daemon.health_suppressed.lock().unwrap().iter()
+            .filter(|((r, why), _)| r == "login_required" && *why != "gui-resize-replay").map(|(_, n)| *n as u64).sum();
+        obs3_feed_filler(&daemon, &s, 1); // 줄 10000 → 원본 0 퇴출
+        assert_eq!(s.scrollback.lock().unwrap().front().map(String::as_str), Some("filler n0"), "전제: 원본(줄 0)이 버퍼 밖으로 밀렸다");
+        daemon.health_debounce.lock().unwrap().clear();
+        let recent_before = recent_login_entries(&daemon, s.id);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]); // 줄 10001 = 진짜 새 실패
+        assert_eq!(login_alerts(&fired), 1, "창 안 새 담화 줄이 판정 기록을 이어받아 진짜 실패를 가렸다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before + 1, "진짜 실패가 인터록 원장에 없다");
+        assert!(sup_disc >= 1, "담화 줄이 기존 담화 처리(억제 계수)를 타지 않았다");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2 · 정적 2R MAJOR) 견줌 열쇠 = 로그인 계열 한 묶음 — 원본은 커서 이동 공백이 빠져 `Notloggedin·Pleaserun/login`(login_required 만)인데
+    /// 다시 그린 줄이 진짜 공백을 가져 not_logged_in 도 맞는다 → 로그인 계열 **전체** 경보 0 · recent +0.
+    /// 대조: rate_limited 기록만 있는 좌석의 창 안 로그인 실패 = 경보 1(묶음은 로그인 계열 안에서만).
+    #[test]
+    fn obs3_login_family_shares_verdict_across_rules() {
+        const SPACED: &str = " ⎿\u{a0}Not logged in · Please run /login";
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-f2c");
+        let recent_before = recent_login_entries(&daemon, s.id);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[SPACED]);
+        assert_eq!(login_alerts(&fired), 0, "공백이 돌아온 재방송이 로그인 계열의 다른 룰로 경보를 냈다: {fired:?}");
+        assert_eq!(recent_login_entries(&daemon, s.id), recent_before, "재방송이 인터록 원장에 들어갔다");
+        let _ = s.child.lock().unwrap().kill();
+        // 대조
+        let (daemon, s) = health_probe_daemon("obs3-f2c2");
+        let fired0 = feed_lines_collect_alerts(&daemon, &s, &["Error: rate limit exceeded"]);
+        assert_eq!(fired0.iter().filter(|(r, _)| r == "rate_limited").count(), 1, "전제 {fired0:?}");
+        daemon.health_debounce.lock().unwrap().clear();
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+        assert_eq!(login_alerts(&fired), 1, "다른 계열(rate_limited) 기록이 로그인 실패를 가렸다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2 · 정적 2R MINOR · batch_start 경계) 첫 매치 **전에** 판정 기록이 n == batch_start · n > batch_start 이면 근거가 아니다(경보 1) ·
+    /// n == batch_start − 1 이면 근거다(거름 0). 고침 1b 의 배치 메모 뒤 옛 시험(obs3_verdict_key_bounds_…)은 「batch_start 검사 빼기」 뮤턴트를 못 잡는다 — 이 시험이 잡는다.
+    #[test]
+    fn obs3_verdict_key_batch_start_boundary_before_first_match() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-f2d");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let key = health_verdict_key(daemon.health_rules.lock().unwrap().iter().find(|r| r.name == "login_required").unwrap()).into_owned();
+        for (delta, want) in [(0i64, 1usize), (5, 1), (-1, 0)] {
+            let next = s.line_count.load(Ordering::Relaxed) as i64; // = 다음 배치의 batch_start
+            s.health_verdict_line.lock().unwrap().insert(key.clone(), (next + delta) as u64);
+            daemon.health_debounce.lock().unwrap().clear();
+            let fired = feed_lines_collect_alerts(&daemon, &s, &[OBS3_LOGIN_LINE]);
+            assert_eq!(login_alerts(&fired), want, "기록 = batch_start{delta:+} 에서 판정이 틀렸다: {fired:?}");
+        }
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2 · 507 N-F2) 사용자가 `health add-rule` 로 **기본 룰과 같은 이름**(login_required)에 다른 식을 덮으면(upsert = 같은 칸 교체 · builtin false)
+    /// 기본 룰의 옛 판정 기록(로그인 묶음)과 열쇠가 겹치지 않는다 → GUI 창 안 그 식의 첫 매치 = 경보 1.
+    #[test]
+    fn obs3_user_rule_same_name_as_builtin_does_not_share_verdict() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-nf2");
+        {
+            let mut rules = daemon.health_rules.lock().unwrap();
+            let slot = rules.iter_mut().find(|r| r.name == "login_required").unwrap();
+            *slot = HealthRule { name: "login_required".into(), regex: Regex::new("LOGIN-X-REQUIRED").unwrap(), action: None, threshold: 3, pause_secs: 300, builtin: false };
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &["LOGIN-X-REQUIRED now"]);
+        assert_eq!(login_alerts(&fired), 1, "기본 룰의 옛 판정 기록이 같은 이름 사용자 룰의 첫 매치를 가렸다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 3R ① · 담화 줄 자체의 인터록 보존) Gui 창 안 — 산문·인용 담화 = 경보 0 · discourse 가 붙은 recent_health 항목 +1 · 판정 기록 변화 0 /
+    /// 기계 에코(alert-machinery-token) = 경보 0 · recent +0 · 판정 기록 변화 0. (「Gui 창 안 담화는 전부 버린다」 구현은 산문 쪽 recent +1 에서 붉다.)
+    #[test]
+    fn obs3_gui_window_discourse_keeps_interlock_machine_echo_dropped() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-r3a");
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let disc_entries = |d: &Daemon| d.recent_health.lock().unwrap().iter()
+            .filter(|e| e["surface_id"] == s.id && !e["discourse"].is_null()).count();
+        let verdict_before = s.health_verdict_line.lock().unwrap().clone();
+        // 산문·인용 담화
+        const PROSE: &str = r#"CSO 보고: 경보 문구 "Please run /login" 은 부트 순간의 오탐이다"#;
+        const ECHO: &str = r#"health.alert rule=login_required line="Please run /login""#;
+        {
+            let rules = daemon.health_rules.lock().unwrap();
+            let rule = rules.iter().find(|r| r.name == "login_required").unwrap();
+            let m = rule.regex.find(PROSE).expect("전제: 산문 표본이 login_required 에 맞는다");
+            let why = alert_discourse_reason(PROSE, m.start(), m.end(), &rules).expect("전제: 산문 표본은 담화");
+            assert!(!is_alert_echo_reason(why), "전제: 산문 계열(기계 에코 아님) {why}");
+            let m = rule.regex.find(ECHO).expect("전제: 기계 에코 표본이 login_required 에 맞는다");
+            assert_eq!(alert_discourse_reason(ECHO, m.start(), m.end(), &rules), Some("alert-machinery-token"), "전제: 기계 에코");
+        }
+        assert_eq!(crate::repaint::echo_mode(&s), crate::repaint::EchoMode::Gui, "전제: Gui 창");
+        let recent_all = daemon.recent_health.lock().unwrap().len();
+        let disc_before = disc_entries(&daemon);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[PROSE]);
+        assert_eq!(login_alerts(&fired), 0, "산문 담화가 경보를 냈다: {fired:?}");
+        assert_eq!(disc_entries(&daemon), disc_before + 1, "Gui 창 안 산문 담화가 인터록 원장(discourse 표시)에 남지 않았다");
+        assert_eq!(daemon.recent_health.lock().unwrap().len(), recent_all + 1);
+        assert_eq!(*s.health_verdict_line.lock().unwrap(), verdict_before, "산문 담화가 판정 기록을 바꿨다");
+        // 기계 에코
+        let recent_all = daemon.recent_health.lock().unwrap().len();
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[ECHO]);
+        assert_eq!(login_alerts(&fired), 0, "기계 에코가 경보를 냈다: {fired:?}");
+        assert_eq!(daemon.recent_health.lock().unwrap().len(), recent_all, "기계 에코가 인터록 원장에 들어갔다");
+        assert_eq!(*s.health_verdict_line.lock().unwrap(), verdict_before, "기계 에코가 판정 기록을 바꿨다");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 3R ② · 출처 창 전용 음성 대조) 옛 rate_limited 적격 기록 → Gui 창 + 출처 창(`note_injected_quote` · 경보 중계 경로) → 내용상 담화 아닌 한도 줄 =
+    /// discourse injected-quote · recent +1 · 판정 기록 변화 0 → 원본 밀려남 → 출처 창만 끝냄(Gui 창 유지) → 진짜 한도 실패 = 경보 1.
+    /// (출처 창 판정만 GUI 거름 뒤로 옮긴 구현은 출처 창 줄이 기록을 이어받아 마지막 경보에서 붉다.)
+    #[test]
+    fn obs3_quote_window_line_in_gui_window_does_not_carry_verdict() {
+        const RL: &str = "Error: rate limit exceeded";
+        let (daemon, s) = health_probe_daemon("obs3-r3b");
+        let fired0 = feed_lines_collect_alerts(&daemon, &s, &[RL]); // 줄 0 = 옛 적격 기록
+        assert_eq!(fired0.iter().filter(|(r, _)| r == "rate_limited").count(), 1, "전제 {fired0:?}");
+        daemon.health_debounce.lock().unwrap().clear();
+        obs3_feed_filler(&daemon, &s, SCROLLBACK_LINES - 2);
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        daemon.note_injected_quote(s.id, "rate limit 경보 중계", true);
+        assert!(daemon.in_quote_window(s.id, "rate_limited"), "전제: 출처 창이 열렸다");
+        {
+            let rules = daemon.health_rules.lock().unwrap();
+            let rule = rules.iter().find(|r| r.name == "rate_limited").unwrap();
+            let m = rule.regex.find(RL).unwrap();
+            assert_eq!(alert_discourse_reason(RL, m.start(), m.end(), &rules), None, "전제: 내용상 담화가 아니다");
+        }
+        let rl_entries = |d: &Daemon, why: Option<&str>| d.recent_health.lock().unwrap().iter()
+            .filter(|e| e["surface_id"] == s.id && e["rule"] == "rate_limited" && e["discourse"].as_str() == why).count();
+        let quoted_before = rl_entries(&daemon, Some("injected-quote"));
+        let verdict_before = s.health_verdict_line.lock().unwrap().clone();
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[RL]); // 줄 9999 = 출처 창 줄
+        assert_eq!(fired.iter().filter(|(r, _)| r == "rate_limited").count(), 0, "출처 창 줄이 경보를 냈다: {fired:?}");
+        assert_eq!(rl_entries(&daemon, Some("injected-quote")), quoted_before + 1, "출처 창 줄이 injected-quote 로 인터록 원장에 남지 않았다");
+        assert_eq!(*s.health_verdict_line.lock().unwrap(), verdict_before, "출처 창 줄이 판정 기록을 바꿨다");
+        obs3_feed_filler(&daemon, &s, 1); // 줄 10000 → 원본 퇴출
+        assert_eq!(s.scrollback.lock().unwrap().front().map(String::as_str), Some("filler n0"), "전제: 원본(줄 0)이 버퍼 밖으로 밀렸다");
+        daemon.health_quote_until.lock().unwrap().remove(&(s.id, "rate_limited"));
+        assert!(!daemon.in_quote_window(s.id, "rate_limited"));
+        assert_eq!(crate::repaint::echo_mode(&s), crate::repaint::EchoMode::Gui, "전제: 출처 창만 끝내고 Gui 창은 유지");
+        daemon.health_debounce.lock().unwrap().clear();
+        let real_before = rl_entries(&daemon, None);
+        let fired = feed_lines_collect_alerts(&daemon, &s, &[RL]); // 줄 10001 = 진짜 한도 실패
+        assert_eq!(fired.iter().filter(|(r, _)| r == "rate_limited").count(), 1, "출처 창 줄이 판정 기록을 이어받아 진짜 실패를 가렸다: {fired:?}");
+        assert_eq!(rl_entries(&daemon, None), real_before + 1);
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 정적 3R ③) 사용자 룰 = **실제 등록 경로**(`health.add_rule` 처리기)로 기본 룰과 같은 이름(login_required)을 다른 식으로 덮는다 →
+    /// builtin == false(다른 기본 룰은 true 그대로) · 기본 룰의 옛 판정 기록과 안 겹쳐 창 안 새 식의 첫 매치 = 경보 1.
+    #[test]
+    fn obs3_add_rule_handler_same_name_as_builtin_is_user_rule() {
+        let (daemon, s) = obs3_seat_with_old_login_line("obs3-r3c");
+        let req = cys::Request { id: json!(1), method: "health.add_rule".into(), params: json!({"name": "login_required", "pattern": "LOGIN-X-REQUIRED"}) };
+        let crate::handlers::Reply::Single(resp) = crate::handlers::dispatch(&daemon, req, None) else { panic!("단일 응답") };
+        assert_eq!(resp["ok"], json!(true), "add_rule 실패: {resp}");
+        {
+            let rules = daemon.health_rules.lock().unwrap();
+            let r = rules.iter().find(|r| r.name == "login_required").unwrap();
+            assert_eq!(r.regex.as_str(), "LOGIN-X-REQUIRED", "전제: 같은 칸이 새 식으로 바뀌었다(upsert)");
+            assert!(!r.builtin, "등록 경로로 덮은 룰이 기본 룰로 표시됐다");
+            assert!(rules.iter().find(|r| r.name == "not_logged_in").unwrap().builtin, "다른 기본 룰의 builtin 이 바뀌었다");
+        }
+        crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+        let fired = feed_lines_collect_alerts(&daemon, &s, &["LOGIN-X-REQUIRED now"]);
+        assert_eq!(login_alerts(&fired), 1, "기본 룰의 옛 판정 기록이 등록 경로로 덮은 사용자 룰의 첫 매치를 가렸다: {fired:?}");
+        let _ = s.child.lock().unwrap().kill();
+    }
+
+    /// (obs3 고침 2b · master#9c54e743 · 507 V16) 로그인 묶음 = not_logged_in · login_required **둘만**(같은 한 줄 글이 두 룰에 걸리는 사이) —
+    /// ㉮ 옛 not_logged_in 기록 → Gui 창 안 진짜 401 = auth_401 경보 1 · recent +1 ㉯ 같은 좌석 꼴에서 진짜 token expired = 경보 1
+    /// ㉰ token_expired · auth_401 은 자기 이름 열쇠 — 자기 기록이 있으면 자기 재방송 = 0 · recent +0. (묶음에 auth_401 을 도로 넣으면 ㉮ 가 붉다.)
+    #[test]
+    fn obs3_login_pair_only_token_expired_and_auth_401_keep_own_keys() {
+        const NLI: &str = " ⎿\u{a0}Not logged in";
+        const A401: &str = "API Error: 401 Unauthorized · authentication_error";
+        const TOK: &str = "OAuth token expired";
+        let only = |daemon: &Daemon, line: &str, want: &str| {
+            let rules = daemon.health_rules.lock().unwrap();
+            let hits: Vec<_> = rules.iter().filter_map(|r| r.regex.find(line).map(|m| (r.name.clone(), alert_discourse_reason(line, m.start(), m.end(), &rules)))).collect();
+            assert_eq!(hits, vec![(want.to_string(), None)], "전제: {line:?} 는 {want} 에만 맞고 담화가 아니다");
+        };
+        let count = |fired: &[(String, String)], rule: &str| fired.iter().filter(|(r, _)| r == rule).count();
+        let rule_entries = |d: &Daemon, sid: u64, rule: &str| d.recent_health.lock().unwrap().iter()
+            .filter(|e| e["surface_id"] == sid && e["rule"] == rule && e["discourse"].is_null()).count();
+        // ㉮ · ㉯ — 옛 not_logged_in 기록 → 창 안 다른 글(401 · token expired)
+        for (k, (line, rule)) in [(A401, "auth_401"), (TOK, "token_expired")].into_iter().enumerate() {
+            let (daemon, s) = health_probe_daemon(&format!("obs3-pair{k}"));
+            only(&daemon, NLI, "not_logged_in");
+            only(&daemon, line, rule);
+            let fired0 = feed_lines_collect_alerts(&daemon, &s, &[NLI]);
+            assert_eq!(count(&fired0, "not_logged_in"), 1, "전제 {fired0:?}");
+            daemon.health_debounce.lock().unwrap().clear();
+            crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+            let before = rule_entries(&daemon, s.id, rule);
+            let fired = feed_lines_collect_alerts(&daemon, &s, &[line]);
+            assert_eq!(count(&fired, rule), 1, "옛 「Not logged in」 기록이 창 안 진짜 {rule} 를 가렸다: {fired:?}");
+            assert_eq!(rule_entries(&daemon, s.id, rule), before + 1, "진짜 {rule} 가 인터록 원장에 없다");
+            let _ = s.child.lock().unwrap().kill();
+        }
+        // ㉰ — 자기 기록 → 자기 재방송 = 0
+        for (k, (line, rule)) in [(A401, "auth_401"), (TOK, "token_expired")].into_iter().enumerate() {
+            let (daemon, s) = health_probe_daemon(&format!("obs3-own{k}"));
+            let fired0 = feed_lines_collect_alerts(&daemon, &s, &[line]);
+            assert_eq!(count(&fired0, rule), 1, "전제 {fired0:?}");
+            daemon.health_debounce.lock().unwrap().clear();
+            crate::repaint::apply_resize(&s, 24, 100).expect("GUI 크기 변경");
+            let before = rule_entries(&daemon, s.id, rule);
+            let fired = feed_lines_collect_alerts(&daemon, &s, &[line]);
+            assert_eq!(count(&fired, rule), 0, "{rule} 자기 재방송이 경보를 냈다: {fired:?}");
+            assert_eq!(rule_entries(&daemon, s.id, rule), before, "{rule} 재방송이 인터록 원장에 들어갔다");
+            let _ = s.child.lock().unwrap().kill();
+        }
+    }
+
+    /// (obs3 T6 · 폭주) 1초 안에 크기를 30번 번갈아 바꿔도 상태 기계가 멈추지 않는다 — 패닉·교착 0 · 흔들기 표식 그대로 ·
+    /// 세대 30 · 끝 크기 = 마지막 값 · 창은 열려 있고, 출력이 없으면 마지막 변경 + 바닥(3초)에, 어떤 경우든 마지막 변경 + 상한(60초) 전에 닫힌다.
+    #[test]
+    fn obs3_gui_resize_burst_30_in_1s_bounded() {
+        let (_daemon, s) = health_probe_daemon("obs3-t6");
+        // 실제 좌석에 30회(≈33ms 간격) — 이 시험은 실호출의 견고성(패닉·교착·상태 칸)과 자체 비용만 잰다(벽시계 「1초 안에 30회」 밀도 재현은 아니다 ·
+        //   부하 아래 sleep 30ms 가 45~158ms 로 늘어난 실측). 창 끝·상한의 「마지막 변경 기준」 은 순수 시험 obs3_gui_burst_extends_grace_and_cap_from_last_resize(repaint.rs)가 고정 시각으로 잡는다.
+        let mut spent = std::time::Duration::ZERO;
+        let mut last = Instant::now();
+        for i in 0..30u16 {
+            let cols = if i % 2 == 0 { 100 } else { 80 + (i % 7) };
+            let tt = Instant::now();
+            crate::repaint::apply_resize(&s, 24, cols).expect("폭주 중 크기 변경");
+            last = Instant::now();
+            spent += last - tt;
+            std::thread::sleep(std::time::Duration::from_millis(33));
+        }
+        assert!(spent < std::time::Duration::from_secs(1), "크기 변경 30회의 자체 시간이 너무 길다(교착 의심): {spent:?}");
+        assert_eq!(s.resize_gate.lock().unwrap().gen, 30);
+        assert!(s.resize_gate.lock().unwrap().nudge_origin.is_none());
+        assert!(!s.repaint_in_flight.load(Ordering::Acquire), "GUI 변경이 흔들기 진행 표식을 세웠다");
+        let last_cols = 80 + (29 % 7);
+        assert_eq!(s.parser.lock().unwrap().screen().size(), (24, last_cols));
+        let e = s.repaint_echo.lock().unwrap();
+        assert!(e.cap_until.is_none(), "GUI 변경이 흔들기 칸을 건드렸다: {e:?}");
+        assert!(e.gui.active_at(Instant::now()), "폭주 직후 창은 열려 있다: {e:?}");
+        assert!(!e.gui.active_at(last + std::time::Duration::from_millis(crate::repaint::REPAINT_ECHO_GRACE_MS + 50)), "출력 없으면 마지막 변경 + 3초에 닫혀야 한다: {e:?}");
+        let cap = e.gui.cap_until.expect("상한");
+        assert!(cap <= last + std::time::Duration::from_secs(crate::repaint::REPAINT_ECHO_CAP_SECS), "상한이 마지막 변경 + 60초를 넘었다");
+        assert!(cap > last + std::time::Duration::from_secs(crate::repaint::REPAINT_ECHO_CAP_SECS - 2), "상한이 마지막 변경 기준으로 밀리지 않았다(첫 변경 기준에 머묾)");
+        drop(e);
         let _ = s.child.lock().unwrap().kill();
     }
 

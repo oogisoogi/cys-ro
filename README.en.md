@@ -108,7 +108,7 @@ cysr send --to worker "status report, please"  # push by role address
 cysr send-key --to worker Return               # confirm submission
 cysr status --json                             # one-call fleet snapshot
 cysr events --reconnect                        # push event stream (replaces polling)
-cysr run -- python -m http.server              # lifecycle-managed scoped execution
+cysr run -- python -m http.server --bind 127.0.0.1   # lifecycle-managed scoped execution (loopback only · no firewall prompt)
 cysr boot                                      # boot the standard node set (auto-detects installed CLIs)
 ```
 
@@ -129,8 +129,8 @@ pack     cysjavis-pack/: 10 absolute directives · 90+ deterministic tools · 25
 
 Every pane process gets `CYS_SURFACE_ID`, `CYS_SURFACE_REF`, and `CYS_SOCKET` injected
 automatically — the AI inside a pane learns its own address instantly via `cysr identify`.
-The PTY is owned by the daemon, so sessions survive app restart, reinstall, and update
-(re-attach).
+The PTY is owned by the daemon, so sessions survive restarting just the app window (re-attach).
+An update or reinstall that replaces the daemon loses the PTY; organization restore (phoenix) then reconnects the same conversation.
 
 ## cysr Pack — the built-in multi-agent OS
 
@@ -486,7 +486,7 @@ bun x @tauri-apps/cli build                    # distribution bundle
 ```
 
 Note: rebuild the app after editing `ui/` (the frontend is embedded in the binary). The
-PTY is daemon-owned — sessions persist across UI restart and app reinstall (re-attach).
+PTY is daemon-owned — sessions persist across a UI-only restart (re-attach); an update or reinstall that replaces the daemon loses the PTY and organization restore (phoenix) reconnects it.
 
 ## Security model
 

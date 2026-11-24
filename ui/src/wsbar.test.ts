@@ -133,11 +133,14 @@ describe("WSU_FONT_PX — CSS와 산식이 같은 수를 쓰는가", () => {
 
   it("★「워크스페이스」 라벨이 헤더에서 사라졌다 — 그 자리를 버튼 글자에 내줬다(오너 지시 ⑴)", () => {
     const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-    const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/);
+    const head = html.match(/<div id="wsbar-head"[^>]*>([\s\S]*?)<\/div>/);
     expect(head).not.toBeNull();
     // 6 → 5 → 3: ＋부서(A1-3 M1)에 이어 ▶CEO·▶부서장까지 전문가 모드 칸으로 옮겼다(v110-sidebar).
     //   잃은 것이 아니라 자리를 옮긴 것이고, 아래 ⓑ′ 케이스가 세 요소의 **실재**를 따로 잰다.
-    expect((head![1].match(/<button/g) ?? []).length).toBe(3);
+    // (1.1.19 · cysr-1119-s10b MD-S1S2) 3 → 0: A−·A＋·＋ 도 화면 설정 「전문가」 로 옮겼다 — 빈 머리 칸은 hidden(+ views.css [hidden] 짝).
+    expect((head![1].match(/<button/g) ?? []).length).toBe(0);
+    expect(html).toContain('<div id="wsbar-head" hidden></div>');
+    expect(readFileSync(new URL("./views/views.css", import.meta.url), "utf8")).toContain("#wsbar-head[hidden] { display: none; }");
     expect(head![1]).not.toContain("<span"); // 라벨 자리(span)가 통째로 없어야 한다
     // ★「'워크스페이스'라는 글자가 없다」로 재면 안 된다 — ＋ 버튼의 title="새 워크스페이스"에
     //   그 낱말이 남아 있고 그것은 **툴팁이지 라벨이 아니다**(초판이 여기서 거짓 적색을 냈다).
@@ -366,7 +369,7 @@ describe("showsRowAge — 나이 칸을 낼 자리가 있는가", () => {
 // ─── A1-3 M1 + v110-sidebar ⓑ′ — 조직 단추는 전문가 모드 칸으로, 그 자리엔 말로 부탁하는 안내 ───
 describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)으로, 머리줄 아래엔 안내 한 줄", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  const head = html.match(/<div id="wsbar-head">([\s\S]*?)<\/div>/)![1];
+  const head = html.match(/<div id="wsbar-head"[^>]*>([\s\S]*?)<\/div>/)![1];
   const hint = html.match(/<div id="ws-dept-hint"[^>]*>([\s\S]*?)<\/div>/); // (1h) class="dept-only" 가 붙어도 같은 안내 줄
 
   it("★조직 단추 3종이 머리줄에 없고, 요소는 전문가 모드 칸 안에 그대로 있다 (v110-sidebar ⓑ′)", () => {
@@ -402,7 +405,7 @@ describe("ⓑ′ — 조직 단추 3종은 전문가 모드 칸(기본 꺼짐)�
 
   it("안내 한 줄이 머리줄 바로 다음(원래 자리)에 있다", () => {
     expect(hint).not.toBeNull();
-    const iHead = html.indexOf('<div id="wsbar-head">');
+    const iHead = html.indexOf('<div id="wsbar-head"');
     const iHint = html.indexOf('<div id="ws-dept-hint"');
     const iTabs = html.indexOf('<div id="ws-tabs">');
     expect(iHead).toBeGreaterThan(-1);

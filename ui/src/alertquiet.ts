@@ -20,19 +20,17 @@
 //             · 데몬 출처인데 **꺼지지 않는** 직접 호출 넷(위 출처 규칙): approval.stalled 셋 + `--wait` 대기 항목 배너 하나
 // 런마다 coverageDeclaration() 이 이 재고를 출력하고 시험이 소스의 실제 가드 수와 대조한다(B-216).
 
-/** 가드를 직접 갖는 UI 싱크 — 이름이 곧 main.ts 가드 호출의 인자다(alertsQuiet("<sink>")). */
+/** 가드를 직접 갖는 UI 싱크 — 이름이 곧 main.ts 가드 호출의 인자다(alertsQuiet("<sink>")).
+ *  ★(1.1.19 · cysr-1119-s10b · DESIGN §8-5 MD-CC 12 → 3) renderAlerts(CC 경보 띠) · ccFailBadge(CC 부서 실패 배지) · ccFooter(CC 푸터) · ccTaskError(작업 탭 오류 행)
+ *    넷은 그 화면(Live·작업 탭·대시보드 푸터)이 빠져 싱크 자체가 없다 → 목록에서 뺐다(가드 보유 12 → 8 · 채널 14 → 10 · CHANNEL_COUNT 가 계산). */
 export const QUIET_SINKS = [
   "toast", // daemonToast() — 우하단 박스(데몬 출처)
   "stickyToast", // daemonStickyToast() — 지속형 박스(데몬 출처)
   "osBanner", // daemonOsBanner() — OS 네이티브 배너(sendNotification, 데몬 출처)
-  "renderAlerts", // Control Center 경보 배지(#cc-alertbadge) + 스트립(#cc-alerts)
   "sidebarBadge", // 사이드바 승인 대기 ⚠ 배지(ws-approve-badge)
-  "ccFailBadge", // Control Center 부서 데몬 실패 배지(cc-fail-badge)
   "wsDot", // 워크스페이스 탭 부제 상태 점(ws-dot)·사망/CTX/유휴 비트·심각도 색 — 탭에는 pane 수·대표 제목만 남는다
   "pendingBadges", // Control Center 버튼(cc-pending-badge)·승인 Feed 탭(cc-feed-tabbadge) 건수 배지
   "feedSwitch", // 데몬 출처 승인 Feed 화면 자동 전환(feed.item.created 호출부 인라인 가드의 유예 후 전환 예약 — 포커스 강탈 방지. approval.stalled 의 즉시 전환은 R5 로 복원되어 래퍼 daemonOpenFeed 는 제거됨)
-  "ccFooter", // Control Center 푸터 「⚠ 데몬 응답 없음」(updateCcStale)
-  "ccTaskError", // Tasks 부서 오류 안내 행(renderTasks d.error)
   "starvedNotice", // ★v0.14.51 편입(우리 · master#1a52b068): 큐 막힘 경보 블록(queue.starved) — 원작자 S5 제거 대신 우리 경보를 남기고 이 가드로 끈다(알람 이력 직접 호출까지 덮음)
 ] as const;
 export type QuietSink = (typeof QUIET_SINKS)[number];
@@ -42,14 +40,10 @@ export const EXPECTED_GUARDS: Readonly<Record<QuietSink, number>> = {
   toast: 1,
   stickyToast: 1,
   osBanner: 1,
-  renderAlerts: 1,
   sidebarBadge: 1,
-  ccFailBadge: 1,
   wsDot: 1,
   pendingBadges: 1,
   feedSwitch: 1, // feed.item.created 호출부 인라인 가드 (daemonOpenFeed 래퍼는 R5 복원 뒤 호출자 0 이라 제거)
-  ccFooter: 1,
-  ccTaskError: 1,
   starvedNotice: 1,
 };
 

@@ -11043,6 +11043,7 @@ fn dispatch_method(daemon: &Arc<Daemon>, req: Request, caller_pid: Option<u32>, 
                         threshold: param_u64(&params, "threshold").unwrap_or(3).clamp(1, 100)
                             as u32,
                         pause_secs: param_u64(&params, "pause_secs").unwrap_or(300).min(3600),
+                        builtin: false, // ★(obs3 고침 2 · 507 N-F2) 사용자 룰 — 기본 룰과 같은 이름으로 덮어도 판정 기록 열쇠가 겹치지 않는다
                     };
                     let mut rules = daemon.health_rules.lock().unwrap();
                     // upsert: 같은 name이 이미 있으면 갱신(중복 누적 차단 — 재등록 스크립트가

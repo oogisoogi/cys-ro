@@ -184,6 +184,20 @@ jobs:
                   # ★TICKET=cysr-1116-s79-1119: 토큰은 실행 줄에만 있다(스텝 이름엔 파일 이름·캡처 경로 없음 — 위 MAJOR-1 교훈).
                   'ui/e2e/cc_popover_z_gate.py "$RUNNER_TEMP/cc-popover-z.png"':
                       "화면 층서 게이트(Control Center 위 팝오버) — 지워지거나 `if: false` 가 달리면 z-index 회귀(팝오버가 패널 뒤에 깔림)가 다시 어느 레인에서도 안 잡힌다.",
+                  # ★TICKET=cysr-1119-s7: 토큰 = 실행 줄에만(스텝 이름엔 파일 이름 없음 · 위 MAJOR-1 교훈).
+                  'ui/e2e/selection_gate.py "$RUNNER_TEMP/selection-gate.png"':
+                      "선택 표시 게이트(좌석 줄 .sel · 위 탭 active · 창 머리줄 · 막힌 창 알약 · 토스트 14px) — 지워지면 선택 표시가 사라지는 회귀(1.1.18 결함: 사이드바로 고르면 어느 곳에도 표시 없음)가 어느 레인에서도 안 잡힌다.",
+                  # ★TICKET=cysr-1119-integ1: S5 새 e2e 2 · S10b 새 e2e 2 배선(토큰 = 실행 줄에만 · 스텝 이름·주석에 파일 이름 없음 · 위 MAJOR-1 교훈).
+                  '"$RUNNER_TEMP/pw/bin/python" ui/e2e/chatscroll_gate.py':
+                      "대화 화면 한 스크롤 게이트(S5 CV-RAIL · 가운데 칸 스크롤 상자 = 대화 목록 하나 · 결과 50장에도 높이 불변) — 지워지면 스크롤 상자 둘 회귀가 안 잡힌다.",
+                  'CLICKABLES_MAX=7 "$RUNNER_TEMP/pw/bin/python" ui/e2e/chat_clickables_gate.py':
+                      "대화 화면 첫 장면 누를 것 상한 게이트(S5 P0-L3 · view-host ≤ 7) — 지워지면 단추 늘어남 회귀가 안 잡힌다.",
+                  '"$RUNNER_TEMP/pw/bin/python" ui/e2e/topbar_count_gate.py':
+                      "상단 첫 화면 누를 것 계수 게이트(S10b 화면 다이어트) — 지워지면 상단 단추 되살아남 회귀가 안 잡힌다.",
+                  '"$RUNNER_TEMP/pw/bin/python" ui/e2e/counsel_notice_gate.py':
+                      "상담소 안내문 확인 게이트(S10b AG5) — 지워지면 안내 확인 계기 회귀가 안 잡힌다.",
+                  '"$RUNNER_TEMP/pw/bin/python" ui/e2e/chatdrop_gate.py':
+                      "대화 입력칸 파일 끌어 놓기 게이트(S11 TC3) — 지워지면 끌어 놓기 판정(입력칸 · 보기 칸 제외) 회귀가 안 잡힌다.",
                   "cargo test --bin cysd":
                       "데몬 단위 검체(alert_route·governance·state·delivery)의 브랜치 조기 경보. 태그 push "
                       "에서 처음 붉어지면 pack-artifacts 미실행 → 팩 자산 0 → 발행 0 이다.",
@@ -2325,3 +2339,12 @@ jobs:
           "$RUNNER_TEMP/pw/bin/python" -m pip install --quiet playwright==1.60.0
           "$RUNNER_TEMP/pw/bin/python" -m playwright install --only-shell chromium
           "$RUNNER_TEMP/pw/bin/python" ui/e2e/cc_popover_z_gate.py "$RUNNER_TEMP/cc-popover-z.png"
+          # ★TICKET=cysr-1119-s7: 선택 표시·작업 화면 표시 게이트(SEL+W2 · W5 · W6 · BA5) — 같은 번들·같은 venv 재사용.
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/selection_gate.py "$RUNNER_TEMP/selection-gate.png"
+          # ★TICKET=cysr-1119-integ1: 대화 화면 틀(S5) 2 · 화면 다이어트(S10b) 2 — 같은 번들·같은 venv 재사용 · 기록 기본 꺼짐(셈·판정만).
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/chatscroll_gate.py
+          CLICKABLES_MAX=7 "$RUNNER_TEMP/pw/bin/python" ui/e2e/chat_clickables_gate.py
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/topbar_count_gate.py
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/counsel_notice_gate.py
+          # ★TICKET=cysr-1119-integ1(2차②): 대화 입력칸 끌어 놓기(S11) — 같은 번들·같은 venv.
+          "$RUNNER_TEMP/pw/bin/python" ui/e2e/chatdrop_gate.py

@@ -61,6 +61,9 @@ export interface MasterRow {
   agent?: string | null;
   agent_seen?: boolean | null;
   seat?: string | null;
+  /** (1.1.19 · TICKET=cysr-1119-s3 · F29) 좌석에 결속된 세션 id(org.status `registered_session_id` · 3초 조회 원문) — 글만 · 없음·빈칸·꼴 틀림 = null.
+   *  대화 화면 기록 watch 가 이 값으로 걸고(P3 v4 §3-7 C-1) 바뀌면 다시 건다(C-3). */
+  registered_session_id?: string | null;
 }
 
 export interface GateInput {
@@ -152,6 +155,7 @@ export function masterRowOf(org: unknown, working: (row: Record<string, unknown>
     agent: typeof r.agent === "string" ? r.agent : null,
     agent_seen: bool(r.agent_seen),
     seat: typeof r.seat === "string" ? r.seat : null,
+    registered_session_id: typeof r.registered_session_id === "string" && r.registered_session_id !== "" ? r.registered_session_id : null,
   };
 }
 

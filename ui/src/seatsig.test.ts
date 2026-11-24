@@ -462,23 +462,6 @@ describe("배선 핀 — main.ts", () => {
     );
     expect(src.includes(j("const alive = sig.agent_alive !", "== false;"))).toBe(false);
   });
-  test("CC Tasks 행·부서 머리: taskSeatView 한 벌(빈 자리 · 낡은 자기보고)", () => {
-    const row = sliceBody("function taskRow(", "\nfunction ");
-    expect(row.includes("const view = taskSeatView(s, Date.now(), HOLLOW_GRACE_UI);")).toBe(true);
-    expect(row.includes('const freshReport = view.report === "fresh";')).toBe(true);
-    expect(ns(row).includes(ns('} else if (view.seat === "hollow") {\n    cls = "hollow";\n    label = "빈 자리";'))).toBe(true);
-    expect(ns(row).includes(ns("} else if (freshReport) {"))).toBe(true);
-    expect(row.includes('(view.report === "stale" ? " (자기보고 낡음)" : "")')).toBe(true);
-    expect(ns(row).includes(ns("const trust = freshReport"))).toBe(true);
-    // 옛 형태: 자기보고가 있기만 하면(나이 무관) 라벨·신뢰 배지로 쓰던 분기
-    expect(ns(row).includes(ns("} else if (selfReport) {"))).toBe(false);
-    expect(ns(row).includes(ns("const trust = selfReport"))).toBe(false);
-    const tasks = ns(sliceBody("function renderTasks(", "\nfunction taskRow("));
-    // (1.1.8 병합 X6 = 겹침은 우리) 부서 머리의 「작업중」 계수는 우리 appearance.nodeWorking(낡은 자기보고 불신 · 단일 출처)을 쓴다 —
-    //   원작자 taskSeatIsWorking(taskSeatView) 는 CC 행에만. 「한 화면 두 규칙」 위험은 결정표 X6 에 기록돼 있다.
-    expect(tasks.includes(ns("surfaces.filter((s) => nodeWorking(s.status, s.idle_secs, s.exited)).length"))).toBe(true);
-    expect(tasks.includes("taskSeatIsWorking(")).toBe(false); // 한 머리에 두 판정이 섞이지 않는다
-  });
   test("새 pane·입양 직후 신호를 1회 당겨 온다(회색 깜빡임 차단 · 리뷰1 #6)", () => {
     const ns1 = sliceBody("async function newSurface(", "\n}\n");
     expect(ns1.includes("void refreshSidebarStatus().catch(() => {});")).toBe(true);

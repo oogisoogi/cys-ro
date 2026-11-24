@@ -316,7 +316,7 @@ function harness() {
     },
     adoptSeat: (cands: { tree: unknown }[], _sk: string, sid: number) => ({ idx: 0, tree: { type: "split", dir: "row", ratio: 0.5, a: cands[0].tree, b: { type: "pane", sid } }, boundHole: null }),
     holeUntil: new Map<string, number>(), pruneHoleUntil: nothing, Date: { now: () => 9_000_000 },
-    render: () => void renders.push("render"), refreshSidebarStatus: () => Promise.resolve(), setFocus: (sid: number) => void focus.push(sid),
+    render: () => void renders.push("render"), refreshSidebarStatus: () => Promise.resolve(), setFocus: (sid: number) => void focus.push(sid), setFocusedSid: (v: number | null) => { scope.focusedSid = v; }, // (cysr-1119-s7 SEL-1) 실제 구현의 값 대입만(scope = 아래 loadWith 가 만든 with 대상 · 호출은 틱 때라 초기화 뒤)
     saveLayout: nothing, updateFtRoot: nothing, checkDeptFormationNotices: nothing,
     cwdBlockedNotices: () => ({ seen: new Set<string>(), notices: [] }), cwdBlockedSeen: new Set<string>(), openPrivacySettings: nothing, stickyToast: nothing,
     // ── F-01

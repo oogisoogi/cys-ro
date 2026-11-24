@@ -6958,7 +6958,9 @@ fn run(command: Command) -> i32 {
                             //   못 받은 노드는 업데이트 재시작 전에 상태를 저장하지 못한다.
                             // ★⑯(1.1.7 precut ㉮ 형제) 무인 팬아웃 — 「승인 프롬프트 대기 중이면 무시하라」는 문안만으로는 그 창을
                             //   못 지킨다(붙여넣기 뒤 Return 이 선택지를 누른다). 창이 떠 있으면 데몬이 쓰기 전에 거부 → 아래 사유 출력.
-                            if let Err(e) = inject_text_opts(sid, "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 _round/SESSION_STATE.md와 자기 TODO를 저장하고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.", true) {
+                            // ★1.1.19 PK-DRAIN: 저장 자리는 역할별(master = 팩 정본 · 워커 = 자기 TODO · CSO = 자기 _round/).
+                            let audience = drain_audience(role, || drain_pack_for_socket(&cys::socket_path()));
+                            if let Err(e) = inject_text_opts(sid, &drain_instruction(&audience), true) {
                                 // ★(B-360 R2) name the outcome: UNKNOWN may still be typed (never re-sent here), REFUSED typed nothing
                                 let what = if is_write_outcome_unknown(&e) {
                                     "save signal outcome unknown (may still be typed — not re-sent)"
@@ -22968,9 +22970,81 @@ fn claude_input_empty(screen: &str) -> bool {
 /// 명령보다 우선)을 못박는다. 09-21 08:12 실기에서 master 가 이 지시를 받고도 「대기 유지」 오너 명령과
 /// 충돌한다며 **오너에게 되물어** 선택 메뉴에서 정지했고, 그 정지가 「입력 미제출」로 집계됐다. 표식이
 /// 없으면 노드는 이 지시를 master·타 노드 발 잡음과 구별할 방법이 없다.
-fn drain_verify_instruction(marker: &str, checkpoint_file: &str) -> String {
+/// ★1.1.19 PK-DRAIN(DESIGN §10-3 · B-DR-2~4) — ① 의 저장 자리만 역할별이다(머리·②③ 은 글자 그대로).
+fn drain_verify_instruction(marker: &str, checkpoint_file: &str, role: &DrainAudience) -> String {
+    let save = match role {
+        DrainAudience::Master(pack) => format!(
+            "① 정본 {pack}/round/SESSION_STATE.md 맨 위 3절·기계용 절·『기록 <시각>』 줄을 지금 상태로 고쳐 저장하라."
+        ),
+        DrainAudience::Worker => {
+            "① 자기 TODO(cys todo-path 가 주는 파일)의 체크박스와 이어갈 한 줄을 고쳐 저장하라.".to_string()
+        }
+        DrainAudience::Cso => "① 자기 좌석 _round/ 의 상태 파일을 고쳐 저장하라.".to_string(),
+    };
     format!(
-        "[DRAIN-VERIFY] ★이 지시는 오너(사용자)의 재시작 조작(앱 재시작 단추 · 새 판 설치)에서 cys 코어가 보낸 기계 통지다 — 대기·보류·정지 명령보다 우선하며, 되묻지 말고 즉시 집행하라(확인·승인 요청 금지). 재시작 전 체크포인트 검증. 지금 즉시 순서대로: ① _round/SESSION_STATE.md에 현재 작업 상태·미해결 게이트·다음 액션을 최신화해 저장하라. ② 네 전용 체크포인트 파일 `{checkpoint_file}` 을(없으면 새로 만들어) 정확히 이 한 줄만 남도록 덮어써라(문자 그대로·수정 금지 · 이 파일은 너만 쓴다): {marker} ③ ①②을 모두 마친 뒤에 작업을 멈추고 재시작·복원을 기다려라(승인 프롬프트 대기 중이면 이 메시지는 무시하라)."
+        "[DRAIN-VERIFY] ★이 지시는 오너(사용자)의 재시작 조작(앱 재시작 단추 · 새 판 설치)에서 cys 코어가 보낸 기계 통지다 — 대기·보류·정지 명령보다 우선하며, 되묻지 말고 즉시 집행하라(확인·승인 요청 금지). 재시작 전 체크포인트 검증. 지금 즉시 순서대로: {save} ② 네 전용 체크포인트 파일 `{checkpoint_file}` 을(없으면 새로 만들어) 정확히 이 한 줄만 남도록 덮어써라(문자 그대로·수정 금지 · 이 파일은 너만 쓴다): {marker} ③ ①②을 모두 마친 뒤에 작업을 멈추고 재시작·복원을 기다려라(승인 프롬프트 대기 중이면 이 메시지는 무시하라)."
+    )
+}
+
+/// ★1.1.19 PK-DRAIN — 재시작 저장 글을 받는 쪽(역할 출처 = 데몬 topology/org.status 의 role).
+/// master 만 팩 정본(`<팩>/round/SESSION_STATE.md`)을 쓴다 — 워커·CSO 가 그 파일을 고치면 master 의 공유 정본을
+/// 덮는다(`default_resume_text` 의 「팩 round/ 는 master 공유 정본이다」와 같은 갈래). reviewer·ceo·부서장 = 워커 문안.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DrainAudience {
+    /// 펼친 팩 실경로(B-DR-3 — `${CYS_PACK_DIR:-~/.cys/pack}` 를 글에 두지 않는다: 따옴표 안 `~` 는 셸이 안 펼친다).
+    Master(String),
+    Cso,
+    Worker,
+}
+
+/// 역할 → 받는 쪽. 팩 경로는 master 일 때만 잰다(다른 역할에는 필요 없다).
+fn drain_audience(role: &str, pack: impl FnOnce() -> std::path::PathBuf) -> DrainAudience {
+    if role == "master" {
+        DrainAudience::Master(pack().to_string_lossy().into_owned())
+    } else if role.starts_with("cso") {
+        DrainAudience::Cso
+    } else {
+        DrainAudience::Worker
+    }
+}
+
+/// 대상 소켓의 팩 실경로 — 부서 소켓이면 그 부서 팩(`lane_pack_for_socket`) · 아니면 이 프로세스의 팩.
+fn drain_pack_for_socket(socket: &std::path::Path) -> std::path::PathBuf {
+    drain_pack_for_socket_with(socket, cys::pack::pack_dir, std::env::current_dir, || {
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join(".cys/pack")
+    })
+}
+
+/// (codex 1R A2) 글에 넣는 팩 경로는 절대 경로 — 상대 `CYS_PACK_DIR` 는 cwd 가 다른 좌석에서 다른 자리를 가리킨다.
+/// 상대면 이 프로세스 cwd 로 편다 · cwd 를 못 읽으면 기본 팩 경로(`fallback` = 홈 `.cys/pack` · `pack.rs` 홈 기본과 같은 꼴).
+fn drain_pack_for_socket_with(
+    socket: &std::path::Path,
+    pack: impl FnOnce() -> std::path::PathBuf,
+    cwd: impl FnOnce() -> std::io::Result<std::path::PathBuf>,
+    fallback: impl FnOnce() -> std::path::PathBuf,
+) -> std::path::PathBuf {
+    let p = cys::pack::lane_pack_for_socket(socket).unwrap_or_else(pack);
+    if p.is_absolute() {
+        return p;
+    }
+    match cwd() {
+        Ok(c) if c.is_absolute() => c.join(p),
+        _ => fallback(),
+    }
+}
+
+/// `[DRAIN]` 팬아웃 글(역할별 · DESIGN §10-3 표 전문 글자 그대로 · 백틱 0 — 체크포인트 파일 계약은 `[DRAIN-VERIFY]` 에만).
+fn drain_instruction(role: &DrainAudience) -> String {
+    let save = match role {
+        DrainAudience::Master(pack) => format!(
+            "정본 {pack}/round/SESSION_STATE.md 의 맨 위 3절과 기계용 절(미해결 게이트 · 다음 액션)을 지금 상태로 고쳐 쓰고 『기록 <시각>』 줄을 고쳐라(날짜 절을 새로 쌓지 마라)"
+        ),
+        DrainAudience::Worker => "자기 TODO(cys todo-path 가 주는 파일)의 체크박스와 이어갈 한 줄을 고쳐 저장하라".to_string(),
+        DrainAudience::Cso => "자기 좌석 _round/ 의 상태 파일을 고쳐 저장하라".to_string(),
+    };
+    let resume = if matches!(role, DrainAudience::Master(_)) { "복원 후 지시를" } else { "복원 후 master 지시를" };
+    format!(
+        "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 {save}. 그리고 작업을 멈춰라. 작업 재개는 {resume} 기다린다."
     )
 }
 
@@ -23434,7 +23508,7 @@ fn verify_one_node_tracked(
         );
     }
     // 3) 저장 지시 주입 — nonce 마커 기입 + 작업 중단.
-    let instr = drain_verify_instruction(&marker, &file.to_string_lossy());
+    let instr = drain_verify_instruction(&marker, &file.to_string_lossy(), &drain_audience(&t.role, || drain_pack_for_socket(&t.socket)));
     let io_to = std::cmp::min(timeout, Duration::from_secs(8));
     // ★(B-360 R2) set when the instruction's outcome is unknown: it may still be typed, so the checks below still run
     let mut unknown: Option<String> = None;
@@ -33483,7 +33557,7 @@ mod tests {
         assert_eq!(refusing_on_approval(base.clone(), true)["refuse_on_approval"], json!(true), "켰는데 옵션이 안 실렸다");
         assert_eq!(refusing_on_approval(base.clone(), false), base, "껐는데 요청 바이트가 바뀌었다(다른 주입 경로 회귀)");
         // 형제(무인 팬아웃 3곳) — [DRAIN] · 팩 갱신 재주입 · drain --verify(부서 소켓 판 붙여넣기·Return).
-        assert!(prod.contains("inject_text_opts(sid, \"[DRAIN] "), "[DRAIN] 팬아웃이 거부 없이 나간다");
+        assert!(prod.contains("inject_text_opts(sid, &drain_instruction(&audience), true)"), "[DRAIN] 팬아웃이 거부 없이 나간다");
         assert!(prod.contains("if let Err(e) = inject_text_opts(sid, &directive, true)"), "팩 갱신 재주입이 거부 없이 나간다");
         let oi = prod.find("fn inject_text_on(").expect("inject_text_on");
         let ob = &prod[oi..oi + prod[oi..].find("\n}\n").unwrap()];
@@ -44837,6 +44911,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         let instr = drain_verify_instruction(
             "<!-- cys-checkpoint: n-1 1 -->",
             "/srv/work/_round/checkpoint-ab-7.md",
+            &DrainAudience::Worker,
         );
         for tok in ["오너", "되묻지 말고", "우선"] {
             assert!(instr.contains(tok), "오너 권한 표식에 '{tok}' 누락: {instr}");
@@ -44853,6 +44928,86 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             extract_target_file(&instr),
             Some(std::path::PathBuf::from("/srv/work/_round/checkpoint-ab-7.md"))
         );
+    }
+
+    /// codex 1R A2(TICKET=fix-1119-codex-r1) — `[DRAIN]`·`[DRAIN-VERIFY]` master 글에 넣는 팩 경로는 늘 절대 경로다.
+    /// 상대 `CYS_PACK_DIR`(예 `./packs/my pack`)를 그대로 넣으면 cwd 가 다른 좌석에서 다른 자리를 가리킨다 → 이 프로세스 cwd 로 편다 ·
+    /// cwd 를 못 읽으면 기본 팩 경로 · 이미 절대면 그대로 · 부서 소켓은 부서 팩(절대) 그대로.
+    #[test]
+    fn drain_pack_is_absolute_even_for_relative_env() {
+        use std::path::{Path, PathBuf};
+        let base = Path::new("/tmp/hq.sock");
+        let fallback = || PathBuf::from("/srv/cys/default-pack");
+        let cwd_ok = || Ok(PathBuf::from("/srv/cys"));
+        let cwd_err = || Err(std::io::Error::new(std::io::ErrorKind::NotFound, "cwd 사라짐"));
+        assert_eq!(drain_pack_for_socket_with(base, || PathBuf::from("./packs/my pack"), cwd_ok, fallback),
+                   PathBuf::from("/srv/cys/./packs/my pack"));
+        assert_eq!(drain_pack_for_socket_with(base, || PathBuf::from("packs/p"), cwd_err, fallback), PathBuf::from("/srv/cys/default-pack"));
+        assert_eq!(drain_pack_for_socket_with(base, || PathBuf::from("/abs/pack"), || panic!("절대 경로인데 cwd 를 읽었다"), fallback),
+                   PathBuf::from("/abs/pack"));
+        let dept = cys::pack::lane_pack_for_socket(Path::new("/x/.local/state/cys-dept-d1/cys.sock")).expect("부서 소켓");
+        assert!(dept.is_absolute(), "{dept:?}");
+        assert_eq!(drain_pack_for_socket_with(Path::new("/x/.local/state/cys-dept-d1/cys.sock"), || panic!("부서 소켓인데 호출자 팩을 쟀다"),
+                                              cwd_ok, fallback), dept);
+        // 운영 길 = 이 함수 하나(글에 들어가는 두 자리 모두 drain_pack_for_socket 을 거친다).
+        let body = refl_fn_body(include_str!("cys.rs"), "drain_pack_for_socket");
+        assert!(body.contains("drain_pack_for_socket_with("), "운영 함수가 절대화 함수를 거치지 않는다: {body}");
+        let m = drain_audience("master", || drain_pack_for_socket_with(base, || PathBuf::from("rel/pack"), cwd_ok, fallback));
+        let d = drain_instruction(&m);
+        assert!(d.contains("정본 /srv/cys/rel/pack/round/SESSION_STATE.md"), "{d}");
+    }
+
+    /// ★1.1.19 PK-DRAIN(DESIGN §10-3 · B-DR-2~4) — 저장 자리는 역할별이다. master 글만 팩 정본을 이름 대고,
+    /// 워커·CSO 글에는 `round/SESSION_STATE.md` 가 없다(남이 master 공유 정본을 덮지 않게). `[DRAIN]` 세 글 = 표 전문 글자 그대로 · 백틱 0.
+    #[test]
+    fn drain_text_is_role_specific() {
+        let pack = "/srv/cys/pack-dept-d1";
+        let m = drain_audience("master", || std::path::PathBuf::from(pack));
+        assert_eq!(m, DrainAudience::Master(pack.to_string()));
+        for (r, want) in [("cso", DrainAudience::Cso), ("cso-2", DrainAudience::Cso), ("worker", DrainAudience::Worker),
+                          ("worker-7", DrainAudience::Worker), ("reviewer-codex", DrainAudience::Worker), ("ceo", DrainAudience::Worker)] {
+            assert_eq!(drain_audience(r, || panic!("{r}: master 밖 역할이 팩 경로를 쟀다")), want, "role={r}");
+        }
+        assert_eq!(drain_instruction(&m), format!("[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 정본 {pack}/round/SESSION_STATE.md 의 맨 위 3절과 기계용 절(미해결 게이트 · 다음 액션)을 지금 상태로 고쳐 쓰고 『기록 <시각>』 줄을 고쳐라(날짜 절을 새로 쌓지 마라). 그리고 작업을 멈춰라. 작업 재개는 복원 후 지시를 기다린다."));
+        assert_eq!(drain_instruction(&DrainAudience::Worker), "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 자기 TODO(cys todo-path 가 주는 파일)의 체크박스와 이어갈 한 줄을 고쳐 저장하라. 그리고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.");
+        assert_eq!(drain_instruction(&DrainAudience::Cso), "[DRAIN] 업데이트 재시작이 임박했다. 승인 프롬프트 대기 중이면 이 메시지는 무시하라. 아니면 지금 자기 좌석 _round/ 의 상태 파일을 고쳐 저장하라. 그리고 작업을 멈춰라. 작업 재개는 복원 후 master 지시를 기다린다.");
+        let ck = "/w/_round/checkpoint-ab-3.md";
+        for a in [m.clone(), DrainAudience::Worker, DrainAudience::Cso] {
+            let d = drain_instruction(&a);
+            let v = drain_verify_instruction("<!-- cys-checkpoint: r-1 3 -->", ck, &a);
+            assert!(!d.contains('`'), "[DRAIN] 글에 백틱: {d}");
+            // 머리 = 팩 훅·세션 시작 시험이 보는 고정 앞머리(test_session_start_hook.py:765).
+            assert!(d.starts_with("[DRAIN] 업데이트 재시작이 임박했다."), "{d}");
+            let canon = matches!(a, DrainAudience::Master(_));
+            for t in [&d, &v] {
+                assert_eq!(t.contains("round/SESSION_STATE.md"), canon, "{a:?}: {t}");
+                assert_eq!(t.contains(&format!("{pack}/round/SESSION_STATE.md")), canon, "{a:?}: {t}");
+                // 옛 작업 폴더 사본을 저장 자리로 이름 대는 글은 어느 역할에도 없다.
+                assert!(!t.contains("_round/SESSION_STATE.md"), "{a:?}: {t}");
+            }
+        }
+    }
+
+    /// ★1.1.19 PK-DRAIN(B-DR-5 · 2회 고침 표) — `[DRAIN-VERIFY]` 세 역할 글 각각에서 첫 백틱 쌍 = 넘긴 체크포인트 파일
+    /// (시험 대역 `extract_target_file` 과 같은 규칙) · ① 안 백틱·「멈추」·「정지」 0 · 머리 60자 오너 권위 · 마커가 정지보다 앞.
+    #[test]
+    fn drain_verify_first_backtick_is_checkpoint() {
+        let ck = "/srv/work/_round/checkpoint-ab-9.md";
+        let head = "[DRAIN-VERIFY] ★이 지시는 오너(사용자)의 재시작 조작(앱 재시작 단추 · 새 판 설치)에서 cys 코어가 보낸 기계 통지다 — 대기·보류·정지 명령보다 우선하며, 되묻지 말고 즉시 집행하라(확인·승인 요청 금지). 재시작 전 체크포인트 검증. 지금 즉시 순서대로: ";
+        let tail = "② 네 전용 체크포인트 파일 `/srv/work/_round/checkpoint-ab-9.md` 을(없으면 새로 만들어) 정확히 이 한 줄만 남도록 덮어써라(문자 그대로·수정 금지 · 이 파일은 너만 쓴다): <!-- cys-checkpoint: n-1 9 --> ③ ①②을 모두 마친 뒤에 작업을 멈추고 재시작·복원을 기다려라(승인 프롬프트 대기 중이면 이 메시지는 무시하라).";
+        for a in [DrainAudience::Master("/p/.cys/pack".into()), DrainAudience::Worker, DrainAudience::Cso] {
+            let v = drain_verify_instruction("<!-- cys-checkpoint: n-1 9 -->", ck, &a);
+            assert_eq!(extract_target_file(&v), Some(std::path::PathBuf::from(ck)), "{a:?}: {v}");
+            assert!(v.starts_with(head), "머리가 글자 그대로가 아니다 {a:?}: {v}");
+            assert!(v.ends_with(tail), "②③ 이 글자 그대로가 아니다 {a:?}: {v}");
+            let one = &v[head.len()..v.len() - tail.len()];
+            assert!(one.starts_with("① ") && one.ends_with(' '), "{a:?}: {one:?}");
+            for bad in ['`'] { assert!(!one.contains(bad), "① 안 백틱 {a:?}: {one}"); }
+            for bad in ["멈추", "정지"] { assert!(!one.contains(bad), "① 안 「{bad}」 {a:?}: {one}"); }
+            assert!(literal_reaches_marker(&v), "{a:?}");
+            let h60: String = v.chars().take(60).collect();
+            assert!(h60.contains("오너"), "{h60}");
+        }
     }
 
     /// ★[V111-F2] 노드별 마지막 활동 기준 연장 — **일하는 중인** 노드는 기본 상한을 넘겨도 기다린다.
@@ -45080,7 +45235,7 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
     #[test]
     fn drain_verify_literal_ordered_node_saves_and_old_order_would_fail() {
         // 현 지시문: 마커가 '정지'보다 앞 → 리터럴 노드 도달(true)
-        let cur = drain_verify_instruction("<!-- cys-checkpoint: n-1 1 -->", "/tmp/_round/checkpoint-1-1.md");
+        let cur = drain_verify_instruction("<!-- cys-checkpoint: n-1 1 -->", "/tmp/_round/checkpoint-1-1.md", &DrainAudience::Worker);
         assert!(literal_reaches_marker(&cur), "현 지시문은 마커가 정지보다 앞이어야 함(R1)");
         // 구 순서(①저장 ②정지 ③마커) 재구성 → 리터럴 노드가 정지를 먼저 만나 미도달(false)=저장 유실
         let old = "① 저장하라. ② 작업을 멈추고 기다려라. ③ 마지막으로 <!-- cys-checkpoint: n-1 1 --> 추가";
@@ -52215,7 +52370,9 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
         use sha2::{Digest, Sha256};
         let hash = |t: &str| Sha256::digest(t.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
         // ① 글자 그대로 고정 — 문안을 고치려면 판 호환(구 CLI·구 데몬)을 먼저 보고 이 해시를 함께 고친다.
-        assert_eq!(hash(cys::RESTORE_DIRECTIVE_MASTER), "ea5437913705597c1c5f9990b1c07f6ecdf9006bb88f232165b8fc11700205c3");
+        // ★1.1.19 PK-DRAIN B-DR-1: 읽는 자리를 팩 정본으로(옛 ea5437…) — 판 호환 = 아래 `restore_master_text_mixed_versions_fall_back_once`.
+        // codex 1R A4: 읽는 자리를 셸 꼴 없는 말로(같은 판 안 이전 값 6846dc… · 1.1.19 미공개라 판 사이 호환 대상 아님).
+        assert_eq!(hash(cys::RESTORE_DIRECTIVE_MASTER), "b926ab18050a30fc5bbe54efcf41971668806fc9e40081a53f4cdaabd444371e");
         assert_eq!(hash(cys::RESTORE_DIRECTIVE_NODE), "04da62c14f71a547f75dcaf8525d8f19be3098bddf503cff9a8447785605ce96");
         assert_eq!(hash(cys::RECOVER_DIRECTIVE), "6201c8174379bf07f52281b7d990a4a54e12a5071e9b362a86f577c11da23759");
         // ② 생산자가 내는 값은 데몬 어휘 안이다(역할별 전부).
@@ -52239,6 +52396,72 @@ At line:1 char:1\n+ claude --model claude-opus-5-5\n+ ~~~~~~\n    + CategoryInfo
             assert!(!cys::gate_followup_allowed(&text.replacen("복원", "\u{1107}\u{1169}\u{11a8}\u{110b}\u{116f}\u{11ab}", 1).replacen("재기동", "\u{110c}\u{1162}\u{1100}\u{1175}\u{1103}\u{1169}\u{11bc}", 1)), "NFD: {text}");
         }
         assert!(!cys::gate_followup_allowed(&cys::GATE_MARK_DIRECTIVE_HELD.to_uppercase().replace("HELD", "held")));
+    }
+
+    /// ★1.1.19 PK-DRAIN B-DR-1 판 혼재(master [master#b1142d4c] 조건) — master 복원 글을 바꾸면 옛 글·새 글이 서로의 데몬
+    /// 어휘 밖이 된다. 두 방향 다 귀결이 「거부 → 지시만 뺀 표식 **한 번** 재전송 → 좌석은 전문을 받고 [RESTORE] 한 줄만 빠짐」
+    /// 이어야 한다(멈춤·무한 재시도·배달 유실 0). 옛 글 = 1.1.18(838f24421) `lib.rs:1161` 바이트 그대로(해시로 고정).
+    #[test]
+    fn restore_master_text_mixed_versions_fall_back_once() {
+        use sha2::{Digest, Sha256};
+        const OLD_MASTER_1118: &str = "[RESTORE] 조직 복원 절차다(master). _round/RECOVERY.md → SESSION_STATE.md → 자기 TODO → memory → git 순으로 읽고, 노드 재기동·surface 재매핑·directive 각성 후 상태를 복원하라. \
+         ★이어서 진행할지는 **임무 게이트가 정한다 — 네 판단이 아니다**: `python3 \"${CYS_PACK_DIR:-$HOME/.cys/pack}/bin/javis_mission.py\" status` 를 실행하고 그 **종료코드만** 근거로 삼아라(화면·기억·추정 금지). \
+         0=오너 임무 있음 → 그 임무를 이어서 진행한다. 1(임무 없음)·2(판독 불가=없음 취급) → 한 줄로 상태만 보고하고 **대기**하라. \
+         ⛔임무가 없을 때 스스로 티켓을 만들어 CSO·워커를 가동하는 것은 자율 착수이며 금지다(2026-09-21 실기: 임무 0 함대가 자기발의 티켓으로 세 자리를 60%+ 로 태웠다).";
+        let hash = |t: &str| Sha256::digest(t.as_bytes()).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        assert_eq!(hash(OLD_MASTER_1118), "ea5437913705597c1c5f9990b1c07f6ecdf9006bb88f232165b8fc11700205c3", "옛 글 사본이 1.1.18 바이트가 아니다");
+        assert_ne!(OLD_MASTER_1118, cys::RESTORE_DIRECTIVE_MASTER);
+        assert!(!cys::RESTORE_DIRECTIVE_MASTER.contains("_round/RECOVERY.md"), "새 글이 옛 작업 폴더 사본을 읽으라 한다");
+        // codex 1R A4(TICKET=fix-1119-codex-r1): 읽는 자리 = 셸 꼴 없는 운영체제 중립 말(PowerShell 은 `${CYS_PACK_DIR:-…}` 를 `/round/` 로 접는다).
+        assert!(cys::RESTORE_DIRECTIVE_MASTER.contains(
+            "정본 = 팩 폴더(환경 변수 CYS_PACK_DIR 이 있으면 그 폴더 · 없으면 홈 폴더의 .cys/pack) 아래 round/ 의 RECOVERY.md → SESSION_STATE.md"
+        ));
+        let read_step = cys::RESTORE_DIRECTIVE_MASTER.split("★이어서").next().unwrap();
+        for shell in ["${", "$HOME", ":-", "~/", "`"] {
+            assert!(!read_step.contains(shell), "복원 글의 읽는 자리에 셸 꼴 {shell:?}: {read_step}");
+        }
+        const FULL: &str = "# 절대지침 전문";
+        let held = |t: &str| format!("{}\n{t}", cys::GATE_MARK_DIRECTIVE_HELD);
+        let denied = Some("gate_followup_denied: surface.gate_pending denied");
+        // 1.1.18 데몬의 어휘(새 lib 에서 바뀐 것은 master 글 하나뿐 · 나머지 둘은 같은 상수).
+        let old_daemon_allows = |w: &str| {
+            let b = w.strip_prefix(cys::GATE_MARK_DIRECTIVE_HELD).and_then(|r| r.strip_prefix('\n')).unwrap_or(w);
+            b == OLD_MASTER_1118 || b == cys::RESTORE_DIRECTIVE_NODE || b == cys::RECOVER_DIRECTIVE
+        };
+        // 칸 ① 옛 CLI(1.1.18) → 새 데몬: 옛 글은 새 어휘 밖 → 거부 → 지시 없이 한 번 재표식 → 채택 = 전문만.
+        //        새 데몬에 옛 글이 저장돼 있더라도(어떤 경로로든) 새 CLI 채택은 그 글을 좌석에 넣지 않는다.
+        for wire in [OLD_MASTER_1118.to_string(), held(OLD_MASTER_1118)] {
+            assert!(!cys::gate_followup_allowed(&wire), "새 데몬이 옛 글을 받는다(어휘가 안 닫혔다): {wire:?}");
+            let params = json!({"surface_id": 3, "gate": "folder-trust", "evidence": "e", "followup": wire});
+            let retry = gate_mark_retry_params(denied, &params).expect("거부면 재전송 1회");
+            assert_eq!(retry, json!({"surface_id": 3, "gate": "folder-trust", "evidence": "e"}), "재전송 표식은 지시만 빠지고 나머지 그대로");
+            let row = json!({"gate_pending": {"gate": "folder-trust", "followup": wire}});
+            assert_eq!(gate_followup_for_seat(&row, "master"), None, "옛 저장 글이 좌석으로 간다");
+        }
+        // 칸 ② 새 CLI → 옛 데몬(1.1.18): 새 글은 옛 어휘 밖 → 같은 폴백. 바뀌지 않은 두 글은 옛 데몬도 그대로 받는다.
+        for wire in [restore_directive("master").to_string(), held(restore_directive("master"))] {
+            assert!(!old_daemon_allows(&wire), "옛 데몬이 새 글을 받는다고 가정했다: {wire:?}");
+            let params = json!({"surface_id": 4, "gate": "g", "evidence": "e", "followup": wire});
+            assert_eq!(gate_mark_retry_params(denied, &params), Some(json!({"surface_id": 4, "gate": "g", "evidence": "e"})));
+        }
+        for role in ["cso", "worker", "reviewer-codex"] {
+            assert!(old_daemon_allows(restore_directive(role)), "master 밖 좌석 글이 옛 데몬에서 거부된다: {role}");
+        }
+        assert!(old_daemon_allows(recover_directive()));
+        // 두 칸 공통 귀결 — 지시 없는 표식의 채택 = 전문 그대로(유실 0 · [RESTORE] 한 줄만 없음).
+        let bare = json!({"gate_pending": {"gate": "folder-trust"}});
+        assert_eq!(gate_followup_for_seat(&bare, "master"), None);
+        assert_eq!(adoption_payload(FULL, gate_followup_for_seat(&bare, "master")), FULL, "지시 없는 채택이 전문을 잃었다");
+        // 재전송은 정확히 한 번 · 다른 오류·성공 = 0(무한 재시도 0) · 표식 기록 실패는 좌석을 멈추지 않고 넘어간다.
+        assert_eq!(gate_mark_retry_params(None, &json!({"followup": "x"})), None);
+        assert_eq!(gate_mark_retry_params(Some("method_not_found"), &json!({"followup": "x"})), None);
+        let body = refl_fn_body(include_str!("cys.rs"), "mark_gate_pending");
+        assert_eq!(body.matches("gate_mark_retry_params(").count(), 1, "재전송 자리 수");
+        assert_eq!(body.matches("request(\"surface.gate_pending\"").count(), 2, "첫 전송 + 재전송 한 번");
+        for looping in ["loop {", "while ", "for "] {
+            assert!(!body.contains(looping), "표식 기록에 반복이 생겼다: {looping}");
+        }
+        assert!(body.contains("좌석은 그대로 보존된다"), "기록 실패 갈래가 사라졌다");
     }
 
     /// ★C8: TTL 서명은 능력 조회에 답한 **같은 연결** 위에서만 변이한다 — 조회와 서명 사이에 데몬

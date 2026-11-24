@@ -19,12 +19,12 @@ const TOOLS = [
 ];
 
 /** 1초마다 진행 줄을 찍는다(화면의 1초 시계와 같은 박자). */
-async function trace(sim: Sim, ms: number): Promise<string[]> {
+async function trace(sim: Sim, ms: number, opts?: { summary?: boolean }): Promise<string[]> {
   const out: string[] = [];
   for (let t = 0; t < ms; t += 1_000) {
     await sim.advance(1_000);
     const m = liveMsg(sim.core.state.msgs) ?? sim.core.state.msgs[0];
-    const p = m ? progressLine(m, sim.now, liveMsg(sim.core.state.msgs) === m) : null;
+    const p = m ? progressLine(m, sim.now, liveMsg(sim.core.state.msgs) === m, opts) : null;
     out.push(p ? p.text : "");
   }
   return out;
@@ -41,23 +41,25 @@ function changes(lines: string[]): string[] {
 }
 
 describe("진행 줄 — 가짜 세션 기록(tool_use 3건)", () => {
-  it("도구마다 진행 줄이 바뀐다(3번) · 경과 초가 늘어난다 · 답 뒤엔 접힌 「과정 N단계」", async () => {
+  // (TICKET=cysr-1119-s4) 1.1.18 머리 꼴 = 되돌리기 연결점 summary:false 로 그대로 지킨다 · 경과는 3초부터(V4c) · 요약 꼴 = prog1119.test.ts
+  it("도구마다 진행 줄이 바뀐다(3번) · 경과 초가 늘어난다 · 답 뒤엔 접힌 「과정 N단계」(summary:false) · 요약 켬 = 「요약 · 경과 · 지금:」", async () => {
     const sim = new Sim({ recordDelay: () => 100, replyDelay: () => 12_500, toolSteps: TOOLS, toolGapMs: 3_000 }); // 조회 3초 박자마다 도구 1건(한 창에 둘이면 머리줄은 뒤 것만 · 목록엔 둘 다)
     await ready(sim);
     sim.startPolling();
     sim.core.submit("이번 업데이트 설명해줘");
-    const lines = await trace(sim, 12_000);
+    const lines = await trace(sim, 12_000, { summary: false });
     const hs = changes(lines);
     const toolHeads = hs.filter((h) => /읽는 중|찾는 중|실행 중/.test(h));
     expect(toolHeads).toEqual(["파일 읽는 중 · core.ts", "찾는 중 · open_bound", "명령 실행 중 · 시험 돌리기"]);
     const ss = lines.map(secs).filter((x): x is number => x !== null);
-    expect(ss.length).toBeGreaterThanOrEqual(11);
+    expect(ss.length).toBeGreaterThanOrEqual(10); // (cysr-1119-s4 V4c) 1·2초 = 경과 안 붙음
     for (let i = 1; i < ss.length; i++) expect(ss[i]).toBeGreaterThan(ss[i - 1]); // 경과 초 증가(1초마다)
     await sim.advance(12_000); // 답 + 쉼 → 답함
     const m = sim.core.state.msgs[0];
     expect(m.step).toBe("replied");
     expect(liveMsg(sim.core.state.msgs)).toBeNull();
-    expect(progressLine(m, sim.now, false)?.text).toBe("과정 4단계"); // 도구 3 + 답 글 1
+    expect(progressLine(m, sim.now, false, { summary: false })?.text).toBe("과정 4단계"); // 도구 3 + 답 글 1
+    expect(progressLine(m, sim.now, false)?.text).toMatch(/^읽기 1번 · 찾기 1번 · 명령 1번 · \d+초$/); // (cysr-1119-s4 CH-D) 글 단계는 셈에만
     expect((m.steps ?? []).map((s) => s.kind)).toEqual(["tool", "tool", "tool", "text"]);
     // NFR-S3: 화면 저장소에 단계·단서가 남지 않는다
     for (const v of sim.mem.values()) expect(v.includes("core.ts") || v.includes("open_bound")).toBe(false);
@@ -68,7 +70,7 @@ describe("진행 줄 — 가짜 세션 기록(tool_use 3건)", () => {
     await ready(sim);
     sim.startPolling();
     sim.core.submit("이번 업데이트 설명해줘");
-    const hs = changes(await trace(sim, 12_000));
+    const hs = changes(await trace(sim, 12_000, { summary: false }));
     expect(hs.filter((h) => /읽는 중|찾는 중|실행 중/.test(h))).toEqual([]);
   });
 

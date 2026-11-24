@@ -10,11 +10,14 @@
 // ★모름은 작업 중으로 칠하지 않는다: 관측 없음·낡음·형식 오류는 모두 "unknown".
 // ★waiting(입력을 기다림)은 「대기」다 — 막 띄운 빈 좌석도 waiting 이므로 「확인 대기」라 부르면 뜻이 틀린다(master#c9265847 A).
 //   「확인」 꼬리표는 좌석이 스스로 waiting/done 을 신고했을 때만 단다.
-import type { DotView } from "./roleactivity";
+import type { ActivityRecord, DotView } from "./roleactivity";
 import { pickCtx, type CtxSource } from "./ctxpick";
+import { agoText } from "./views/judge/rail"; // (cysr-1119-s7 BA5) 대화 화면 카드와 같은 경과 말(함수 공유 · 호출 시점에만 쓰므로 서로 가져오기 안전)
+import { LIMIT_LOGIN_BANDS, resetClock, usageLimit } from "./views/judge/revive";
 
 export type SeatState = "working" | "idle" | "blocked" | "unknown" | "exited";
-export type SeatTag = "승인 창" | "확인" | null;
+/** (BA1 · 1.1.19) + 「로그인 필요」 · 「한도 · HH:MM」(리셋 모름 = 「한도」) — 멈춘 까닭(대화 화면 띠와 같은 판정). */
+export type SeatTag = "승인 창" | "확인" | "로그인 필요" | "한도" | `한도 · ${string}` | null;
 
 export const SEAT_STATE_LABEL: Record<SeatState, string> = {
   working: "작업 중",
@@ -66,6 +69,10 @@ export interface SeatInput {
   group?: string | null;
   /** 번호 대신 적을 이름(surface 없는 이름 보고자 master·cso — wsusage namedCtxRows). */
   label?: string | null;
+  /** (cysr-1119-s7 BA5) 이 상태가 된 지(초) — stateAgeSecs · 모르면 null. */
+  ageSecs?: number | null;
+  /** (BA1) 멈춘 까닭 — 한도(좌석 행 usage · judge usageLimit) · 로그인(그 좌석 로그인 룰 사건 300초 안 · main.ts 가 넘김). */
+  stall?: { limit: string | null; login: boolean };
 }
 
 export interface SeatRow {
@@ -81,6 +88,10 @@ export interface SeatRow {
   role: string | null;
   /** 좌석 생성 폴더 — 넓게 보기 좌석을 재부팅 너머로 알아보는 열쇠의 둘째 재료(grouptabs.seatKey). */
   cwd?: string | null;
+  /** (cysr-1119-s7 BA5) 경과 글(seatAgeText · 작업 중·이름 보고자 = "") — 분 단위로만 바뀐다(서명에 들어간다). */
+  ageText?: string;
+  /** 경과 초(툴팁 「N분째」용). */
+  ageSecs?: number | null;
 }
 
 export interface SeatGroup {
@@ -110,6 +121,8 @@ export function seatState(i: SeatInput): SeatState {
 
 export function seatTag(i: SeatInput, state: SeatState): SeatTag {
   if (state === "blocked") return "승인 창";
+  if (state !== "exited" && i.stall?.login) return "로그인 필요"; // (BA1) 로그인 > 한도
+  if (state !== "exited" && i.stall?.limit) return i.stall.limit as SeatTag;
   // 「확인」 = 좌석이 스스로 waiting/done 을 신고했고 화면이 일하는 중이 아닐 때만(일하는 중이면 낡은 신고다).
   if ((state === "idle" || state === "unknown") && (i.statusState === "waiting" || i.statusState === "done")) return "확인";
   // ★(1.1.16 · 차용 ②) 프로그램이 스스로 「끝남」을 알렸고 사람이 아직 안 봤다(OSC 7501 done · 사람이 입력하면 데몬이 대기로 내린다).
@@ -149,8 +162,42 @@ function fixedRank(role: string | null): number {
 
 const sortNo = (i: SeatInput): number => i.displayNo ?? i.sid;
 
+// ── (cysr-1119-s7 BA5 · W5) 경과 시간 — 설계 1119-DESIGN §7 BA5 · §6 W5 · 카드 정본 BORROW A5 ──
+/** 되돌리기 = 숨김 상수(false → 좌석 줄 경과 칸 0 · 서명도 지금 꼴). */
+export const SEAT_AGE_SHOW = true;
+
+/** 좌석 줄 경과 글 = 대화 화면 agoText 그대로(두 화면 같은 말) · 작업 중 = 빈칸(늘 바뀌어 잡음 · BORROW A5). */
+export function seatAgeText(state: SeatState, ageSecs: number | null): string {
+  if (!SEAT_AGE_SHOW || state === "working") return "";
+  return agoText(ageSecs);
+}
+
+/** 접근 이름 「N분째」(agoText 의 「전」 → 「째」 · 「방금」은 그대로 · 모르면 빈칸). */
+export function seatAgeTip(ageSecs: number | null): string {
+  if (ageSecs === null) return "";
+  return agoText(ageSecs).replace(/ 전$/, "째");
+}
+
+/** 막힌 창 알약 문구 — 「승인 기다림 · N분」(반올림 = agoText) · 나이 모르면 「승인 기다림」만(지어내지 않는다). */
+export function blockedPillText(ageSecs: number | null): string {
+  return ageSecs === null ? "승인 기다림" : `승인 기다림 · ${agoText(ageSecs).replace(/ 전$/, "")}`;
+}
+
+const VIEW_OF_STATE: Record<string, DotView> = { working: "working", waiting: "waiting", waiting_for_input: "input", done: "done" };
+
+/** 표시 상태가 된 지(초) — 데몬 `display_activity.stable_age_secs`(activity.rs wire_at · 프로그램 보고면 그 나이로 덮임)
+ *  + 그 응답을 낳은 요청 시작 뒤 흐른 시간(roleactivity 보수적 나이와 같은 앵커).
+ *  표시가 모름·지연이면 마지막 관측 나이 · 표시 상태가 화면 관측과 다른 출처(승인 피드·자기보고)에서 왔으면 null(그 나이를 모른다). */
+export function stateAgeSecs(rec: ActivityRecord | undefined, nowMs: number, view: DotView): number | null {
+  if (!rec || rec.parsed.kind !== "observation") return null;
+  const p = rec.parsed;
+  const wire = view === "unknown" || view === "stale" ? p.observedAgeSecs : VIEW_OF_STATE[p.state] === view ? p.stableAgeSecs : null;
+  return wire === null ? null : wire + Math.max(0, nowMs - rec.startMs) / 1000;
+}
+
 function toRow(i: SeatInput): SeatRow {
   const state = seatState(i);
+  const ageSecs = i.ageSecs ?? null;
   return {
     sid: i.sid,
     named: !!i.label,
@@ -162,6 +209,8 @@ function toRow(i: SeatInput): SeatRow {
     ctxSrc: i.ctxSrc,
     role: i.role,
     cwd: i.cwd,
+    ageText: i.label ? "" : seatAgeText(state, ageSecs),
+    ageSecs,
   };
 }
 
@@ -246,8 +295,14 @@ export function seatInputOf(
   dot: DotView | null,
   self: { state: string | null; task: string | null } | undefined,
   approvalPending: boolean,
+  loginRecent = false,
 ): SeatInput {
   const ctx = pickCtx({ exited: s?.exited, agent_alive: s?.agent_alive, usage: s?.usage });
+  // (BA1) 한도 = 이 행 usage 의 데몬 시각(rate_observed_at + rate_age_secs)으로 판정 — 화면 시계·새 조회 0
+  const u = s?.usage;
+  const dnow = typeof u?.rate_observed_at === "number" && typeof u?.rate_age_secs === "number" ? (u.rate_observed_at + u.rate_age_secs) * 1000 : NaN;
+  const lim = LIMIT_LOGIN_BANDS && Number.isFinite(dnow) ? usageLimit(u, dnow) : null;
+  const limit = lim?.state === "limited" ? (lim.resetsAt === null ? "한도" : `한도 · ${resetClock(lim.resetsAt, dnow)}`) : null;
   return {
     sid,
     displayNo: typeof s?.display_no === "number" ? s.display_no : null,
@@ -261,6 +316,7 @@ export function seatInputOf(
     task: self?.task ?? null,
     ctxPct: ctx.pct,
     ctxSrc: ctx.src,
+    ...(limit || (LIMIT_LOGIN_BANDS && loginRecent) ? { stall: { limit, login: LIMIT_LOGIN_BANDS && loginRecent } } : {}),
   };
 }
 

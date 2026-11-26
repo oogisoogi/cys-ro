@@ -29,12 +29,12 @@
 //!     회전은 **단일 인스턴스 게이트를 이긴 데몬만** 한다(패자가 승자의 파일을 밀어내지 않게) — 기동 직후 1회 + [`ROTATE_EVERY`] 마다.
 //!   · 회전 안전(codex 1R REVISE 반영): ⑴ 새 파일을 못 열거나 표준 오류 교체가 실패하면 이름을 되돌리고, 되돌리기마저 실패하면 **더는 회전하지
 //!     않는다**(다음 회전의 「옛 보존본 지우기」가 지금 쓰는 기록을 지우는 일이 되므로 — 크기 상한보다 기록 보존이 먼저) ⑵ 교체와 옛 핸들 닫기는
-//!     표준 오류 잠금 안에서 한다 — 잠금을 쥐고 쓰는 모든 쓰기(eprintln!·보호 매크로)와 겹치지 않는다. 잠금 밖에서 쓰는 것은 기본 패닉 출력뿐이고,
-//!     그것이 옛 핸들을 집어 든 채 닫힘까지(한 점검 주기 = 10분) 멈춰 있을 때만 그 한 줄을 잃는다(남은 위험 · 시간 상한이지 완료 동기화는 아니다).
-//!     ⑶ 표준 오류를 **상속**하는 자식(auto-restore 로그 열기 실패 때의 `Stdio::inherit()` 폴백 등 — 「증거 보존 · null 금지」 의도의 기존 코드)은
-//!     복제 핸들을 쥐므로 회전 뒤에도 옛 파일에 쓴다: POSIX 지우기 파일계면 다음 회전 뒤 그 자식의 줄은 이름 없는 파일로 가고(자식이 끝나면 회수),
-//!     아니면 지우기 대기가 이름을 붙들어 그 자식이 끝날 때까지 회전이 실패·재시도된다(기록은 cur 에 계속 쌓인다). 맥 launchd 로그도 자식이 같은
-//!     파일을 상속한다 — 자식 배선을 바꾸는 것은 이 티켓 범위 밖이다.
+//!     표준 오류 잠금 안에서 하고, 붙을 때 기본 패닉 훅을 같은 잠금 안에서 부르게 감싼다 — 모든 표준 오류 쓰기(eprintln!·보호 매크로·패닉 출력)가
+//!     교체와 줄을 선다(codex 2R major 2). 옛 파일은 그래도 한 주기 더 살린 뒤 닫는다(여유).
+//!     ⑶ 표준 오류를 **상속**하는 자식(윈도우에선 auto-restore 로그 열기 실패 때의 `Stdio::inherit()` 폴백 — 「증거 보존 · null 금지」 의도의 기존 코드 ·
+//!     seatkeep 의 inherit 은 `#[cfg(unix)]`)은 복제 핸들을 쥐어 회전 뒤에도 옛 파일(prev)에 쓴다. 그래서 회전 전에 prev 를 배타로 열어 보아
+//!     누가 쥐고 있으면 **이번 회전을 미룬다**(지우기 예약 자체를 하지 않는다 — 예약된 지우기는 취소되지 않아 그 자식이 끝날 때 기록이 함께 사라진다 ·
+//!     codex 2R major 1). 미루는 동안 cur 는 상한을 넘어 자란다(그 자식이 사는 동안만 · 맥 launchd 로그는 상한 자체가 없다).
 //!   · 권한 = `%LOCALAPPDATA%` 의 사용자 전용 ACL 을 상속한다(따로 ACL 을 걸지 않는다 · 같은 폴더의 transcripts.db·operator.token 과 같은 보호).
 //!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전 알림 두 종류뿐).
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -94,23 +94,30 @@ pub enum Rotate {
     Kept,
     /// `cur` → `prev` 로 옮기고 새 `cur` 를 열었다(호출자가 표준 오류를 이것으로 바꾼다).
     Rotated(std::fs::File),
+    /// 옛 보존본을 다른 프로세스(stderr 를 상속한 자식)가 아직 쥐고 있어 이번엔 미뤘다 — 아무것도 바꾸지 않았다(codex 2R major 1:
+    /// 지우면 그 자식의 이후 줄이 이름 없는 파일로 가거나, 지우기 대기가 취소되지 않아 자식이 끝날 때 함께 사라진다).
+    Deferred,
     /// 실패. `restored` = 지금 쓰는 파일이 다시 `cur` 이름에 있다(아무것도 잃지 않음 · 다음 점검에서 다시 한다).
     /// `restored == false` = 지금 쓰는 파일이 `prev` 이름에 남았다 → 호출자는 **다시 회전하지 않는다**
     /// (다음 회전의 「옛 보존본 지우기」가 곧 지금 쓰는 기록을 지우는 일이 된다 · codex 1R major 1).
     Failed { err: std::io::Error, restored: bool },
 }
 
-/// 회전(파일 시스템만 만진다 · `open` 주입 = 시험에서 열기 실패를 넣는다): `cur_len`(지금 쓰는 핸들로 잰 크기)이 `cap` 을 넘으면
-/// 옛 보존본을 지우고 `cur` → `prev` 로 이름을 바꾼 뒤 새 `cur` 를 연다. 새 파일을 못 열면 이름을 되돌린다.
+/// 회전(파일 시스템만 만진다 · 주입 = 시험): `cur_len`(지금 쓰는 핸들로 잰 크기)이 `cap` 을 넘으면 — 옛 보존본을 누가 쥐고 있으면(`held`)
+/// 미루고, 아니면 옛 보존본을 지우고 `cur` → `prev` 로 이름을 바꾼 뒤 새 `cur` 를 연다(`open`). 새 파일을 못 열면 이름을 되돌린다.
 pub fn rotate_if_over_with(
     cur_len: u64,
     cur: &Path,
     prev: &Path,
     cap: u64,
+    held: impl Fn(&Path) -> bool,
     open: impl Fn(&Path) -> std::io::Result<std::fs::File>,
 ) -> Rotate {
     if cur_len <= cap {
         return Rotate::Kept;
+    }
+    if held(prev) {
+        return Rotate::Deferred;
     }
     match std::fs::remove_file(prev) {
         Ok(()) => {}
@@ -126,9 +133,28 @@ pub fn rotate_if_over_with(
     }
 }
 
-/// [`rotate_if_over_with`] 의 제품 판(열기 = [`open_append`]).
+/// [`rotate_if_over_with`] 의 제품 판(쥠 판정 = [`held_by_other`] · 열기 = [`open_append`]).
 pub fn rotate_if_over(cur_len: u64, cur: &Path, prev: &Path, cap: u64) -> Rotate {
-    rotate_if_over_with(cur_len, cur, prev, cap, open_append)
+    rotate_if_over_with(cur_len, cur, prev, cap, held_by_other, open_append)
+}
+
+/// 누가 이 파일을 열고 있는가 — 윈도우 = 공유 0(배타)으로 열어 보아 공유 위반(32)이면 쥐고 있음. 이 데몬의 옛 핸들은 회전 점검 첫머리에서
+/// 이미 닫았으므로 쥔 쪽은 stderr 를 상속한 자식(또는 바깥 프로그램)이다. 파일이 없으면 쥔 이도 없다. 윈도우 밖 = 늘 false(회전은 윈도우 전용).
+pub fn held_by_other(path: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        match std::fs::OpenOptions::new().read(true).share_mode(0).open(path) {
+            Ok(_) => false,
+            Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        false
+    }
 }
 
 /// 회전 되돌리기 — `cur` 자리에 새로 생긴 빈 파일이 있으면 지우고 `prev` → `cur` 로 이름을 되돌린다. 되돌렸으면 `true`.
@@ -249,6 +275,14 @@ mod imp {
         if let Err(dup) = OWNED.set(Mutex::new(owned)) {
             std::mem::forget(dup);
         }
+        // ★(codex 2R major 2) 기본 패닉 출력은 stderr 잠금을 쓰지 않고 표준 핸들을 직접 집어 든다 — 회전의 교체·옛 핸들 닫기(잠금 안)와
+        //   겹치면 닫힌(또는 재사용된) 핸들에 쓸 수 있다. 앞선 훅을 잠금 안에서 부르게 감싸 모든 표준 오류 쓰기를 같은 잠금으로 줄 세운다
+        //   (잠금은 같은 스레드 재진입 가능 — 훅 안의 eprintln 도 막히지 않는다). cysd 안에 다른 패닉 훅 설치는 없다(2026-11-26 grep).
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _serial = std::io::stderr().lock();
+            prev_hook(info);
+        }));
         eprintln!("{}", attach_line(sink, &cur_path));
     }
 
@@ -268,6 +302,12 @@ mod imp {
         let (cur_path, prev_path) = (g.cur_path.clone(), g.prev_path.clone());
         match rotate_if_over(len, &cur_path, &prev_path, LOG_MAX_BYTES) {
             Rotate::Kept => {}
+            Rotate::Deferred => {
+                if !g.warned {
+                    g.warned = true;
+                    let _ = writeln!(std::io::stderr().lock(), "[cysd] 로그 회전 미룸: {} 를 다른 프로세스(stderr 를 물려받은 자식)가 쥐고 있다 — 그 기록을 지우지 않으려고 놓을 때까지 {} 를 계속 쓴다", prev_path.display(), cur_path.display());
+                }
+            }
             Rotate::Rotated(newf) => {
                 // ★표준 오류 잠금 안에서 바꾼다(codex 1R major 3): 잠금을 쥐고 쓰는 모든 쓰기(eprintln!·보호 매크로·writeln!(stderr()))는
                 //   바꾸기 전에 끝났거나 바꾼 뒤 새 핸들을 읽는다. 잠금 밖 쓰기(기본 패닉 출력)만 옛 핸들을 집어 들 수 있어 옛 파일을 한 주기 더 산다.
@@ -382,7 +422,7 @@ mod tests {
         let mut live = open_append(&cur).unwrap();
         live.write_all(b"live").unwrap();
         std::fs::write(&prev, b"oldest").unwrap();
-        let r = rotate_if_over_with(99, &cur, &prev, 10, |_| Err(std::io::Error::other("주입: 열기 실패")));
+        let r = rotate_if_over_with(99, &cur, &prev, 10, |_| false, |_| Err(std::io::Error::other("주입: 열기 실패")));
         let Rotate::Failed { restored, .. } = r else { panic!("실패여야 한다: {r:?}") };
         assert!(restored, "되돌리기 성공이어야 한다");
         live.write_all(b"+more").unwrap();
@@ -391,6 +431,27 @@ mod tests {
         // 다시 회전하면 정상으로 돈다(멈춤 표시 없음).
         assert!(matches!(rotate_if_over(99, &cur, &prev, 10), Rotate::Rotated(_)));
         assert_eq!(std::fs::read(&prev).unwrap(), b"live+more");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// codex 2R major 1: 옛 보존본을 누가 쥐고 있으면 아무것도 지우거나 옮기지 않고 미룬다.
+    #[test]
+    fn rotate_defers_while_prev_is_held_and_touches_nothing() {
+        let d = std::env::temp_dir().join(format!("cysd-winlog-held-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (cur, prev) = log_paths(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(&cur, b"cur-data").unwrap();
+        std::fs::write(&prev, b"child-still-writing").unwrap();
+        let r = rotate_if_over_with(99, &cur, &prev, 10, |p| p == prev.as_path(), |_| panic!("미룰 때는 열지 않는다"));
+        assert!(matches!(r, Rotate::Deferred), "{r:?}");
+        assert_eq!(std::fs::read(&cur).unwrap(), b"cur-data");
+        assert_eq!(std::fs::read(&prev).unwrap(), b"child-still-writing", "쥔 자식의 기록을 지우지 않는다");
+        // 놓으면 다음 점검에 정상 회전.
+        assert!(matches!(rotate_if_over_with(99, &cur, &prev, 10, |_| false, open_append), Rotate::Rotated(_)));
+        assert_eq!(std::fs::read(&prev).unwrap(), b"cur-data");
+        // 맥(비윈도우) 제품 판정은 늘 「안 쥠」 — 회전 자체가 윈도우 전용이다.
+        assert!(!held_by_other(&prev));
         let _ = std::fs::remove_dir_all(&d);
     }
 

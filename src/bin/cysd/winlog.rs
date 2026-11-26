@@ -35,6 +35,9 @@
 //!     seatkeep 의 inherit 은 `#[cfg(unix)]`)은 복제 핸들을 쥐어 회전 뒤에도 옛 파일(prev)에 쓴다. 그래서 회전 전에 prev 를 배타로 열어 보아
 //!     누가 쥐고 있으면 **이번 회전을 미룬다**(지우기 예약 자체를 하지 않는다 — 예약된 지우기는 취소되지 않아 그 자식이 끝날 때 기록이 함께 사라진다 ·
 //!     codex 2R major 1). 미루는 동안 cur 는 상한을 넘어 자란다(그 자식이 사는 동안만 · 맥 launchd 로그는 상한 자체가 없다).
+//!     ⑷ 탐침은 **쓰기 핸들만** 본다(쓰기 공유 배제 · 읽기 뷰어는 통과 · codex 3R). 옛 보존본은 고유 이름(`cysd.old-…log`)으로 먼저 비켜 놓고 지워
+//!     지우기 대기 파일계에서도 prev 이름이 바로 빈다. 지우기 공유를 주지 않는 뷰어(.NET FileShare.ReadWrite — `Get-Content -Wait` 등)가 cur·prev 를
+//!     쥐는 동안은 이름 옮기기가 실패해 다음 점검에 다시 한다(그 뷰어가 열려 있는 동안 cur 가 상한을 넘는다 · 윈도우 로그 회전기 공통 한계).
 //!   · 권한 = `%LOCALAPPDATA%` 의 사용자 전용 ACL 을 상속한다(따로 ACL 을 걸지 않는다 · 같은 폴더의 transcripts.db·operator.token 과 같은 보호).
 //!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전 알림 두 종류뿐).
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -45,6 +48,8 @@ use std::path::{Path, PathBuf};
 pub const LOG_NAME: &str = "cysd.log";
 /// 회전 1겹 보존본 이름 — `.log` 로 끝나야 갱신 스냅샷 제외(`Suffix(".log")`)에 걸린다.
 pub const PREV_NAME: &str = "cysd.1.log";
+/// 회전 때 옛 보존본을 비켜 놓는 이름의 접두(`cysd.old-<pid>-<나노초>.log`).
+pub const TRASH_PREFIX: &str = "cysd.old-";
 /// 크기 상한(넘으면 회전) — `boot_supervisor::LOG_MAX_BYTES` 와 같은 값.
 pub const LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 /// 회전 점검 간격(첫 점검은 게이트 통과 직후).
@@ -119,10 +124,15 @@ pub fn rotate_if_over_with(
     if held(prev) {
         return Rotate::Deferred;
     }
-    match std::fs::remove_file(prev) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Rotate::Failed { err, restored: true },
+    // 옛 보존본은 **먼저 고유 이름으로 비켜 놓고** 지운다(codex 3R): 읽기 전용 뷰어가 지우기 공유로 prev 를 쥐고 있어도 이름 옮기기는 되고,
+    //   POSIX 지우기가 없는 파일계에서 「지우기 대기」 파일이 prev 이름을 붙들어 아래 이름 바꾸기를 막는 일이 없다. 지우기가 실패해 남은 비켜 둔
+    //   파일은 다음 점검의 [`sweep_trash`] 가 걷는다(뷰어가 놓은 뒤).
+    if prev.exists() {
+        let trash = trash_path(prev, std::process::id(), now_nanos());
+        if let Err(err) = std::fs::rename(prev, &trash) {
+            return Rotate::Failed { err, restored: true };
+        }
+        let _ = std::fs::remove_file(&trash);
     }
     if let Err(err) = std::fs::rename(cur, prev) {
         return Rotate::Failed { err, restored: true };
@@ -138,14 +148,17 @@ pub fn rotate_if_over(cur_len: u64, cur: &Path, prev: &Path, cap: u64) -> Rotate
     rotate_if_over_with(cur_len, cur, prev, cap, held_by_other, open_append)
 }
 
-/// 누가 이 파일을 열고 있는가 — 윈도우 = 공유 0(배타)으로 열어 보아 공유 위반(32)이면 쥐고 있음. 이 데몬의 옛 핸들은 회전 점검 첫머리에서
-/// 이미 닫았으므로 쥔 쪽은 stderr 를 상속한 자식(또는 바깥 프로그램)이다. 파일이 없으면 쥔 이도 없다. 윈도우 밖 = 늘 false(회전은 윈도우 전용).
+/// 누가 이 파일을 **쓰기로** 열고 있는가 — 윈도우 = 읽기 접근 · 공유 = 읽기+지우기(쓰기 공유 배제)로 열어 보아 공유 위반(32)이면 쓰기 핸들이 있다.
+/// 읽기 전용 뷰어는 걸리지 않는다(codex 3R major: 배타 탐침은 뷰어 하나로 회전을 영구히 미뤘다). 이 데몬의 옛 핸들은 회전 점검 첫머리에서 이미
+/// 닫았으므로 쓰기로 쥔 쪽은 stderr 를 상속한 자식이다. 파일이 없거나 다른 오류면 「안 쥠」. 윈도우 밖 = 늘 false(회전은 윈도우 전용).
 pub fn held_by_other(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
         const ERROR_SHARING_VIOLATION: i32 = 32;
-        match std::fs::OpenOptions::new().read(true).share_mode(0).open(path) {
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        match std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE).open(path) {
             Ok(_) => false,
             Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
         }
@@ -155,6 +168,30 @@ pub fn held_by_other(path: &Path) -> bool {
         let _ = path;
         false
     }
+}
+
+/// 비켜 둘 이름(순수): prev 와 같은 폴더의 `cysd.old-<pid>-<나노초>.log` — `.log` 로 끝나 갱신 스냅샷 제외에 걸리고, 초기화는 접두 `cysd.old-` 로 잡는다.
+pub fn trash_path(prev: &Path, pid: u32, nanos: u128) -> PathBuf {
+    prev.with_file_name(format!("{TRASH_PREFIX}{pid}-{nanos}.log"))
+}
+
+/// 비켜 둔 파일 이름인가(순수).
+pub fn is_trash_name(name: &str) -> bool {
+    name.starts_with(TRASH_PREFIX) && name.ends_with(".log")
+}
+
+/// 지우지 못하고 남은 비켜 둔 파일을 걷는다(best-effort · 뷰어가 아직 쥐고 있으면 다음에).
+pub fn sweep_trash(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        if e.file_name().to_str().is_some_and(is_trash_name) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
 }
 
 /// 회전 되돌리기 — `cur` 자리에 새로 생긴 빈 파일이 있으면 지우고 `prev` → `cur` 로 이름을 되돌린다. 되돌렸으면 `true`.
@@ -297,6 +334,9 @@ mod imp {
         }
         if g.stuck {
             return;
+        }
+        if let Some(dir) = g.cur_path.parent() {
+            sweep_trash(dir);
         }
         let len = g.cur.metadata().map(|md| md.len()).unwrap_or(0);
         let (cur_path, prev_path) = (g.cur_path.clone(), g.prev_path.clone());
@@ -452,6 +492,53 @@ mod tests {
         assert_eq!(std::fs::read(&prev).unwrap(), b"cur-data");
         // 맥(비윈도우) 제품 판정은 늘 「안 쥠」 — 회전 자체가 윈도우 전용이다.
         assert!(!held_by_other(&prev));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// codex 3R: 옛 보존본은 고유 이름으로 비켜 놓은 뒤 지운다 — 회전 뒤 비켜 둔 파일이 남지 않고, 남은 것은 sweep 이 걷는다.
+    #[test]
+    fn rotate_moves_old_prev_aside_then_deletes_and_sweep_collects_leftovers() {
+        let d = std::env::temp_dir().join(format!("cysd-winlog-trash-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (cur, prev) = log_paths(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(&cur, b"new-gen").unwrap();
+        std::fs::write(&prev, b"old-gen").unwrap();
+        assert!(matches!(rotate_if_over(99, &cur, &prev, 10), Rotate::Rotated(_)));
+        assert_eq!(std::fs::read(&prev).unwrap(), b"new-gen");
+        let left = |d: &Path| std::fs::read_dir(d).unwrap().flatten().filter(|e| e.file_name().to_str().is_some_and(is_trash_name)).count();
+        assert_eq!(left(&d), 0, "비켜 둔 옛 보존본은 지워졌다");
+        let t = trash_path(&prev, 7, 42);
+        assert_eq!(t.file_name().unwrap().to_str().unwrap(), "cysd.old-7-42.log");
+        assert!(cys::update::snapshot::is_excluded("cysd.old-7-42.log"), "갱신 스냅샷이 건드리지 않는다");
+        assert!(!is_trash_name(LOG_NAME) && !is_trash_name(PREV_NAME) && !is_trash_name("cysd.old-1.txt"));
+        std::fs::write(&t, b"x").unwrap();
+        sweep_trash(&d);
+        assert_eq!(left(&d), 0, "남은 비켜 둔 파일을 걷는다");
+        assert!(cur.exists() && prev.exists(), "sweep 은 로그 두 파일을 건드리지 않는다");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// codex 3R: 실제 윈도우 핸들로 — 읽기 뷰어(지우기 공유)는 「안 쥠」이고 회전이 진행된다 · 쓰기 핸들(상속 writer 모양)은 「쥠」.
+    #[cfg(windows)]
+    #[test]
+    fn windows_probe_ignores_reader_but_sees_writer() {
+        let d = std::env::temp_dir().join(format!("cysd-winlog-probe-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (cur, prev) = log_paths(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(&prev, b"p").unwrap();
+        std::fs::write(&cur, b"c").unwrap();
+        {
+            let _reader = std::fs::File::open(&prev).unwrap(); // Rust 기본 공유 = 읽기|쓰기|지우기
+            assert!(!held_by_other(&prev), "읽기 뷰어는 쥠이 아니다");
+            assert!(matches!(rotate_if_over(99, &cur, &prev, 10), Rotate::Rotated(_)), "뷰어가 있어도 회전한다");
+        }
+        {
+            let _writer = open_append(&prev).unwrap(); // 상속 writer 와 같은 덧붙이기 쓰기 핸들
+            assert!(held_by_other(&prev), "쓰기 핸들은 쥠이다");
+            assert!(matches!(rotate_if_over(99, &cur, &prev, 10), Rotate::Deferred));
+        }
         let _ = std::fs::remove_dir_all(&d);
     }
 

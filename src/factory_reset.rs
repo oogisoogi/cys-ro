@@ -204,7 +204,7 @@ const WIN_STATE_EXACT: [&str; 26] = [
 ];
 
 /// 접두로 잡는 Windows 상태 항목(부서 슬러그 디렉토리·저널/스풀 디렉토리·손상 격리본).
-const WIN_STATE_PREFIX: [&str; 8] = [
+const WIN_STATE_PREFIX: [&str; 9] = [
     "cys-dept-",          // 부서 데몬 슬러그 디렉토리(state.rs pipe_slug 규약)
     "alert-route",        // ★(0.14.31 WP-3 B) alert-route-pending.json · -folded.jsonl(+.1·.corrupt)
     "phoenix",            // phoenix/ · phoenix-embed/
@@ -213,6 +213,7 @@ const WIN_STATE_PREFIX: [&str; 8] = [
     "cycle_autopilot",    // 사이클 오토파일럿 상태
     "schedule_state.json.corrupt-", // 손상 격리본
     "analytics.db-",      // WAL/SHM 사이드카
+    "cysd.old-",          // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 윈 cysd 로그 회전이 비켜 두고 못 지운 옛 보존본(winlog.rs TRASH_PREFIX)
 ];
 
 /// `write_json_atomic`(governance.rs)이 **실제로 쓰는** 상태 파일 이름 전량.
@@ -4537,6 +4538,7 @@ mod r2f_dm_factory_reset {
         assert_eq!(WIN_STATE_EXACT.len(), 26, "윈도우 상태 폴더 정확 이름 목록의 길이");
         // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 윈도우 cysd 로그 회전 보존본 — 빠지면 설치 폴더 = 상태 폴더라 초기화 뒤에도 옛 로그가 남는다.
         assert!(WIN_STATE_EXACT.contains(&"cysd.log") && WIN_STATE_EXACT.contains(&"cysd.1.log") && is_win_state_name("cysd.1.log"), "윈도우 cysd 로그·회전 보존본이 정확 일치 목록에 없다");
+        assert!(is_win_state_name("cysd.old-1234-5678.log"), "윈도우 cysd 로그 회전이 비켜 둔 옛 보존본이 상태로 분류되지 않는다");
         assert!(WIN_STATE_EXACT.contains(&"DELETE-LEDGER.jsonl"), "오너 명령 삭제의 삭제 원장이 정확 일치 목록에 없다 — 윈도우에서는 초기화 뒤에도 남는다");
         assert!(!WIN_STATE_ATOMIC.contains(&"DELETE-LEDGER.jsonl"), "삭제 원장은 append 로 쓰므로 원자 쓰기 목록에 있어서는 안 된다(`.DELETE-LEDGER.jsonl.tmp` 는 **생기지 않는다 — 다만 있으면 격리된다**: 잔재 축이 정확 이름 목록과도 일치한다)");
         for n in ["queue-blocked.json", "queue-blocked.prev.json", "approval-lane"] {

@@ -40,7 +40,7 @@
 //!     지우기 대기 파일계에서도 prev 이름이 바로 빈다. 지우기 공유를 주지 않는 뷰어(.NET FileShare.ReadWrite — `Get-Content -Wait` 등)가 cur·prev 를
 //!     쥐는 동안은 이름 옮기기가 실패해 다음 점검에 다시 한다(그 뷰어가 열려 있는 동안 cur 가 상한을 넘는다 · 윈도우 로그 회전기 공통 한계).
 //!   · 권한 = `%LOCALAPPDATA%` 의 사용자 전용 ACL 을 상속한다(따로 ACL 을 걸지 않는다 · 같은 폴더의 transcripts.db·operator.token 과 같은 보호).
-//!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전·미룸·실패·멈춤 알림뿐이고 경로·바이트 수만 싣는다).
+//!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전·미룸·실패·멈춤 알림뿐이고 로그 경로·기동 때 표준 오류 종류·바이트 수·파일 시스템 오류 문구만 싣는다).
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
@@ -100,8 +100,9 @@ pub enum Rotate {
     Kept,
     /// `cur` → `prev` 로 옮기고 새 `cur` 를 열었다(호출자가 표준 오류를 이것으로 바꾼다).
     Rotated(std::fs::File),
-    /// 옛 보존본을 다른 프로세스(stderr 를 상속한 자식)가 아직 쥐고 있어 이번엔 미뤘다 — 아무것도 바꾸지 않았다(codex 2R major 1:
-    /// 지우면 그 자식의 이후 줄이 이름 없는 파일로 가거나, 지우기 대기가 취소되지 않아 자식이 끝날 때 함께 사라진다).
+    /// 옛 보존본을 지워도 되는지 확인하지 못해(다른 핸들과의 공유 충돌 — 보통 stderr 를 상속한 자식의 쓰기 핸들 — 또는 탐침 실패) 이번엔 미뤘다 —
+    /// 아무것도 바꾸지 않았다(codex 2R major 1·4R: 쓰는 자식이 있는데 지우면 그 이후 줄이 이름 없는 파일로 가거나, 지우기 대기가 취소되지 않아
+    /// 자식이 끝날 때 함께 사라진다).
     Deferred,
     /// 실패. `restored` = 지금 쓰는 파일이 다시 `cur` 이름에 있다(아무것도 잃지 않음 · 다음 점검에서 다시 한다).
     /// `restored == false` = 지금 쓰는 파일이 `prev` 이름에 남았다 → 호출자는 **다시 회전하지 않는다**
@@ -249,7 +250,7 @@ mod imp {
     /// 붙은 뒤의 상태.
     struct Owned {
         cur: std::fs::File,
-        /// 직전 회전의 옛 파일 — 바꾼 순간 표준 오류 잠금 밖에서 옛 핸들을 이미 집어 든 쓰기(기본 패닉 출력)가 끝나도록 한 주기 더 살린다.
+        /// 직전 회전의 옛 파일 — 패닉 출력을 포함한 모든 표준 오류 쓰기는 같은 잠금으로 교체와 줄을 서므로 곧 닫아도 되지만, 여유로 한 주기 더 살린다.
         retired: Option<std::fs::File>,
         cur_path: PathBuf,
         prev_path: PathBuf,
@@ -355,12 +356,12 @@ mod imp {
             Rotate::Deferred => {
                 if !g.warned {
                     g.warned = true;
-                    let _ = writeln!(std::io::stderr().lock(), "[cysd] 로그 회전 미룸: {} 를 다른 프로세스(stderr 를 물려받은 자식)가 쥐고 있다 — 그 기록을 지우지 않으려고 놓을 때까지 {} 를 계속 쓴다", prev_path.display(), cur_path.display());
+                    let _ = writeln!(std::io::stderr().lock(), "[cysd] 로그 회전 미룸: {} 를 지워도 되는지 확인하지 못했다(다른 핸들과의 공유 충돌 — 보통 stderr 를 물려받은 자식 — 또는 탐침 실패) — 기록을 지우지 않으려고 {} 를 계속 쓰고 다음 점검에 다시 본다", prev_path.display(), cur_path.display());
                 }
             }
             Rotate::Rotated(newf) => {
                 // ★표준 오류 잠금 안에서 바꾼다(codex 1R major 3): 잠금을 쥐고 쓰는 모든 쓰기(eprintln!·보호 매크로·writeln!(stderr()))는
-                //   바꾸기 전에 끝났거나 바꾼 뒤 새 핸들을 읽는다. 잠금 밖 쓰기(기본 패닉 출력)만 옛 핸들을 집어 들 수 있어 옛 파일을 한 주기 더 산다.
+                //   바꾸기 전에 끝났거나 바꾼 뒤 새 핸들을 읽는다. 패닉 출력도 attach 의 훅 감싸기로 같은 잠금에 줄 선다(codex 2R) — 옛 파일은 여유로 한 주기 더 산다.
                 let mut err = std::io::stderr().lock();
                 if set_stderr(&newf) {
                     let old = std::mem::replace(&mut g.cur, newf);

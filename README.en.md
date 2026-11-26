@@ -91,7 +91,7 @@ pack automatically.
 - Optional 24/365 always-on: `cysr daemon install` (launchd KeepAlive / Task Scheduler).
 - The command is **`cysr`** (from 1.0.1; `cys` keeps working — two names for the same program).
 - Use `cysr` from an external terminal (macOS): one click on **"셸에 cysr 설치"** (Install cysr
-  into the shell) in the Control Center header — recommended, one admin prompt, and the same
+  into the shell) under **화면 설정 (Screen settings) → 전문가 (Expert)** — recommended, one admin prompt, and the same
   button uninstalls it; it links `cys`, `cysd` and `cysr` — or the manual symlink fallback. See
   [docs/INSTALL.md](docs/INSTALL.md) §B. The Windows installer does not register PATH (it ships
   `cysr.exe` next to `cys.exe` in the install folder).

@@ -98,6 +98,18 @@ STATE = (r"""
 """).replace("__BASE__", sbg.BASE)
 
 
+def new_ws_from_settings(pg) -> None:
+    """(1.1.20 #26) 「＋ 새 워크스페이스」 입구 = 화면 설정 「전문가」(1.1.19 cysr-1119-s10b MD-S1S2 에서 사이드바 머리 #btn-ws-new 가 빠졌다).
+    같은 함수(newWorkspaceFromUser)를 부른다 — 처음엔 접힌 구획을 펴고 누른 뒤 Escape 로 팝오버를 닫는다."""
+    pg.click("#btn-theme")
+    pg.wait_for_timeout(150)
+    head = pg.locator('#theme-pop .sp-sec[data-sec="expert"] .sp-sec-head')
+    if head.get_attribute("aria-expanded") != "true":
+        head.click()
+    pg.locator("#theme-pop").get_by_role("button", name="＋ 새 워크스페이스").click()
+    pg.keyboard.press("Escape")
+
+
 def main() -> int:
     import http.server
     import threading
@@ -306,7 +318,7 @@ def main() -> int:
             # R6
             print("== R6(전수 표) 빈 작업공간 「새 셸 열기」 생성 중 그 작업공간 삭제")
             ctx, pg, errs = page(js(seats), [list(d) for d in depts])
-            pg.click("#btn-ws-new")
+            new_ws_from_settings(pg)
             pg.wait_for_timeout(2500)
             s6a = pg.evaluate(STATE)
             sbg.check(s6a["panes"] == [50], f"새 작업공간 = 좌석 50 하나 {s6a['panes']}")
@@ -337,7 +349,7 @@ def main() -> int:
             # R7
             print("== R7(3R blocking 2) 입양 attach 사이 그 작업공간 삭제 → 같은 데몬의 다른 작업공간에")
             ctx, pg, errs = page(js(seats), [list(d) for d in depts])
-            pg.click("#btn-ws-new")  # 본부 데몬 작업공간 B(새 셸 50)
+            new_ws_from_settings(pg)  # 본부 데몬 작업공간 B(새 셸 50)
             pg.wait_for_timeout(2500)
             s7a = pg.evaluate(STATE)
             a_i = next(i for i, t in enumerate(s7a["trees"]) if t["socket"] in (None, sbg.BASE) and 1 in t["sids"])
@@ -381,7 +393,7 @@ def main() -> int:
             # R8
             print("== R8(3R blocking 3) 셸 좌석 부서 전출 — 새 좌석 응답 전 목적지 부서 삭제 → 원본 보존")
             ctx, pg, errs = page(js(seats), [list(d) for d in depts])
-            pg.click("#btn-ws-new")  # 새 본부 작업공간 = 셸 좌석 50 하나(R6 과 같은 출발)
+            new_ws_from_settings(pg)  # 새 본부 작업공간 = 셸 좌석 50 하나(R6 과 같은 출발)
             pg.wait_for_timeout(2500)
             s8a = pg.evaluate(STATE)
             sbg.check(50 in s8a["panes"], f"본부 셸 좌석 50 보임 {s8a['panes']}")

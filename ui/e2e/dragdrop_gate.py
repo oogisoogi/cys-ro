@@ -12,6 +12,7 @@
 사전: sh ui/build.sh · pip install playwright · playwright install chromium
       (저장소 밖 venv 를 쓰면 PLAYWRIGHT_BROWSERS_PATH 로 브라우저 캐시 위치를 지정한다)
 실행: python3 ui/e2e/dragdrop_gate.py   # exit 0 = PASS
+      (1.1.20 #50) 다른 게이트처럼 CHROME_PATH=<chrome-headless-shell> 를 주면 그 실행 파일로 뜬다(없으면 playwright 기본).
 
 ui/dist를 localhost로 서빙하고 __TAURI__ shim으로 두 pane을 부팅한다.
 실제 OS 드래그 대신 등록된 Tauri 이벤트 핸들러에 payload를 전달하는 UI 게이트다 —
@@ -24,6 +25,7 @@ GTK 논리 좌표다. Windows(webview2/drag_drop.rs:167 ScreenToClient)만 물�
 (케이스 1·3 이 RED, 2·4 가 회귀 핀). Cargo.lock 의 wry 핀을 올리면 이 게이트를 재실행한다.
 """
 import http.server
+import os
 import sys
 import threading
 from pathlib import Path
@@ -302,7 +304,8 @@ def main() -> int:
     httpd, port = serve()
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch()
+            exe = os.environ.get("CHROME_PATH")  # (1.1.20 #50) cc_button_gate 와 같은 꼴
+            browser = pw.chromium.launch(executable_path=exe) if exe else pw.chromium.launch()
             try:
                 run_case(browser, port, "1. macOS Retina 논리좌표", UA_MAC, 2, mac_retina)
                 run_case(browser, port, "2. Windows Retina 물리좌표", UA_WIN, 2,

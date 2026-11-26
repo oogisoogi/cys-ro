@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
     *) echo "모르는 인자: $1 (사용: cf-route-probe.sh [--execute] [--wait 초])" >&2; exit 2 ;;
   esac
 done
-NONCE="$(python3 -c 'import secrets; print(secrets.token_hex(8))')"
+NONCE="$(python3 -I -c 'import secrets; print(secrets.token_hex(8))')"
 PROBE_PATH="/update/__route_probe/x"
 WORK="$(mktemp -d)"
 cat > "$WORK/index.js" <<JS

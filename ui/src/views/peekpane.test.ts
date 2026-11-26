@@ -208,7 +208,8 @@ describe("보기 칸 읽기 전용 — 실제 makePane(K-2 배출구 · DESIGN �
     expect(h.drops).toEqual(["send"]);
   });
 
-  it("⑤ makePane 안 send_input 호출 = sendRaw 한 곳뿐 · 휠 번역·IME·붙여넣기 = sendRaw 경유(그 밖의 배출구 0)", () => {
+  it("⑤ makePane 안 send_input 호출 = sendRaw 한 곳뿐 · 그 밖의 배출구 0 · 키·IME·휠 번역 세 자리 = sendRaw 경유", () => {
+    // (1.1.20 #46 · S12 L4) 이름을 단언에 맞춤 — 붙여넣기는 이 원천 검사가 재지 않는다(xterm paste = onData 길 · 행동 = ② · 「처음 크기 = PTY 크기」 는 ④ 97×41).
     const body = fnText("makePane").split("\n").filter((l) => !l.trim().startsWith("//")).join("\n"); // 주석 줄 제외(설명 글의 invoke 낱말)
     expect(body.split('invoke("send_input"').length - 1).toBe(1);
     const s = body.indexOf("const sendRaw = (data: string) => {");

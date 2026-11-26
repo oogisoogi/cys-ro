@@ -10,7 +10,8 @@ A 1280×800 대화 화면
   ③ 「<이름> 빼기」 = 입력칸에서 Shift+Tab 으로 닿음 · Enter → 칩 0 · 포커스 = 입력칸
   ④ 다시 놓고 글 + Enter → chat_send 1 · text = 「글 @경로」(펼친 입력칸 글 바이트) · 보낸 뒤 칩 0
   ⑤ 결과 3종 나머지: 폴더 못 읽음 = 「경로 확인 실패」 · 없음 = 「경로가 더 이상 없음」 · 둘 다 칩 0 · send_input 0
-  ⑥ 입력칸 밖(대화 목록) = 칩 0 · list_dir 0 (「드롭 취소」 토스트 = 런타임 있을 때만 · 종전 그대로)
+  ⑥ 입력칸 밖(대화 목록) = 칩 0 · list_dir 0 · (1.1.20 #51) 안내 토스트 「여기에는 놓을 수 없어요」(대화 화면 = 런타임 유무와 무관 · 「pane 위」 문구 0)
+  ⑥′ (1.1.20 #51) 끄는 동안 입력칸 위 = .cv-form.cv-drop-target(점선 테두리) · 목록 위로 옮김·떠남·놓음 = 꺼짐
   ⑦ 보기 칸(덮개 · ≤1410) 위 = 칩 0 · send_input 0 · chat_send 0 (S12 판정 그대로) · 칩이 든 채 작업 화면 → 대화 화면 = 칩 남음
 B 1600×900 보기 칸 = 오른쪽 칸 → 입력칸이 안 가려짐 = 입력칸 위 놓기 = 칩 1 · 보기 칸 위 = 칩 그대로
 실행: CHROME_PATH=<chrome-headless-shell> cys run -- <playwright python3> ui/e2e/chatdrop_gate.py
@@ -147,9 +148,32 @@ def main() -> int:
             check(want in ts and pg.evaluate(CHIPS) == [] and n(pg, "send_input") == si0, f"⑤ {mode} → 토스트 「{want}」 · 칩 0 · send_input 0 {ts}")
         pg.evaluate("() => { window.__LISTDIR = 'ok'; }")
         ld1 = n(pg, "list_dir")
+        t0 = len(pg.evaluate(TOASTS))
         drop(pg, ["/sandbox/report.md"], pg.evaluate(CENTER, ".cv-log"))
-        # 「드롭 취소」 토스트는 좌석 런타임이 있을 때만(panes.size > 0 · 종전 그대로) — 대화 화면으로 시작한 이 장면은 런타임 0 이라 토스트 없음
+        ts6 = pg.evaluate(TOASTS)[t0:]
         check(pg.evaluate(CHIPS) == [] and n(pg, "list_dir") == ld1 and n(pg, "send_input") == si0, f"⑥ 입력칸 밖(대화 목록) → 칩 0 · list_dir 0 · send_input 0 ({n(pg, 'list_dir') - ld1})")
+        check(ts6 == ["여기에는 놓을 수 없어요"], f"⑥ (#51) 입력칸 밖 → 안내 1 · 「드롭 취소」 0 {ts6}")
+        # ⑥′ (1.1.20 #51) 끄는 동안 강조
+        HL = "() => [...document.querySelectorAll('.cv-form')].map((f) => f.classList.contains('cv-drop-target'))"
+        def drag(ev, at=None):
+            pos = f", position: {{ x: {at['x']}, y: {at['y']} }}" if at else ""
+            pg.evaluate(f"() => window.__emit('tauri://{ev}', {{ paths: ['/sandbox/report.md']{pos} }})")
+            pg.clock.run_for(50)
+        logc = pg.evaluate(CENTER, ".cv-log")
+        drag("drag-enter", form); h1 = pg.evaluate(HL)
+        bw = pg.evaluate("() => getComputedStyle(document.querySelector('.cv-form')).borderTopStyle")
+        if os.environ.get("CHATDROP_SHOT"):
+            pg.screenshot(path=os.environ["CHATDROP_SHOT"])
+        drag("drag-over", logc); h2 = pg.evaluate(HL)
+        drag("drag-over", form); h3 = pg.evaluate(HL)
+        drag("drag-leave"); h4 = pg.evaluate(HL)
+        drag("drag-over", form); drop(pg, ["/sandbox/report.md"], form); h5 = pg.evaluate(HL)
+        check(h1 == [True] and bw == "dashed", f"⑥′ 입력칸 위로 끌어 옴 → 강조 켬 · 점선 ({h1} · {bw})")
+        check(h2 == [False] and h3 == [True], f"⑥′ 목록 위로 옮김 = 끔 · 다시 입력칸 = 켬 ({h2} · {h3})")
+        check(h4 == [False] and h5 == [False], f"⑥′ 떠남 = 끔 · 놓음 = 끔 ({h4} · {h5})")
+        pg.click(".cv-chip-x") if pg.evaluate(CHIPS) else None
+        for _ in range(4):
+            pg.clock.run_for(50)
         # ⑦ 보기 칸(덮개) 위
         drop(pg, ["/sandbox/report.md"], form)  # 칩 하나 든 채로
         open_peek(pg)

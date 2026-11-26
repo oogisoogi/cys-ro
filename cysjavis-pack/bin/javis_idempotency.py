@@ -223,6 +223,25 @@ class _SubprocessSpy:
         return _P()
 
 
+def _spy_which(real_which):
+    """`shutil.which` 대역 — "cys" 만 가짜 경로로 고정하고 나머지는 실제 which 로 넘긴다.
+
+    ★(1.1.20 · TICKET=user-reports-1126 · C53 윈 거짓 FAIL) spy 는 subprocess 만 가로챘다. 그런데
+    cmd_check→cys_status(javis_orchestra.py:559-561)와 C12.daemon 은 **호출 전에** `shutil.which("cys")`
+    로 바이너리를 찾고, 못 찾으면 subprocess 를 부르지 않는다 → spy 기록 0 → 「cys status 조차 호출하지
+    않음」 단언 RED. 즉 preflight 를 돌린 프로세스의 PATH 에 cys 가 없으면(윈 사용자 기기 판 이동 직후
+    다발 · fleet 5대) 비멱등이 하나도 없는데 C53 이 FAIL 했다. 이 배터리의 약속은 「cys 미설치/CI
+    무데몬 환경에서도 통과」(_SubprocessSpy 주석)이므로, 바이너리 위치도 spy 가 정한다(실행은 어차피
+    spy.run 이 가로채 실제 프로세스 0)."""
+    fake = os.path.join(os.sep, "spy", "bin", "cys")
+
+    def _which(name, *a, **kw):
+        if name == "cys":
+            return fake
+        return real_which(name, *a, **kw)
+    return _which
+
+
 def _spy_cmd_check():
     """orchestra.cmd_check 를 spy 로 감싸 calls ∩ MUTATE == ∅ 박제(회귀 잠금).
 
@@ -236,6 +255,7 @@ def _spy_cmd_check():
     import contextlib
     import io
     with mock.patch.object(orch.subprocess, "run", side_effect=spy.run), \
+            mock.patch.object(orch.shutil, "which", side_effect=_spy_which(orch.shutil.which)), \
             contextlib.redirect_stdout(io.StringIO()):   # cmd_check 진단 출력 흡수
         orch.cmd_check(_Args())
     ok, violations = assert_observe_phase(spy.calls)
@@ -278,8 +298,11 @@ def _spy_preflight_daemon_observe_phase():
     # fix=False: 관찰 단계 — cysd Popen 은 절대 발생하면 안 된다.
     pre = pf.Preflight(fix=False, skips=[], mode="report")
     with mock.patch.object(pf.subprocess, "run", side_effect=spy.run), \
-            mock.patch.object(pf.subprocess, "Popen", side_effect=spy.popen):
+            mock.patch.object(pf.subprocess, "Popen", side_effect=spy.popen), \
+            mock.patch.object(pf.shutil, "which", side_effect=_spy_which(pf.shutil.which)):   # ★cys 없는 PATH 에서도 ping PASS 경로를 탄다(_spy_which)
         pre.c12_daemon()
+    assert any(_extract_verb(c) == "ping" for c in spy.calls), \
+        "C12.daemon 이 spy 경유 cys ping 을 타지 않음(PASS 경로 미진입 — Popen 0 이 공허한 통과)"
     assert spy.popen_calls == [], \
         "C12.daemon 관찰 단계(fix=False)가 Popen 호출(비멱등): %s" % spy.popen_calls
     # spy.run 의 가짜 ping 성공으로 PASS 경로를 타며 Popen 분기 미진입을 실측 확인.

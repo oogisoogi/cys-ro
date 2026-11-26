@@ -57,7 +57,7 @@ if [ -n "$COPY_TO" ]; then
   cp "$RM/$NAME.pub" "$RC/$NAME.pub"
 fi
 cp "$RM/$NAME.pub" "$PUB_OUT"
-KID="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import update_common as uc; print(uc.pubkey_key_id(open(sys.argv[2], encoding="utf-8").read()))' "$HERE" "$PUB_OUT")" || exit 2
+KID="$(_offline_py -c 'import sys; sys.path.insert(0, sys.argv[1]); import update_common as uc; print(uc.pubkey_key_id(open(sys.argv[2], encoding="utf-8").read()))' "$HERE" "$PUB_OUT")" || exit 2
 offline_dev_policy "$KID" 1 || { rm -f "$PUB_OUT"; exit 2; }
 echo "✅ $PURPOSE 키 생성 — key id $KID · 개인키 = $KEY${COPY_TO:+ + $RC/$NAME.key} · 공개키 = $PUB_OUT"
 echo "   다음: HANDOFF-U3 §1 ② 키링 기입(purpose=$PURPOSE · not_after = 결정 ③) · 매체를 빼서 보관"

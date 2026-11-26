@@ -5,9 +5,9 @@
 대역 좌석: 마스터 1 · 「행사 안내 페이지」 도우미 2(좌석 2·3) · 「글 쓰기」 1(좌석 4).
 
 A 런타임 없던 좌석(대화 화면으로 시작)
-  ① 카드 누름 → 보기 칸에 그 좌석 터미널 · xterm +1 · 처음 크기 = 좌석 PTY 크기 · 그 동안 resize_surface 0 · 머리줄 요소 0 → 닫으면 원래 수(해제)
-  ② K-2 여섯 길(Shift+Enter keydown · 한글 입력 사건 · 보기 칸 위 끌어 놓기 · 보기 칸 머리줄 = 0 · ⌘W·⌘D·⌘T·⌘+ · 보기 칸 xterm 포커스) →
-     send_input·close_surface·rename_surface·create_surface 0 · 막은 계수 = 시도 수
+  ① 카드 누름 → 보기 칸에 그 좌석 터미널 · xterm +1 · 처음 크기 = 120×35(대역 PTY 크기가 기본값과 같아 「PTY 크기를 따름」 은 못 가름 — peekpane.test ④ 97×41 이 잰다) · 그 동안 resize_surface 0 · 머리줄 요소 0 → 닫으면 원래 수(해제)
+  ② K-2 여섯 길(Shift+Enter keydown · 한글 입력 사건(크롬 UA 라 WKWebView 한글 우회 배선은 이 장면에 없음) · 보기 칸 위 끌어 놓기 · 보기 칸 머리줄 = 0 · ⌘W·⌘D·⌘T·⌘+ · 보기 칸 xterm 포커스) →
+     send_input·close_surface·rename_surface·create_surface 0 · 막은 계수 = 단축키 4(send·inject 계수는 단언 밖 — 그 행동은 peekpane.test ② · (1.1.20 #46 · S12 L4) 이름을 단언에 맞춤)
   ④ 해제 지점: Esc · 닫기 단추 · 좌석 사라짐(파기) · 대화 화면 떠남 → 표지 0 · 열린 칸 0
   ⑥ 1024·1280·1371·1410·1411·1600 — 대화 칸 폭 ≥ 600px(덮개 모드 포함) · >1410 = 오른쪽 칸 · ≤1410 = 덮개(master#048a4917)
   펼침: 도우미 2명 카드 = 이름 목록(다시 그리기에도 유지) → 고름
@@ -138,7 +138,7 @@ def main() -> int:
         open_single(pg)
         s1 = st(pg)
         check(s1["shown"] and s1["inPeek"] and s1["open"] == 4 and s1["xterm"] == 1, f"① 카드 누름 → 보기 칸에 좌석 4 터미널 · xterm +1 {s1['open']} {s1['xterm']} {s1['shown']}")
-        check(s1["info"] and s1["info"]["cols"] == 120 and s1["info"]["rows"] == 35 and s1["info"]["made"], f"① 처음 크기 = 좌석 PTY 크기 120×35 · 보기 칸이 만든 런타임 {s1['info']}")
+        check(s1["info"] and s1["info"]["cols"] == 120 and s1["info"]["rows"] == 35 and s1["info"]["made"], f"① 처음 크기 = 120×35 · 보기 칸이 만든 런타임 {s1['info']}")
         check(n(pg, "resize_surface") == r0, f"① 만드는 동안 resize_surface 0 ({n(pg, 'resize_surface') - r0})")
         check(s1["heads"] == 0, f"② 보기 칸 안 머리줄·닫기(×) 요소 = 0 ({s1['heads']})")
         check(s1["name"] == "글 쓰기" and "4" not in (s1["name"] or ""), f"이름표 = 좌석 이름(번호 0) {s1['name']!r}")

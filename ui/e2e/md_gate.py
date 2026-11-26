@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""V1 마크다운 게이트 — TICKET=cysr-1119-s6 · DESIGN §6 V1 (수동 실행 — CI 미배선).
+"""V1 마크다운 게이트 — TICKET=cysr-1119-s6 · DESIGN §6 V1 (CI 배선 = ci-branch.yml ui-check · 1.1.20 #30).
 
 진짜 번들(ui/dist) + 대화 화면 대역(chat_gate CHAT_SHIM) + 가짜 시계. 마스터 답 = 믿지 못할 글(견본 20종 = src/views/md_samples.json).
 

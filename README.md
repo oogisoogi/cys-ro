@@ -75,7 +75,7 @@ cysr 는 cys 터미널(github.com/idoforgod/cys-terminal)에서 출발했습니�
   상세: [docs/INSTALL-Windows-KR.md](docs/INSTALL-Windows-KR.md)
 - 24/365 상시 가동(선택): `cysr daemon install` (launchd KeepAlive / 작업 스케줄러).
 - 명령 이름은 **`cysr`** 입니다(1.0.1부터 · 기존 `cys` 도 그대로 동작 — 같은 프로그램의 두 이름).
-- 외부 터미널에서 `cysr` 쓰기(macOS): Control Center 헤더의 **"셸에 cysr 설치"** 1클릭(권장 ·
+- 외부 터미널에서 `cysr` 쓰기(macOS): `화면 설정` → 「전문가」 의 **"셸에 cysr 설치"** 1클릭(권장 ·
   관리자 승인 1회 · 같은 버튼으로 해제 · `cys`·`cysd`·`cysr` 링크)이거나, GUI를 못 쓸 때의 수동 심링크 폴백 —
   [docs/INSTALL.md](docs/INSTALL.md) §B. Windows 설치기는 PATH를 등록하지 않습니다(§Windows · 설치 폴더에 `cysr.exe` 동봉).
 

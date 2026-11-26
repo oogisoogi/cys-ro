@@ -198,6 +198,9 @@ jobs:
                       "상담소 안내문 확인 게이트(S10b AG5) — 지워지면 안내 확인 계기 회귀가 안 잡힌다.",
                   '"$RUNNER_TEMP/pw/bin/python" ui/e2e/chatdrop_gate.py':
                       "대화 입력칸 파일 끌어 놓기 게이트(S11 TC3) — 지워지면 끌어 놓기 판정(입력칸 · 보기 칸 제외) 회귀가 안 잡힌다.",
+                  # ★TICKET=cysr-1120-integ2(1.1.20 #30): S6 마크다운 게이트 배선(토큰 = 실행 줄에만 · 위 MAJOR-1 교훈).
+                  'MD_SHOTS="$RUNNER_TEMP/md-gate-shots" "$RUNNER_TEMP/pw/bin/python" ui/e2e/md_gate.py':
+                      "대화 화면 마크다운 게이트(S6 V1 · 믿지 못할 답 20종의 HTML 주입 0 · 글자 손실 0 · 18px · 가로 넘침 0) — 지워지면 마크다운 그리기 안전·글자 회귀가 어느 레인에서도 안 잡힌다.",
                   "cargo test --bin cysd":
                       "데몬 단위 검체(alert_route·governance·state·delivery)의 브랜치 조기 경보. 태그 push "
                       "에서 처음 붉어지면 pack-artifacts 미실행 → 팩 자산 0 → 발행 0 이다.",
@@ -1206,7 +1209,7 @@ jobs:
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
-                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
+                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_idempotency_no_cys_on_path test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
                    test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
@@ -1868,7 +1871,21 @@ jobs:
           #   로컬 gate_runner 재실행마다 잔재가 쌓였다. trap 은 실패하지 않는다(set -e 아래 rm 실패가
           #   초록 스텝을 붉히지 않게 · 정리 실패는 경고 1줄).
           CYS_TMP="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/cys-pack.XXXXXX")"
-          trap 'rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
+          # ★(1.1.20 #32 · TICKET=cysr-1120-integ2) 아래 0바이트 사이드카 자리표시자를 tauri 빌드가 externalBin 으로
+          #   target/debug/cys·cysd 위에 복사한다(1.1.19 통합 함정 5 정정 · 실측 = 0바이트 · -rw-r--r--) — 같은 target 을
+          #   쓰는 뒤 소비자(팩 test_v116_auto_restore_status · e2e stty_gate 등)가 Permission denied. 스텝 앞 실물을
+          #   보관하고 스텝이 어떻게 끝나든 되돌린다(되돌린 뒤 비었거나 실행 권한이 없으면 경고 · 앞에 실물이 없었으면 손대지 않음).
+          mkdir -p "$CYS_TMP/keep-bin"
+          for b in cys cysd; do if [ -s "target/debug/$b" ]; then cp -p "target/debug/$b" "$CYS_TMP/keep-bin/$b"; fi; done
+          restore_bins() {
+            for b in cys cysd; do
+              if [ -s "$CYS_TMP/keep-bin/$b" ]; then
+                cp -p "$CYS_TMP/keep-bin/$b" "target/debug/$b" 2>/dev/null || echo "::warning::target/debug/$b 되돌림 실패"
+                { [ -s "target/debug/$b" ] && [ -x "target/debug/$b" ]; } || echo "::warning::target/debug/$b 가 되돌린 뒤에도 비었거나 실행 불가"
+              fi
+            done
+          }
+          trap 'restore_bins; rm -rf "${CYS_TMP:?}" 2>/dev/null || { chmod -R u+w "${CYS_TMP:?}" 2>/dev/null; rm -rf "${CYS_TMP:?}" || echo "::warning::임시 팩 폴더 정리 실패: ${CYS_TMP}"; }' EXIT
           # 핀 실존 단언(이 리포 관례) — cargo test 필터는 0매치도 초록이라 존재를 먼저 못박는다.
           grep -q "fn gui_spawn_env_matches_pane_spawn_env" src-tauri/src/main.rs \
             || { echo "GUI env 대칭 핀 부재: src-tauri/src/main.rs (f524e92 회귀·git add 누락 의심)" >&2; exit 1; }
@@ -2226,7 +2243,7 @@ jobs:
                    test_teamtoken test_teamtoken_hook test_dept_team_token \
                    test_dept_create_progress test_dept_chat_inject_timeout \
                    test_default_fleet_formation test_formation test_nowin_periodic_spawns test_hud_bridge_unwatched_no_spawn test_nowin_captured_spawns test_awaken_enter test_resource_gate_notify_rule test_phoenix_a3_ps_axis test_dept_request test_d1_dept_ready_probe test_dbg_d3_dept_path_precedence test_dbg_d3_d11_shared_profile_hooks test_dbg_d3_f4_answer_classifier test_dbg_d3_f5_dept_intent test_d1_4_orphan_reap test_v116_rb1_formation test_v116_auto_restore_status test_v116_phoenix_midrun_tomb test_v116_num_cys_list_compat test_win_dept_spawn \
-                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
+                   test_awaken_seat_fold test_awaken_status_lane test_boot_preflight_degraded test_c82_win_isolation test_dept_tick_stdin test_dept_tombstone_no_autostart test_dept_win_python_resolve test_idempotency_no_cys_on_path test_hook_fail_log test_mission_anomaly_provenance test_preflight_fresh_full_json test_report_gate_win_na test_resource_gate_win_roster test_session_state_canon test_inject_context_home_ancestor test_javis_counsel \
                    test_hud_bridge_0144_bootjs test_hud_bridge_0144_specimen test_hud_bridge_0144_unit test_intake_exit_contract test_mission_anomaly_emit test_resource_gate_bg_class test_computer_use_audit test_computer_control test_idle_gate test_agents_notes_personal_hooks test_hook_fail_timing test_owner_desk test_output_skills; do
             f="cysjavis-pack/bin/tests/$t.py"
             [ -f "$f" ] || { echo "선언·유령집계 테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
@@ -2348,3 +2365,5 @@ jobs:
           "$RUNNER_TEMP/pw/bin/python" ui/e2e/counsel_notice_gate.py
           # ★TICKET=cysr-1119-integ1(2차②): 대화 입력칸 끌어 놓기(S11) — 같은 번들·같은 venv.
           "$RUNNER_TEMP/pw/bin/python" ui/e2e/chatdrop_gate.py
+          # ★TICKET=cysr-1120-integ2(1.1.20 #30): 대화 화면 마크다운(S6 V1) — 같은 번들·같은 venv · 그림은 러너 임시 폴더로.
+          MD_SHOTS="$RUNNER_TEMP/md-gate-shots" "$RUNNER_TEMP/pw/bin/python" ui/e2e/md_gate.py

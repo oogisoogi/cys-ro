@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # 릴리스 본문 재료 수집기(1.1.8 U3 · 설계 §6-1 · §3-7 ①) — make-release-json.py 의 기판별 입력을 **실물에서 잰다**.
 #
-#   collect-inputs.sh mac <asset.zip> <target> <outdir>
+#   collect-inputs.sh mac <asset.zip> <target> <outdir> [--from-build-info <arm64 build-info.json>]
 #       맥 자산 zip(발행할 그 바이트)을 풀어(ditto -x -k) 번들 1개 확인 → codesign -dvvv 의 CDHash(40 hex) →
-#       <outdir>/cdhash-<target>.txt · 번들 안 cys build-info --json → <outdir>/build-info-<target>.json
+#       <outdir>/cdhash-<target>.txt · build-info → <outdir>/build-info-<target>.json
 #       (맥 자산은 master 로컬 빌드 — 설계 §4-1 · 그래서 이 모드는 master 기기에서 돈다)
+#       · macos-arm64 = 번들 안 cys build-info --json 실행(네이티브).
+#       · ★macos-x64(1.1.20 #57) = **실행 0**(arm64 맥에서 x64 실행 = Rosetta 경고): --from-build-info(같은 발행의 arm64 결과) 필수 ·
+#         lipo -archs = x86_64 단독 · collect_x64_static.py 가 빌드 표지(seq·build_id 정확히 1번)·팩 digest 재계산·팩/키링 바이트·
+#         version 을 정적으로 대조한 뒤 target 만 바꿔 쓴다(그 파일 머리말 = 칸별 근거). 하나라도 어긋나면 rc 2.
 #   collect-inputs.sh win <setup.exe> <outdir>            (윈 · Git Bash — release.yml 윈 레그가 부른다)
 #       설치기를 빈 임시 폴더에 무인 설치(/S /D=…)해 **설치기가 실제로 놓는 바이트**를 잰다 → <outdir>/payload-windows-x64/
 #       (아무것도 지우지 않는다 — 제외는 make-release-json 이 scripts/update/payload-exclude.txt 명시 규칙으로만 · 실패 기록
@@ -16,9 +20,19 @@ die() { echo "collect-inputs: $*" >&2; exit 2; }
 mode="${1:-}"
 case "$mode" in
   mac)
-    zip="${2:-}" target="${3:-}" out="${4:-}"
-    [ -f "$zip" ] && [ -n "$target" ] && [ -n "$out" ] || die "사용: mac <asset.zip> <target> <outdir>"
+    zip="${2:-}" target="${3:-}" out="${4:-}" from=""
+    [ -f "$zip" ] && [ -n "$target" ] && [ -n "$out" ] || die "사용: mac <asset.zip> <target> <outdir> [--from-build-info <arm64.json>]"
     case "$target" in macos-arm64|macos-x64) ;; *) die "맥 target 값: $target" ;; esac
+    if [ $# -gt 4 ]; then
+      [ $# -eq 6 ] && [ "$5" = "--from-build-info" ] && [ -f "$6" ] || die "다섯째 인자부터 = --from-build-info <있는 파일> 한 쌍만"
+      from="$6"
+    fi
+    # (1.1.20 #57) x64 는 실행하지 않는다 — arm64 결과가 없으면 시작도 하지 않는다 · arm64 에 주면 뜻이 없어 거부.
+    if [ "$target" = macos-x64 ]; then
+      [ -n "$from" ] || die "macos-x64 는 x64 바이너리를 실행하지 않는다 — --from-build-info <같은 발행 arm64 build-info.json> 필요"
+    else
+      [ -z "$from" ] || die "--from-build-info 는 macos-x64 에만"
+    fi
     mkdir -p "$out"
     st="$(mktemp -d)"
     trap 'rm -rf "$st"' EXIT
@@ -42,7 +56,14 @@ case "$mode" in
     fi
     bin="${apps[0]}/Contents/MacOS/cys"
     [ -x "$bin" ] || die "번들 안 cys 없음: $bin"
-    "$bin" build-info --json > "$out/build-info-$target.json.tmp" || die "cys build-info 실패(1.1.8 U1 이전 바이너리?)"
+    if [ "$target" = macos-arm64 ]; then
+      "$bin" build-info --json > "$out/build-info-$target.json.tmp" || die "cys build-info 실패(1.1.8 U1 이전 바이너리?)"
+    else
+      archs="$(lipo -archs "$bin" 2>/dev/null)" || die "lipo -archs 실패: $bin"
+      [ "$archs" = "x86_64" ] || die "macos-x64 바이너리 아키텍처가 x86_64 단독이 아니다: '$archs'"
+      python3 -I "$(cd "$(dirname "$0")" && pwd)/collect_x64_static.py" --bin "$bin" --from "$from" \
+        --repo "$(cd "$(dirname "$0")/../.." && pwd)" --out "$out/build-info-$target.json.tmp" || die "x64 정적 대조 거부(위 줄)"
+    fi
     mv "$out/build-info-$target.json.tmp" "$out/build-info-$target.json"
     echo "$cd" > "$out/cdhash-$target.txt"
     echo "✅ 맥 재료 $target — CDHash $cd · build-info $(tr -d '\n' < "$out/build-info-$target.json" | cut -c1-120)"

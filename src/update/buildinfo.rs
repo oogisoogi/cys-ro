@@ -54,7 +54,28 @@ pub struct BuildInfo {
     pub trash_delete_supported: bool,
 }
 
+/// ★1.1.20 #57(TICKET=cysr-1120-integ2 · master#58de9790 A) 정적 빌드 표지 — 발행 재료 수집(`scripts/update/collect-inputs.sh mac …
+/// macos-x64`)이 x64 번들을 **실행하지 않고** Mach-O 바이트에서 이 글자를 찾아 arm64 build-info 의 `release_seq`·`build_id` 와
+/// 글자 그대로 대조한다(arm64 맥에서 x64 실행 = Rosetta 경고). `release_seq` 는 `option_env!` 한두 글자 숫자라 홀로는 판별력이
+/// 없어 앞뒤가 닫힌 한 덩어리로 박는다: `cysr-buildmark:seq=<CYSR_RELEASE_SEQ>;build_id=<CYS_BUILD_ID>;`.
+/// 두 값은 build.rs 가 늘 넣는다(seq 없이 빌드 = `seq=0` = 미발행 → 수집기가 거부) · 바이트 배열 static + `#[used]` + build_info()
+/// 안 참조(링커가 지우지 않게) · 바이너리 안 1번 = 시험(scripts/tests/test_update_publish.py · 이 파일 tests).
+const BUILD_MARK_STR: &str = concat!("cysr-buildmark:seq=", env!("CYSR_RELEASE_SEQ"), ";build_id=", env!("CYS_BUILD_ID"), ";");
+const fn build_mark_bytes() -> [u8; BUILD_MARK_STR.len()] {
+    let src = BUILD_MARK_STR.as_bytes();
+    let mut out = [0u8; BUILD_MARK_STR.len()];
+    let mut i = 0;
+    while i < src.len() {
+        out[i] = src[i];
+        i += 1;
+    }
+    out
+}
+#[used]
+pub static BUILD_MARK: [u8; BUILD_MARK_STR.len()] = build_mark_bytes();
+
 pub fn build_info() -> BuildInfo {
+    std::hint::black_box(&BUILD_MARK); // (#57) 표지 static 을 이 바이너리에 묶어 둔다(값·출력 무변경)
     BuildInfo {
         version: env!("CARGO_PKG_VERSION").to_string(),
         build_id: crate::pack::build_id().to_string(),
@@ -184,9 +205,42 @@ pub fn read_install_id(dir: &std::path::Path) -> Option<String> {
     (s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())).then(|| s.to_string())
 }
 
+// (1.1.20 #57 R1) build.rs 가 부르는 CYSR_BUILD_ID 검사 — 시험만 여기서 같은 파일을 읽는다(운영 lib 에는 안 실림).
+#[cfg(test)]
+#[path = "build_id_guard.rs"]
+mod build_id_guard;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn given_build_id_must_be_this_head_and_dirtiness() {
+        use super::build_id_guard::given_build_id_problem as p;
+        let h = "0123456789ab";
+        assert_eq!(p("0123456789ab.20261126T0000Z", h, false), None); // 정상(CI Stamp 꼴)
+        assert_eq!(p("0123456789ab-dirty.20261126T0000Z", h, true), None); // 더러운 트리 = -dirty 표기
+        for (given, dirty, why) in [
+            ("fedcba987654.20261126T0000Z", false, "≠ 지금 HEAD"), // 다른 커밋 id
+            (" ", false, "형식"),                               // 공백(종전 = trim 뒤 타깃마다 갈림)
+            (" 0123456789ab.20261126T0000Z", false, "형식"),     // 앞 공백(trim 안 함)
+            ("0123456789ab.20261126T0000Z", true, "-dirty"),    // 트리는 더러운데 표기 없음
+            ("0123456789ab-dirty.20261126T0000Z", false, "-dirty"), // 표기만 더러움
+            ("i20mark0test.20261126T0000Z", false, "형식"),      // 커밋 아닌 글자
+            ("0123456789ab.20261126T000Z", false, "형식"),       // 분 자리 모자람
+        ] {
+            let got = p(given, h, dirty).unwrap_or_default();
+            assert!(got.contains(why), "{given:?} dirty={dirty} → {got:?}");
+        }
+        assert!(p("0123456789ab.20261126T0000Z", "unknown", false).unwrap().contains("HEAD 를 읽지 못했다"));
+    }
+
+    #[test]
+    fn build_mark_is_one_closed_token_of_seq_and_build_id() {
+        let m = std::str::from_utf8(&BUILD_MARK).unwrap();
+        assert_eq!(m, format!("{}seq={};build_id={};", "cysr-buildmark:", release_seq(), crate::pack::build_id()));
+        assert!(m.ends_with(';') && m.matches("cysr-buildmark:").count() == 1);
+    }
 
     #[test]
     fn build_info_shape() {

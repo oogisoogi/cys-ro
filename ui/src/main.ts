@@ -4700,6 +4700,13 @@ function chatInputAtPoint(pos?: { x: number; y: number }): boolean {
   return !!hit?.closest(".cv-form");
 }
 
+// (1.1.20 #51 · S11 📌2) 끌어 놓는 동안 대화 입력칸 테두리 강조 — 작업 화면 .pane.drop-target 대응 · 판정 = 놓을 때와 같은 chatInputAtPoint.
+//   입력칸이 다시 그려져도 다음 drag-over 가 다시 단다(멱등 · 저장 0). 대화 화면 밖에서 놓으면 안내(CHAT_DROP_MISS)만 · 동작 0.
+function setChatDropTarget(on: boolean) {
+  for (const f of document.querySelectorAll(".cv-form")) f.classList.toggle("cv-drop-target", on);
+}
+const CHAT_DROP_MISS = { name: "여기에는 놓을 수 없어요", detail: "파일은 아래 「마스터에게 보낼 말」 칸 위에 놓아 주세요 — 놓으면 파일 이름이 칸에 붙고, 보낼 때 함께 갑니다." };
+
 // (TICKET=cysr-1119-s11 · TC3) 대화 입력칸에 놓은 파일 = 칩(이름) — 결과 3종은 작업 화면 길(injectPathsToPane 앞 고리)과 같은 순수 함수:
 //   있음 = 칩 · 폴더를 못 읽음 = 「경로 확인 실패」 · 없음 = 「경로가 더 이상 없음」 + 트리 새로고침. 업로드 0 · PTY 쓰기 0(보낼 때 글 끝 @경로 = core).
 async function dropPathsToChat(paths: string[]) {
@@ -6569,6 +6576,20 @@ function openThemePopover(anchor: HTMLElement) {
   msInp.value = localStorage.getItem("cys-menu-scale") || String(MENU_SCALE_DEFAULT_PCT);
   // 이 손잡이 하나가 상단 단추와 이 팝오버를 함께 키운다 — 커진 만큼 자리를 다시 잡는다.
   msInp.addEventListener("input", () => { applyMenuScale(msInp.value); fitPop(); }); menuSizeRow.appendChild(msInp);
+  // (1.1.20 · cysr-1120-uifix F2 · 박사님 11-25 「a-+ 버튼이 보이지 않아서 하는 말이다.」·「위치도 수정하고, 잘 보이게 고치자.」)
+  //   왼쪽 목록(사이드바) 글자 크기 — 1.1.19 에서 접힌 「전문가」 안에 들어가 못 찾았다 → 「메뉴 크기(%)」 바로 아래 · 지금 배율을 % 로 함께 보인다.
+  //   누르면 종전과 같은 applyWsbarFontStep(저장·사용량 줄 다시 그림 한 길) · 조절부(% · A− · A＋)는 한 묶음(.sp-wsfont)이라 좁아도 함께 접힌다.
+  const wsFontRow = document.createElement("div"); wsFontRow.className = "theme-pop-row"; wsFontRow.textContent = "왼쪽 목록 글자 크기";
+  const wsFontCtl = document.createElement("span"); wsFontCtl.className = "sp-wsfont";
+  const wsFontPct = document.createElement("span"); wsFontPct.className = "sp-wsfont-pct";
+  const syncWsFontPct = () => { wsFontPct.textContent = `${Math.round(wsbarFont * 100)}%`; };
+  const mkWsFont = (glyph: string, dir: number, tip: string) => {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = glyph; b.title = tip; b.setAttribute("aria-label", tip);
+    b.addEventListener("click", () => { applyWsbarFontStep(dir); syncWsFontPct(); }); return b;
+  };
+  wsFontCtl.append(wsFontPct, mkWsFont("A−", -1, "왼쪽 목록 글자 축소"), mkWsFont("A＋", +1, "왼쪽 목록 글자 확대"));
+  syncWsFontPct();
+  wsFontRow.appendChild(wsFontCtl);
 
   const resetLook = () => {
     applyBgColor(null);
@@ -6582,12 +6603,13 @@ function openThemePopover(anchor: HTMLElement) {
     applyTermWeight(null); (termWeightRow.querySelector("select") as HTMLSelectElement).value = "400";
     applyMenuWeight(null); (menuWeightRow.querySelector("select") as HTMLSelectElement).value = "600";
     applyMenuScale(null); msInp.value = String(MENU_SCALE_DEFAULT_PCT);
+    resetWsbarFont(); syncWsFontPct(); // (F2) 이 구획으로 옮겨 온 줄이라 「이 구획만 기본값으로」 가 함께 되돌린다(100%)
     fitPop();
   };
 
   // ① 글자·배경 — 종전 「테마」 항목 전부 그대로.
   const look = mkSection("look", "글자·배경");
-  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow,
+  look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow, wsFontRow,
     mkReset("이 구획만 기본값으로", resetLook));
 
   // ② 상단 단추 — 줄 = [≡ 끌기 손잡이] [이름] [▲] [▼] [켬/끔]. 목록의 위 → 아래 = 상단의 왼쪽 → 오른쪽.
@@ -6737,17 +6759,11 @@ function openThemePopover(anchor: HTMLElement) {
       void refreshCliInstallState();
     } else void refreshCliInstallState({ notice: false });
   };
-  const wsFontRow = document.createElement("div"); wsFontRow.className = "theme-pop-row"; wsFontRow.textContent = "사이드바 글자 크기";
-  const mkWsFont = (glyph: string, dir: number, tip: string) => {
-    const b = document.createElement("button"); b.type = "button"; b.textContent = glyph; b.title = tip; b.setAttribute("aria-label", tip);
-    b.addEventListener("click", () => applyWsbarFontStep(dir)); return b;
-  };
-  wsFontRow.append(mkWsFont("A−", -1, "사이드바 글자 축소"), mkWsFont("A＋", +1, "사이드바 글자 확대"));
   const wsNewRow = document.createElement("div"); wsNewRow.className = "theme-pop-row";
   const wsNewBtn = document.createElement("button"); wsNewBtn.type = "button"; wsNewBtn.textContent = "＋ 새 워크스페이스";
   wsNewBtn.title = "새 워크스페이스 — 같은 조직(현재 데몬)의 화면 그룹입니다";
   wsNewBtn.addEventListener("click", () => newWorkspaceFromUser()); wsNewRow.appendChild(wsNewBtn);
-  expert.body.append(expertRow, redactRow, acctList, cliRow, wsFontRow, wsNewRow);
+  expert.body.append(expertRow, redactRow, acctList, cliRow, wsNewRow);
   expert.sec.querySelector(".sp-sec-head")?.addEventListener("click", probeCliIfShown);
   probeCliIfShown();
 
@@ -10818,14 +10834,20 @@ async function start() {
   await listen("tauri://drag-enter", (e) => {
     const p = (e.payload ?? {}) as { position?: { x: number; y: number } };
     setOsDropTarget(paneAtPointStrict(p.position));
+    setChatDropTarget(chatInputAtPoint(p.position)); // (1.1.20 #51) 대화 입력칸 테두리 강조
   });
   await listen("tauri://drag-over", (e) => {
     const p = (e.payload ?? {}) as { position?: { x: number; y: number } };
     setOsDropTarget(paneAtPointStrict(p.position));
+    setChatDropTarget(chatInputAtPoint(p.position)); // (1.1.20 #51)
   });
-  await listen("tauri://drag-leave", () => setOsDropTarget(undefined));
+  await listen("tauri://drag-leave", () => {
+    setOsDropTarget(undefined);
+    setChatDropTarget(false); // (1.1.20 #51)
+  });
   await listen("tauri://drag-drop", (e) => {
     setOsDropTarget(undefined);
+    setChatDropTarget(false); // (1.1.20 #51)
     const p = (e.payload ?? {}) as { paths?: string[]; position?: { x: number; y: number } };
     const paths = p.paths ?? [];
     if (!paths.length) return;
@@ -10844,7 +10866,9 @@ async function start() {
     }
     const rt = paneAtPointStrict(p.position);
     if (!rt) {
-      if (panes.size > 0) toast("watchdog", "드롭 취소", "pane 위에 놓아야 삽입됩니다");
+      // (1.1.20 #51 · S11 📌2) 대화 화면 = 「pane 위」 는 뜻이 어긋난다(작업 칸이 안 보임) → 입력칸으로 안내 · 런타임 유무와 무관하게.
+      if (viewsBoot?.registry.current === "chat") toast("watchdog", CHAT_DROP_MISS.name, CHAT_DROP_MISS.detail);
+      else if (panes.size > 0) toast("watchdog", "드롭 취소", "pane 위에 놓아야 삽입됩니다");
       return;
     }
     void injectPathsToPane(rt, paths);
@@ -11894,7 +11918,14 @@ function applyWsbarFontStep(dir: number) {
   //   (폭 드래그도 같은 지연을 갖지만 그것은 이 티켓 밖이라 손대지 않는다 — 워커 판단·보고 대상.)
   renderSidebarUsage([...lastSurfacesBySocket.values()].flat());
 }
-// (1.1.19 · cysr-1119-s10b MD-S1S2) 사이드바 머리 A− A＋ 단추는 빠졌다 — 입구 = 화면 설정 「전문가」 의 「사이드바 글자 크기」(applyWsbarFontStep 그대로).
+// (1.1.20 · cysr-1120-uifix F2) 글자·배경 구획의 「이 구획만 기본값으로」·「모두 기본값으로」 — 기본 배율(1 = 100%)로 · 저장을 지운다.
+function resetWsbarFont() {
+  wsbarFont = 1;
+  applyWsbarVars();
+  localStorage.removeItem("cys-wsbar-font");
+  renderSidebarUsage([...lastSurfacesBySocket.values()].flat());
+}
+// (1.1.19 · cysr-1119-s10b MD-S1S2) 사이드바 머리 A− A＋ 단추는 빠졌다 — (1.1.20 F2) 입구 = 화면 설정 「글자·배경」 의 「왼쪽 목록 글자 크기」(applyWsbarFontStep 그대로).
 
 // ---------- 전문가 모드(TICKET=v110-sidebar ⓑ′ · 박사님 판정 2026-09-20) ----------
 // 조직 단추 3종(▶CEO·▶부서장·＋부서)은 기본 화면에서 보이지 않는다. 기본 길은 사이드바 안내

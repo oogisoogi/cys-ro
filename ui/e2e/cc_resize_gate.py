@@ -2,11 +2,11 @@
 """CC 창 비례 스케일 회귀 게이트 (수동 실행 — CI 미배선).
 
 검증 항목 (2026-07-12 오너 승인 '비례 스케일' 스펙):
-  1. 대시보드 탭(Live)의 본문·섹션이 창 크기에 비례해 커지고 작아진다
+  1. Control Center 본문·섹션이 창 크기에 비례해 커지고 작아진다
      (#cc-body zoom == --panel-zoom == ccscale.ts 산식).
-  2. 오피스 탭은 zoom 1 고정(3D fit 카메라가 창 연동의 진실 — 이중 스케일 금지),
-     iframe은 창을 100% 추종한다.
-  3. body.cc-office 클래스가 탭 이탈 시 잔류하지 않는다.
+  2. body.cc-office 클래스가 남지 않는다.
+  (1.1.20 #26) 1.1.19 cysr-1119-s10b MD-CC 로 상단 `#btn-cc`(기본 끔)·Live·오피스 탭이 빠졌다 —
+  여는 길 = 화면 설정 「컨트롤 센터 열기」 · 잴 탭 = 첫 탭 승인 Feed(.cc-section) · 오피스 항목은 탭과 함께 지웠다.
 
 사전 조건:
   sh ui/build.sh                                  # ui/dist 생성
@@ -48,8 +48,7 @@ MEASURE = """
     bodyClass: document.body.className,
     zoomVar: getComputedStyle(document.documentElement).getPropertyValue('--panel-zoom').trim(),
     bodyZoom: cs('#cc-body', 'zoom'),
-    section: r('.cc-section'),
-    officeFrame: r('#cc-office-frame'),
+    section: r('#cc-view-feed .cc-section'),
   };
 })()
 """
@@ -70,36 +69,31 @@ def run_engine(pw, engine: str, port: int) -> None:
     page.add_init_script(SHIM)
     page.goto(f"http://127.0.0.1:{port}/index.html")
     page.wait_for_timeout(400)
-    page.click("#btn-cc")
+    # (1.1.20 #26) 여는 길 = 화면 설정 → 「컨트롤 센터 열기」(상단 #btn-cc 는 기본 끔 · 1.1.15 1e)
+    page.click("#btn-theme")
+    page.wait_for_timeout(200)
+    page.get_by_role("button", name="컨트롤 센터 열기").click()
     page.wait_for_timeout(300)
+    check(page.is_visible("#cc-panel"), "화면 설정 → 컨트롤 센터 열기 → #cc-panel 보임")
 
-    # 오피스(기본 탭): zoom 1 고정 + iframe 창 추종
-    for w, h in [(1400, 1000), (900, 700)]:
-        page.set_viewport_size({"width": w, "height": h})
-        page.wait_for_timeout(300)
-        m = page.evaluate(MEASURE)
-        check(float(m["bodyZoom"]) == 1, f"office {w}x{h}: bodyZoom==1 (got {m['bodyZoom']})")
-        check(m["officeFrame"] and abs(m["officeFrame"]["w"] - (w - 40)) < 3,
-              f"office {w}x{h}: iframe 창 추종 (got {m['officeFrame']})")
-
-    # Live 탭: 비례 스케일 + 클래스 잔류 없음
-    page.click('#cc-tabs .cc-tab[data-view="live"]')
+    # 승인 Feed 탭(첫 탭 · 기본): 비례 스케일 + 클래스 잔류 없음
+    page.click('#cc-tabs .cc-tab[data-view="feed"]')
     page.wait_for_timeout(200)
     m = page.evaluate(MEASURE)
-    check("cc-office" not in m["bodyClass"], f"live: cc-office 클래스 잔류 없음 (got {m['bodyClass']!r})")
+    check("cc-office" not in m["bodyClass"], f"feed: cc-office 클래스 잔류 없음 (got {m['bodyClass']!r})")
     for w, h in SIZES:
         page.set_viewport_size({"width": w, "height": h})
         page.wait_for_timeout(300)
         m = page.evaluate(MEASURE)
         exp = expected_zoom(w, h)
         got = float(m["zoomVar"])
-        check(abs(got - exp) < 0.005, f"live {w}x{h}: --panel-zoom≈{exp:.3f} (got {got})")
-        check(abs(float(m["bodyZoom"]) - exp) < 0.005, f"live {w}x{h}: #cc-body zoom 적용 (got {m['bodyZoom']})")
+        check(abs(got - exp) < 0.005, f"feed {w}x{h}: --panel-zoom≈{exp:.3f} (got {got})")
+        check(abs(float(m["bodyZoom"]) - exp) < 0.005, f"feed {w}x{h}: #cc-body zoom 적용 (got {m['bodyZoom']})")
         # 섹션 시각 폭 = min(본문 780-패딩 40, 가용/zoom) × zoom — 비례 추종의 실측 증거
         avail = w / exp - 40
         exp_w = min(740, avail) * exp
         check(m["section"] and abs(m["section"]["w"] - exp_w) < 6,
-              f"live {w}x{h}: 섹션 폭≈{exp_w:.0f}px (got {m['section'] and round(m['section']['w'])})")
+              f"feed {w}x{h}: 섹션 폭≈{exp_w:.0f}px (got {m['section'] and round(m['section']['w'])})")
     browser.close()
 
 def main() -> int:

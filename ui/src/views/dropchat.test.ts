@@ -129,6 +129,31 @@ describe("TC3 받는 자리 — main.ts 전역 drag-drop 리스너(원천)", () 
     expect(f).toContain("document.elementFromPoint(css.x, css.y)");
     expect(f).toContain('closest(".cv-form")');
   });
+  // (1.1.20 #51 · S11 📌2) 끌어 놓는 동안 입력칸 강조 · 대화 화면 밖에 놓으면 입력칸으로 안내(작업 화면 「pane 위」 문구는 작업 화면에만).
+  it("끌기 강조 = enter·over 에서 chatInputAtPoint 로 켜고 · leave·drop 에서 끈다 · CSS 짝 규칙 실재", () => {
+    for (const ev of ["tauri://drag-enter", "tauri://drag-over"]) {
+      const i = main.indexOf(`await listen("${ev}", (e) => {`);
+      expect(i).toBeGreaterThan(0);
+      const b = strip(main.slice(i, main.indexOf("\n  });\n", i)));
+      expect(b).toContain("setChatDropTarget(chatInputAtPoint(p.position));");
+    }
+    const l = main.indexOf('await listen("tauri://drag-leave", () => {');
+    expect(l).toBeGreaterThan(0);
+    expect(strip(main.slice(l, main.indexOf("\n  });\n", l)))).toContain("setChatDropTarget(false);");
+    expect(body).toContain("setChatDropTarget(false);");
+    const f = main.indexOf("function setChatDropTarget(");
+    expect(strip(main.slice(f, main.indexOf("\n}\n", f)))).toContain('classList.toggle("cv-drop-target", on)');
+    const css = readFileSync(new URL("./views.css", import.meta.url), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(/\.cv-form\.cv-drop-target\s*\{[^}]*dashed/.test(css)).toBe(true);
+  });
+  it("입력칸 밖에 놓음 = 대화 화면이면 입력칸 안내(런타임 유무와 무관) · 작업 화면만 「pane 위」 문구", () => {
+    const miss = body.indexOf("if (!rt) {");
+    const blk = body.slice(miss, body.indexOf("return;", miss));
+    const chatAt = blk.indexOf('if (viewsBoot?.registry.current === "chat") toast("watchdog", CHAT_DROP_MISS.name, CHAT_DROP_MISS.detail);');
+    expect(chatAt).toBeGreaterThan(0);
+    expect(blk.indexOf('else if (panes.size > 0) toast("watchdog", "드롭 취소", "pane 위에 놓아야 삽입됩니다");')).toBeGreaterThan(chatAt);
+    expect(main).toContain("파일은 아래 「마스터에게 보낼 말」 칸 위에 놓아 주세요");
+  });
   it("dropPathsToChat = ftdrop 결과 3종(같은 순수 함수) · PTY 쓰기 0(send_input·injectRawToPane 0) · 칩 = core.addFiles", () => {
     const s = main.indexOf("async function dropPathsToChat(");
     expect(s).toBeGreaterThan(0);

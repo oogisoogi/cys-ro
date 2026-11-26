@@ -13,6 +13,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1696,6 +1697,223 @@ class TestOfflineRitual(Base):
         self.assertTrue(os.path.exists(os.path.join(self.tmp, "out", "cysr-release-5.json.minisig")))
         self.assertEqual(open(pyc, "rb").read(), before)  # 서명 실행이 source 트리 pyc 를 읽지도 고쳐 쓰지도 않음
 
+    # ── 1.1.20(TICKET=cysr-1120-integ2) #39 python -I · F8 해시 실패 · F9 본문 먼저 · B3 정리 실패 · B4 신호 정리 ──────────
+    def _shim_env_any(self, base=None, **pats):
+        """PATH 앞에 명령 대역 — pats = {명령: case 패턴}. 인자 하나가 패턴에 맞으면 그 호출만 rc 1(「shim: <명령> 실패 주입」) · 나머지 = 실물."""
+        d = tempfile.mkdtemp(prefix="shim2-", dir=self.tmp)  # 부를 때마다 새 폴더(앞 대역이 남지 않게)
+        for cmd, pat in pats.items():
+            real = shutil.which(cmd, path="/bin:/usr/bin")
+            body = '#!/bin/sh\nfor a in "$@"; do case "$a" in %s) echo "shim: %s 실패 주입 $a" >&2; exit 1 ;; esac; done\nexec %s "$@"\n' % (pat, cmd, real)
+            open(os.path.join(d, cmd), "w").write(body)
+            os.chmod(os.path.join(d, cmd), 0o755)
+        e = dict(base or self.env)
+        e["PATH"] = d + os.pathsep + e.get("PATH", os.environ.get("PATH", ""))
+        return e
+
+    def _out_files(self, out):
+        return sorted(os.listdir(out)) if os.path.isdir(out) else []
+
+    def test_i20_cwd_module_hijack_not_read(self):
+        """#39: 의식 스크립트의 python3 는 지금 폴더의 json.py·hashlib.py 를 읽지 않는다(-I) — 대조: 같은 폴더에서 맨 python3 -c 는 먹힌다."""
+        evil = os.path.join(self.tmp, "evil")
+        os.makedirs(evil)
+        marker = os.path.join(self.tmp, "hijack-marker.txt")
+        for mod in ("json", "hashlib", "secrets"):
+            open(os.path.join(evil, mod + ".py"), "w").write(
+                "open(%r, 'a').write(%r + '\\n')\nraise SystemExit(9)\n" % (marker, mod))
+        ctl = run(["python3", "-c", "import hashlib"], cwd=evil)
+        self.assertEqual(ctl.returncode, 9, ctl.stderr)  # 대조: 심은 모듈이 실제로 먹힌다
+        self.assertTrue(os.path.exists(marker))
+        os.remove(marker)
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = run(["bash", os.path.join(self.dev, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                 "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring, "--out-dir", out, "--wait-eject", "0"],
+                env=self.env, cwd=evil)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(marker), open(marker).read() if os.path.exists(marker) else "")
+        doc = os.path.join(self.tmp, "rev.json")
+        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", doc)
+        r = run(["bash", os.path.join(self.dev, "sign-revocations.sh"), "--doc", doc, "--media", self.mnt,
+                 "--key", os.path.join(self.mnt, "r.key"), "--keyring", self.fx.keyring,
+                 "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env, cwd=evil)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(marker))
+        for n in ("lib/offline-sign.sh", "sign-release.sh", "sign-revocations.sh", "gen-offline-key.sh", "cf-route-probe.sh"):
+            code = [l for l in open(os.path.join(UPD, n), encoding="utf-8").read().splitlines() if not l.lstrip().startswith("#")]
+            bare = [l for l in code if re.search(r"\bpython3\s+(?!-I\b)", l)]
+            self.assertEqual(bare, [], n)
+
+    def test_i20_f8_hash_failure_is_refusal(self):
+        """F8: offline_sha256 = 계산 실패·빈 출력 = rc 2(빈 값끼리 「같다」 0) · offline_sign 의 두 해시 자리가 이 함수를 쓴다."""
+        lib = os.path.join(UPD, "lib", "offline-sign.sh")
+        r = run(["bash", "-c", '. "$1"; offline_sha256 "$2"', "_", lib, os.path.join(self.tmp, "none")])
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("sha256 을 계산하지 못했다", r.stderr)
+        fake = os.path.join(self.tmp, "fakepy")
+        os.makedirs(fake)
+        open(os.path.join(fake, "python3"), "w").write("#!/bin/sh\nexit 0\n")  # 아무것도 안 찍고 rc 0
+        os.chmod(os.path.join(fake, "python3"), 0o755)
+        f = os.path.join(self.tmp, "x.txt")
+        open(f, "w").write("x")
+        r = run(["bash", "-c", '. "$1"; offline_sha256 "$2"', "_", lib, f], env=dict(os.environ, PATH=fake + ":/usr/bin:/bin"))
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("sha256 형식이 아니다", r.stderr)
+        r = run(["bash", "-c", '. "$1"; offline_sha256 "$2"', "_", lib, f])
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, hashlib.sha256(b"x").hexdigest()))
+        body = open(lib, encoding="utf-8").read()
+        sign = body[body.index("_offline_sign_body() {"):]
+        self.assertEqual(sign.count("offline_sha256 "), 2)
+        self.assertNotIn("hashlib", sign)
+
+    def test_i20_f9_body_placed_before_sig_and_rolled_back(self):
+        """F9: 산출 자리에 본문 먼저 · 서명 나중 — 서명을 못 놓으면 놓은 본문을 거둔다(산출 0 · 임시 0) · 그 뒤 같은 자리로 다시 돌면 통과."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env_any(ln="*/cysr-release-5.json.minisig"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shim: ln 실패 주입", r.stderr)
+        self.assertIn("먼저 놓은 본문을 거뒀다", r.stderr)
+        self.assertEqual(self._out_files(out), [])
+        self.assertEqual(self._media_residue(), [])
+        log = os.path.join(self.tmp, "ln-order.txt")
+        d = os.path.join(self.tmp, "lnlog")
+        os.makedirs(d)
+        open(os.path.join(d, "ln"), "w").write('#!/bin/sh\nfor a in "$@"; do last="$a"; done\necho "$last" >> "%s"\nexec /bin/ln "$@"\n' % log)
+        os.chmod(os.path.join(d, "ln"), 0o755)
+        r = self._sign_env(b, out, dict(self.env, PATH=d + os.pathsep + os.environ.get("PATH", "")))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        placed = [os.path.basename(l) for l in open(log).read().split()]
+        self.assertEqual(placed, ["cysr-release-5.json", "cysr-release-5.json.minisig"])  # 본문 먼저
+        self.assertEqual(self._out_files(out), ["cysr-release-5.json", "cysr-release-5.json.minisig"])  # 임시 0
+        self.assertTrue(fm.verify(os.path.join(self.tmp, "u.pub"), os.path.join(out, "cysr-release-5.json"),
+                                  os.path.join(out, "cysr-release-5.json.minisig")))
+        out2 = os.path.join(self.tmp, "out2")
+        w, mlog = self._counting_minisign()
+        r = self._sign_env(b, out2, dict(self._shim_env_any(cp="*/.cysr-release-5.json.tmp*"), MINISIGN=w))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("본문을 산출 폴더로 옮기지 못했다", r.stderr)
+        self.assertFalse(os.path.exists(mlog), "본문 사본이 없는데 minisign 을 불렀다")
+        self.assertEqual(self._out_files(out2), [])
+
+    def test_i20_b3_cleanup_failure_is_refusal(self):
+        """B3: 성공 갈래의 매체 작업 폴더 정리(rmdir) · 공개키 임시 파일(rm) 실패 = rc 2 · 산출 0(종전 = 무시하고 rc 0)."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env_any(rmdir="*/.cys-sign-*"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shim: rmdir 실패 주입", r.stderr)
+        self.assertIn("매체 작업 폴더를 지우지 못했다", r.stderr)
+        self.assertEqual(self._out_files(out), [])
+        for n in self._media_residue():  # 남은 것은 빈 작업 폴더(공개 정보도 0)
+            self.assertEqual(os.listdir(os.path.join(self.mnt, n)), [])
+            os.rmdir(os.path.join(self.mnt, n))
+        pt = os.path.join(self.tmp, "pubtmp")
+        os.makedirs(pt)
+        r = self._sign_env(b, out, self._shim_env_any(base=dict(self.env, TMPDIR=pt), rm="*/cys-sign-pub.*"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shim: rm 실패 주입", r.stderr)
+        self.assertIn("공개키 임시 파일을 지우지 못했다", r.stderr)
+        self.assertEqual(self._out_files(out), [])
+        self.assertTrue(any(n.startswith("cys-sign-pub.") for n in os.listdir(pt)), os.listdir(pt))  # 전제: 공개키 임시 = TMPDIR 틀 자리
+        self.assertEqual(self._media_residue(), [])
+
+    def test_i20_b4_signal_during_minisign_cleans_up(self):
+        """B4: minisign(비밀번호 대기 꼴 = 잠든 대역) 중 TERM → rc 2 · 매체 작업 폴더 0 · 공개키·서명 임시 파일 0 · 산출 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        pt = os.path.join(self.tmp, "sigtmp")
+        os.makedirs(pt)
+        started = os.path.join(self.tmp, "mini-started")
+        w = os.path.join(self.tmp, "mini-slow.sh")
+        open(w, "w").write('#!/bin/sh\n[ "$1" = "-S" ] && { : > "%s"; sleep 2; }\nexec "%s" "%s" "$@"\n' % (started, sys.executable, FAKE))
+        os.chmod(w, 0o755)
+        env = dict(self.env, MINISIGN=w, TMPDIR=pt)
+        p = subprocess.Popen(["bash", os.path.join(self.dev, "sign-release.sh"), "--body", b, "--media", self.mnt,
+                              "--key", os.path.join(self.mnt, "u.key"), "--keyring", self.fx.keyring, "--out-dir", out,
+                              "--wait-eject", "0"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        for _ in range(200):
+            if os.path.exists(started):
+                break
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(started), "minisign 대역이 시작되지 않았다")
+        self.assertNotEqual(self._media_residue(), [])  # 전제: 지금 매체에 작업 폴더가 있다
+        p.terminate()  # bash 에만 TERM(자식 = 비밀번호 대기 꼴) — bash 는 자식이 끝난 뒤 trap 을 돈다
+        so, se = p.communicate(timeout=30)
+        self.assertEqual(p.returncode, 2, se)
+        self.assertIn("신호로 멈췄다", se)
+        self.assertEqual(self._media_residue(), [])
+        self.assertEqual(os.listdir(pt), [])
+        self.assertEqual(self._out_files(out), [])
+        self.assertNotIn("통과", so)
+
+    # ── 1.1.20 검증 R2·R3·R4·R6⑵(master#c5a0c510 · VERIFY-SIGNTOOL §2 #14·#31·#11 · §4 f4-9) ───────────────
+    def _cmd_shim(self, name, body):
+        d = tempfile.mkdtemp(prefix="shim3-", dir=self.tmp)
+        open(os.path.join(d, name), "w").write("#!/bin/sh\n" + body)
+        os.chmod(os.path.join(d, name), 0o755)
+        return d
+
+    def test_i20_r2_signal_between_two_ln_leaves_nothing(self):
+        """R2: 본문 ln 직후(서명 ln 전) TERM — 종전 = 서명 없는 본문이 최종 이름으로 남음(rc 2) · 이제 rc 2 · 산출 0 · 임시 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        d = self._cmd_shim("ln", 'for a in "$@"; do last="$a"; done\n/bin/ln "$@" || exit $?\n'
+                                 'case "$last" in */cysr-release-5.json) kill -TERM $PPID ;; esac\nexit 0\n')
+        r = self._sign_env(b, out, dict(self.env, PATH=d + os.pathsep + os.environ.get("PATH", "")))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("신호를 받았다 — 놓은 본문·서명을 거뒀다", r.stderr)
+        self.assertEqual(self._out_files(out), [])
+        self.assertEqual(self._media_residue(), [])
+
+    def test_i20_r3_rollback_failure_is_reported_truthfully(self):
+        """R3: 서명 ln 실패 + 본문 rm 실패 — 종전 = 「거뒀다」 거짓 문구 · 이제 「남았다」 + 그 경로 · rc 2."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env_any(ln="*/cysr-release-5.json.minisig", rm="*/out/cysr-release-5.json"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertNotIn("먼저 놓은 본문을 거뒀다", r.stderr)
+        self.assertIn("지우지 못해 남았다(서명 없음 · 손으로 지울 것): " + os.path.join(out, "cysr-release-5.json"), r.stderr)
+
+    def test_i20_r4_exit_cleanup_failure_keeps_rc2(self):
+        """R4: 임시 rm 실패(그리고 EXIT 정리도 실패) — 종전 = set -e 로 rc 1(계약 0|2 이탈) · 이제 rc 2 · 산출은 거둠."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        r = self._sign_env(b, out, self._shim_env_any(rm="*/.cysr-release-5.json.tmp*"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shim: rm 실패 주입", r.stderr)
+        self.assertNotIn("cysr-release-5.json", [n for n in self._out_files(out) if not n.startswith(".")])
+        self.assertNotIn("cysr-release-5.json.minisig", self._out_files(out))
+
+    def test_i20_r4_revocations_exit_cleanup_failure_keeps_rc2(self):
+        """검증 R4(폐기문 길 · 변이 r4-2): 폐기문 임시 rm 실패(EXIT 정리도 실패) = rc 2(계약 0|2) · 산출 0."""
+        doc = os.path.join(self.tmp, "rev.json")
+        py("make-revocations.py", "--key-id", self.fx.kid("r"), "--keyring", self.fx.keyring, "--first", "--out", doc)
+        out = os.path.join(self.tmp, "rout")
+        r = run(["bash", os.path.join(self.dev, "sign-revocations.sh"), "--doc", doc, "--media", self.mnt,
+                 "--key", os.path.join(self.mnt, "r.key"), "--keyring", self.fx.keyring, "--out-dir", out, "--wait-eject", "0"],
+                env=self._shim_env_any(rm="*/.revocations.json.tmp*"))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("shim: rm 실패 주입", r.stderr)
+        self.assertNotIn("revocations.json.minisig", self._out_files(out))
+
+    def test_i20_r6_doc_hash_failure_refuses_before_minisign(self):
+        """R6⑵: offline_sign 의 서명 대상 해시(3번째 sha256)만 실패 — rc 2 · 「sha256 을 계산하지 못했다」 · minisign 0(비밀번호를 묻지 않음) · 매체 0."""
+        b = self.unsigned_body()
+        out = os.path.join(self.tmp, "out")
+        real = shutil.which("python3")
+        cnt = os.path.join(self.tmp, "hash-count")
+        d = self._cmd_shim("python3", 'case "$*" in *hashlib*) n=$(($(cat "%s" 2>/dev/null || echo 0) + 1)); echo $n > "%s";'
+                                      ' [ "$n" = 3 ] && exit 1 ;; esac\nexec "%s" "$@"\n' % (cnt, cnt, real))
+        w, mlog = self._counting_minisign()
+        r = self._sign_env(b, out, dict(self.env, PATH=d + os.pathsep + os.environ.get("PATH", ""), MINISIGN=w))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(open(cnt).read().strip(), "3")  # 전제: 앞 두 해시(원본·산출 사본)는 지나고 셋째(서명 대상)에서 멈춤
+        self.assertIn("sha256 을 계산하지 못했다", r.stderr)
+        self.assertFalse(os.path.exists(mlog), "서명 대상 해시가 없는데 minisign 을 불렀다")
+        self.assertEqual(self._media_residue(), [])
+        self.assertEqual(self._out_files(out), [])
+
     # ── codex 1R #3: 시험 손잡이는 개발 모드 전용 · 개발 모드는 실 키 거부 · 키 생성도 매체 안 ─────────────
     def real_env(self, **extra):
         e = {k: v for k, v in os.environ.items() if k not in ("CYS_SIGN_DEV", "CYS_TEST_NOW", "MINISIGN",
@@ -2127,8 +2345,286 @@ class TestCollectMac(unittest.TestCase):
         self.assertIn("DR 핀 불일치", r.stderr)  # 애드혹 서명 ≠ cys-local leaf
 
 
+# ★1.1.20 #57(TICKET=cysr-1120-integ2 · master#ddf562c2 A′ · master#58de9790 A): x64 맥 재료 = 실행 0 · 정적 대조.
+#   대역 x64 = 시스템 /bin/zsh 의 x86_64 조각을 떼어 __text 를 대역 바이트(빌드 표지·팩 내용·키링)로 덮고 ad-hoc 서명한 번들
+#   (strict 검증 통과 · ★이 시험은 그 바이너리를 **실행하지 않는다** — 수집기의 x64 갈래에 실행 줄이 없음은 소스 핀이 잰다).
+def _zsh_has_x86_64():
+    try:
+        return sys.platform == "darwin" and "x86_64" in subprocess.run(["lipo", "-archs", "/bin/zsh"], capture_output=True, text=True).stdout.split()
+    except OSError:
+        return False
+
+
+@unittest.skipUnless(_zsh_has_x86_64() and shutil.which("codesign"), "맥 전용(lipo·codesign · /bin/zsh x86_64 조각)")
+class TestCollectMacX64Static(unittest.TestCase):
+    PACK = {"a.txt": b"alpha\n", "sub/b.md": b"# b\n\xea\xb0\x80\n", "tests/skip.py": b"never\n", ".hidden": b"never\n"}
+    KEYS = {"keys": [{"key_id": "A" * 16, "pubkey": "p1", "not_after": "2030-01-01T00:00:00Z"},
+                     {"key_id": "B" * 16, "pubkey": "p2", "purpose": "release", "not_after": "2030-01-01T00:00:00Z"},
+                     {"key_id": "C" * 16, "pubkey": "p3", "purpose": "root", "not_after": "2030-01-01T00:00:00Z"}]}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="u3x-")
+        g = self.g = os.path.join(self.tmp, "g")
+        for rel, data in self.PACK.items():
+            os.makedirs(os.path.dirname(os.path.join(g, "cysjavis-pack", rel)), exist_ok=True)
+            open(os.path.join(g, "cysjavis-pack", rel), "wb").write(data)
+        self.keyring = (json.dumps(self.KEYS, indent=2) + "\n").encode()
+        open(os.path.join(g, "cysjavis-pack", "trusted-keys.json"), "wb").write(self.keyring)
+        open(os.path.join(g, "Cargo.toml"), "w").write('[package]\nname = "x"\nversion = "1.2.3"\n\n[dependencies]\nversion = "9"\n')
+        os.makedirs(os.path.join(g, "scripts", "update"))
+        for n in ("collect-inputs.sh", "collect_x64_static.py"):
+            os.symlink(os.path.join(UPD, n), os.path.join(g, "scripts", "update", n))
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="t",
+                    GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        for a in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "t"]):
+            self.assertEqual(run(["git", "-C", g, *a], env=genv).returncode, 0, a)
+        self.bid = run(["git", "-C", g, "rev-parse", "--short=12", "HEAD"]).stdout.strip() + ".20261126T0000Z"
+        # 시험 쪽 독립 계산(build.rs 규칙: 점·tests 제외 · 바이트 정렬 · rel\0content\0)
+        items = sorted(((r, d) for r, d in list(self.PACK.items()) + [("trusted-keys.json", self.keyring)]
+                        if not any(c.startswith(".") or c == "tests" for c in r.split("/"))), key=lambda x: x[0].encode())
+        self.items = items
+        h = hashlib.sha256()
+        for r, d in items:
+            h.update(r.encode() + b"\0" + d + b"\0")
+        self.digest = h.hexdigest()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def bi(self, **over):
+        b = {"version": "1.2.3", "build_id": self.bid, "release_seq": 5, "target": "macos-arm64", "features": [],
+             "bundled_pack": {"version": "1.2.3", "digest": self.digest},
+             "keyring_ids": ["release:" + "B" * 16, "root:" + "C" * 16], "trash_delete_supported": True}
+        b.update(over)
+        p = os.path.join(self.tmp, "bi-%d.json" % len(os.listdir(self.tmp)))
+        json.dump(b, open(p, "w"))
+        return p, b
+
+    def payload(self, seq=5, bid=None, marks=1, flip=None):
+        mark = b"cysr-buildmark:seq=%d;build_id=%s;" % (seq, (bid or self.bid).encode())
+        body = b"".join(d if r != flip else d[:-1] + bytes([d[-1] ^ 1]) for r, d in self.items)
+        return b"\0".join([mark] * marks + [body, self.keyring])
+
+    def bundle(self, payload, arch="x86_64"):
+        n = len(os.listdir(self.tmp))
+        app = os.path.join(self.tmp, "b%d" % n, "cysr.app")
+        os.makedirs(os.path.join(app, "Contents", "MacOS"))
+        exe = os.path.join(app, "Contents", "MacOS", "cys")
+        slices = []
+        for a in (["x86_64", "arm64e"] if arch == "fat" else [arch]):
+            t = os.path.join(self.tmp, "s%d-%s" % (n, a))
+            self.assertEqual(run(["lipo", "-thin", a, "/bin/zsh", "-output", t]).returncode, 0)
+            o = run(["otool", "-l", t]).stdout
+            m = re.search(r"sectname __text\n\s+segname __TEXT\n\s+addr \S+\n\s+size (0x[0-9a-f]+)\n\s+offset (\d+)", o)
+            size, off = int(m.group(1), 16), int(m.group(2))
+            self.assertLess(len(payload), size)
+            b = bytearray(open(t, "rb").read())
+            b[off:off + len(payload)] = payload
+            open(t, "wb").write(b)
+            slices.append(t)
+        if arch == "fat":
+            self.assertEqual(run(["lipo", "-create", *slices, "-output", exe]).returncode, 0)
+        else:
+            shutil.copy(slices[0], exe)
+        os.chmod(exe, 0o755)
+        open(os.path.join(app, "Contents", "Info.plist"), "w").write(
+            '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundleIdentifier</key>'
+            '<string>test.u3.fake</string><key>CFBundleExecutable</key><string>cys</string></dict></plist>')
+        subprocess.check_call(["codesign", "-s", "-", "--force", app], stderr=subprocess.DEVNULL)
+        z = os.path.join(self.tmp, "b%d.zip" % n)
+        subprocess.check_call(["ditto", "-c", "-k", "--keepParent", app, z])
+        return z
+
+    def collect(self, z, bi_path=None, target="macos-x64"):
+        out = os.path.join(self.tmp, "out-%d" % len(os.listdir(self.tmp)))
+        args = ["bash", os.path.join(self.g, "scripts", "update", "collect-inputs.sh"), "mac", z, target, out]
+        if bi_path:
+            args += ["--from-build-info", bi_path]
+        r = run(args, env=dict(os.environ, CYS_COLLECT_DR_PIN="none"))
+        return r, out
+
+    def refused(self, r, out, words):
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn(words, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(out, "build-info-macos-x64.json")))
+
+    def test_same_passes_and_writes_x64_row(self):
+        p, b = self.bi()
+        r, out = self.collect(self.bundle(self.payload()), p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("정적 대조 통과", r.stdout)
+        self.assertEqual(json.load(open(os.path.join(out, "build-info-macos-x64.json"))), dict(b, target="macos-x64"))
+        self.assertRegex(open(os.path.join(out, "cdhash-macos-x64.txt")).read().strip(), r"^[0-9a-f]{40}$")
+
+    def test_build_id_differs(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(bid=self.bid[:-5] + "0001Z")), p)
+        self.refused(r, out, "표지 build_id=")
+
+    def test_seq_only_differs(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(seq=6)), p)
+        self.refused(r, out, "표지 seq=6")
+
+    def test_pack_one_byte_differs(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(flip="sub/b.md")), p)
+        self.refused(r, out, "커밋 팩 내용이 없다 1건(첫: sub/b.md)")
+
+    def test_digest_differs_in_arm64_input(self):
+        p, _ = self.bi(bundled_pack={"version": "1.2.3", "digest": "0" * 64})
+        r, out = self.collect(self.bundle(self.payload()), p)
+        self.refused(r, out, "팩 다시 계산 digest")
+
+    def test_old_binary_without_mark(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(marks=0)), p)
+        self.refused(r, out, "표지가 0번")
+
+    def test_mark_twice_is_ambiguous(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(marks=2)), p)
+        self.refused(r, out, "표지가 2번")
+
+    def test_fat_binary_refused(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(), arch="fat"), p)
+        self.refused(r, out, "x86_64 단독이 아니다")
+
+    def test_arm64_disguised_as_x64_refused(self):
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(), arch="arm64e"), p)
+        self.refused(r, out, "x86_64 단독이 아니다: 'arm64e'")
+
+    def test_unreleased_seq0_and_missing_input_refused(self):
+        z = self.bundle(self.payload(seq=0))
+        p, _ = self.bi(release_seq=0)
+        r, out = self.collect(z, p)
+        self.refused(r, out, "release_seq 가 1 이상")
+        r, out = self.collect(z)
+        self.refused(r, out, "--from-build-info")
+
+    # ── 검증 R5: 수집기 칸 4(키링 바이트 · version · features/trash · -dirty)마다 「그 칸만 다른」 입력 ──
+    def test_r5_keyring_bytes_differ(self):
+        p, _ = self.bi()
+        kr = self.keyring.replace(b'"p2"', b'"pX"')
+        self.assertNotEqual(kr, self.keyring)
+        mark = b"cysr-buildmark:seq=5;build_id=%s;" % self.bid.encode()
+        r, out = self.collect(self.bundle(b"\0".join([mark, b"".join(d for _, d in self.items if _ != "trusted-keys.json"), kr])), p)
+        # trusted-keys.json 은 팩 안에도 있어(PACK_ALL) 팩 내용 탐색이 같은 바이트를 먼저 요구한다 — 키링 바이트 칸은 그 뒤의 이중 방어(준등가)
+        self.refused(r, out, "x64 바이너리에 커밋 팩 내용이 없다 1건(첫: trusted-keys.json)")
+
+    def test_r5_version_differs(self):
+        p, _ = self.bi(version="1.2.4", bundled_pack={"version": "1.2.4", "digest": self.digest})
+        r, out = self.collect(self.bundle(self.payload()), p)
+        self.refused(r, out, "version: 커밋 Cargo.toml 1.2.3")
+
+    def test_r5_features_or_trash_differ(self):
+        for over in ({"features": ["x"]}, {"trash_delete_supported": False}):
+            p, _ = self.bi(**over)
+            r, out = self.collect(self.bundle(self.payload()), p)
+            self.refused(r, out, "코드 상수와 다르다")
+
+    def test_r5_dirty_build_id_refused(self):
+        dirty = self.bid[:12] + "-dirty" + self.bid[12:]
+        p, _ = self.bi(build_id=dirty)
+        r, out = self.collect(self.bundle(self.payload(bid=dirty)), p)
+        self.refused(r, out, "build_id 형식")
+
+    def test_x64_branch_never_executes_bundle_binary(self):
+        src = open(os.path.join(UPD, "collect-inputs.sh"), encoding="utf-8").read()
+        a = src.index('    if [ "$target" = macos-arm64 ]; then')
+        e = src.index("    else\n", a)
+        f = src.index("    fi\n", e)
+        self.assertEqual(src.count('"$bin" build-info'), 1)
+        self.assertTrue(a < src.index('"$bin" build-info') < e)  # 실행 줄 = arm64 갈래 안에만
+        self.assertNotIn('"$bin"', src[e:f].replace('lipo -archs "$bin"', "").replace('--bin "$bin"', ""))
+
+
+@unittest.skipUnless(VERIFY_BIN, "빌드된 cys(CYS_UPDATE_VERIFY_BIN) 필요")
+class TestBuildMarkInBinary(unittest.TestCase):
+    def test_build_mark_once_and_equals_build_info(self):
+        """1.1.20 #57 ②: 빌드된 cys 바이트 안에 빌드 표지가 **정확히 1번** · 글자 = 그 바이너리 build-info 의 seq·build_id(개발 빌드 = seq 0)."""
+        blob = open(VERIFY_BIN, "rb").read()
+        self.assertEqual(blob.count(b"cysr-buildmark:"), 1)
+        m = re.search(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);", blob)
+        bi = json.loads(run([VERIFY_BIN, "build-info", "--json"], env=dict(os.environ, CYS_UPDATE_STATE_DIR=tempfile.mkdtemp())).stdout)
+        self.assertEqual((int(m.group(1)), m.group(2).decode()), (bi["release_seq"], bi["build_id"]))
+
+
 class TestSourcePins(unittest.TestCase):
     """저장소 소스 핀 — 수리가 되돌려지면 여기서 잡힌다."""
+
+    def test_i20_local_build_shares_one_build_id(self):
+        """1.1.20 #57 ③: build-macos-local.sh 가 타깃 반복 **전에** CYSR_BUILD_ID 를 한 번 정해 export(build.rs local_build_id 와 같은 형식) —
+        실제 셸로 그 덩어리만 돌려 형식·재사용을 잰다(빌드 0)."""
+        src = open(os.path.join(ROOT, "scripts", "build-macos-local.sh"), encoding="utf-8").read()
+        i, j = src.index("_bid_now() {"), src.index("export CYSR_BUILD_ID")  # (R1-b) 함수 정의부터
+        self.assertLess(j, src.index('for T in "${TARGETS[@]}"; do'))
+        chunk = src[i:src.index("\n", j) + 1] + 'printf "%s" "$CYSR_BUILD_ID"\n'
+        env = {k: v for k, v in os.environ.items() if k != "CYSR_BUILD_ID"}
+        r = run(["bash", "-c", "set -euo pipefail\n" + chunk], cwd=ROOT, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertRegex(r.stdout, r"^[0-9a-f]{12}(-dirty)?\.\d{8}T\d{4}Z$")
+        self.assertTrue(r.stdout.startswith(run(["git", "-C", ROOT, "rev-parse", "--short=12", "HEAD"]).stdout.strip()))
+        r = run(["bash", "-c", "set -euo pipefail\n" + chunk], cwd=ROOT, env=dict(env, CYSR_BUILD_ID="given.20260101T0000Z"))
+        self.assertEqual(r.stdout, "given.20260101T0000Z")
+        b = open(os.path.join(ROOT, "build.rs"), encoding="utf-8").read()
+        self.assertIn('format!("{sha}{}.{}", if dirty { "-dirty" } else { "" }, utc_stamp(secs))', b)  # 형식 정본(바뀌면 여기도)
+
+    def test_i20_r6_loop_never_changes_build_id(self):
+        """검증 R6⑴: 타깃 반복 안에서 CYSR_BUILD_ID 를 바꾸거나 지우는 줄 0(반복 앞에서 한 번 정한 값을 모든 타깃이 받음)."""
+        src = open(os.path.join(ROOT, "scripts", "build-macos-local.sh"), encoding="utf-8").read()
+        a = src.index('for T in "${TARGETS[@]}"; do')
+        loop = src[a:src.index("\ndone\n", a)]
+        code = [l for l in loop.splitlines() if not l.lstrip().startswith("#")]
+        # 읽어서 대조하는 줄(R1-a 재대조)은 허용 · 바꾸는 줄(대입·unset·export)만 금지
+        self.assertEqual([l for l in code if re.search(r"(unset|export)\s+CYSR_(BUILD_ID|RELEASE_SEQ)|CYSR_(BUILD_ID|RELEASE_SEQ)=", l)], [])
+        self.assertTrue(any('[ "${CYSR_BUILD_ID%%.*}" = "$_bid_head" ]' in l for l in code), "타깃마다 재대조 줄")
+
+    def test_i20_r1b_local_build_status_failure_and_per_target_recheck(self):
+        """검증 R1-a·R1-b(build-macos-local.sh): git status 실패 = rc 2(종전 = 깨끗으로 봄) · 타깃마다 HEAD·dirty 재대조 = 다른 커밋 id 면 rc 2."""
+        src = open(os.path.join(ROOT, "scripts", "build-macos-local.sh"), encoding="utf-8").read()
+        fn = src[src.index("_bid_now() {"):src.index("\n}\n", src.index("_bid_now() {")) + 3]
+        a = src.index('for T in "${TARGETS[@]}"; do')
+        k = src.index('  _bid_head="$(_bid_now)" || exit 2\n', a)
+        recheck = src[k:src.index("\n", src.index('[ "${CYSR_BUILD_ID%%.*}"', k)) + 1]
+        env = {k2: v for k2, v in os.environ.items() if not k2.startswith("GIT_CONFIG")}
+        bad = dict(env, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="status.relativePaths", GIT_CONFIG_VALUE_0="not-a-boolean")
+        self.assertEqual(run(["git", "-C", ROOT, "status", "--porcelain"], env=bad).returncode, 128)  # 전제: 이 프로세스만 status 실패
+        r = run(["bash", "-c", "set -euo pipefail\n" + fn + '_bid_now >/dev/null\necho OK\n'], cwd=ROOT, env=bad)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("git status 실패", r.stderr)
+        head = run(["bash", "-c", fn + "_bid_now"], cwd=ROOT, env=env).stdout.strip()
+        for bid, rc in ((head + ".20261126T0800Z", 0), ("fedcba987654.20261126T0800Z", 2)):
+            r = run(["bash", "-c", "set -euo pipefail\nT=x\nCYSR_BUILD_ID=%s\n%s%secho OK\n" % (bid, fn, recheck)], cwd=ROOT, env=env)
+            self.assertEqual(r.returncode, rc, (bid, r.stderr))
+        self.assertIn("빌드 중단", r.stderr)
+        lib = open(os.path.join(ROOT, "scripts", "lib", "mac-bundle-common.sh"), encoding="utf-8").read()
+        self.assertEqual([l for l in lib.splitlines() if not l.lstrip().startswith("#") and ("CYSR_BUILD_ID" in l or "env -i" in l)], [])
+
+    def test_i20_r1_build_rs_given_id_watches_sources_and_status_failure_stops(self):
+        """검증 R3 📌⑴(build.rs a9a2da6b3 의 두 고침 · build.rs 는 시험 하네스가 없어 소스 핀):
+        ⑴ CYSR_BUILD_ID 를 받은 갈래 = rerun-if-changed 다섯 경로(src·src-tauri·vendor·Cargo.toml·Cargo.lock · 실재하는 것만)
+        ⑵ 그 갈래의 HEAD·dirty 관측 = head_and_dirty_strict(rev-parse·status 실패 = Err → panic · 「깨끗」 으로 보지 않음).
+        되돌리면(R3 변이 b1 = 감시 제거 · b2 = status 실패 관대) 같은 커밋 소스 수정·status 실패에도 깨끗한 id 가 통과한다."""
+        b = open(os.path.join(ROOT, "build.rs"), encoding="utf-8").read()
+        code = lambda s: "\n".join(l.split("//")[0].rstrip() for l in s.splitlines())  # 주석 줄·꼬리 주석 걷기
+        a = b.index('Ok(v) if !v.is_empty() => {')
+        arm = code(b[a:b.index("_ => local_build_id(&manifest_dir),", a)])
+        self.assertIn('for p in ["src", "src-tauri", "vendor", "Cargo.toml", "Cargo.lock"] {', arm)
+        loop = arm[arm.index('for p in ["src"'):]
+        self.assertRegex(loop, r'^for p in \[[^\]]*\] \{\s*if Path::new\(&manifest_dir\)\.join\(p\)\.exists\(\) \{\s*println!\("cargo:rerun-if-changed=\{p\}"\);')
+        self.assertIn("match head_and_dirty_strict(&manifest_dir) {", arm)
+        self.assertRegex(arm, r'Err\(why\) => panic!\(')
+        self.assertLess(arm.index("head_and_dirty_strict"), arm.index("build_id_guard::given_build_id_problem"))
+        self.assertNotIn("unwrap_or", arm)
+        f = b.index("fn head_and_dirty_strict(")
+        fn = code(b[f:b.index("\n}\n", f) + 3])
+        self.assertRegex(fn, r'if !o\.status\.success\(\) \{\s*return Err\(')
+        self.assertIn('let head = run(&["rev-parse", "--short=12", "HEAD"])?;', fn)
+        self.assertIn('let dirty = !run(&["status", "--porcelain", "--untracked-files=no"])?.is_empty();', fn)
+        self.assertNotIn("unwrap_or", fn)
 
     def test_bundle_prep_passes_min_binary(self):
         s = open(os.path.join(ROOT, "scripts", "bundle-prep.sh"), encoding="utf-8").read()

@@ -22,7 +22,7 @@ offline_dev_policy() {
   local kid="$1" real
   real="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)/cysjavis-pack/trusted-keys.json"
   [ "$kid" = "-" ] && return 0
-  python3 - "$real" "$kid" <<'PY' || return 2
+  python3 -I - "$real" "$kid" <<'PY' || return 2
 import json, sys
 try:
     ids = {k.get("key_id") for k in json.load(open(sys.argv[1], encoding="utf-8")).get("keys", [])}

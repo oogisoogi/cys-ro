@@ -56,7 +56,9 @@ html, body {
   background: var(--bar); border-bottom: 1px solid var(--border);
   -webkit-user-select: none; user-select: none;
 }
-#brand { font-weight: 700; color: var(--accent); }
+/* (1.1.20 · cysr-1120-uifix F7) 「cysr」 글자도 「메뉴 크기(%)」를 따른다 — 종전엔 크기 규칙이 없어 body 13px 고정(190% 에서 옆 판번 19px 보다 작았다).
+   기준점 1.25 = 기본 125% 에서 종전과 같은 13px. */
+#brand { font-weight: 700; color: var(--accent); font-size: calc(13px * var(--ui-chrome-scale) / 1.25); }
 /* 앱 판번 상시 표시(TICKET=cysr-ui-polish-101 ⓐ) — 브랜드 옆 소형 · build_id 는 툴팁 */
 #app-ver { color: #8b949e; font-size: calc(10px * var(--ui-chrome-scale)); margin-left: -4px; }
 /* (v116-ui-close · D4 #5 · opus 디버깅 D-1) 줄어들지 않는다(flex: none). 종전 flex 0 1 auto·말줄임은 긴 옛 라벨
@@ -92,11 +94,14 @@ html, body {
 /* 아이콘 버튼(New·Split·Close·Files) — 글자 대신 16px 인라인 SVG(index.html). 정사각에 가까운 28×26으로
    글자 버튼(≈25px)과 높이를 맞추고, svg 는 stroke=currentColor 라 위 #topbar button 의 color(var(--text))를
    그대로 따른다(--text 는 배경 테마 커스텀과 무관한 크롬 고정색 — applyBgColor 가 건드리지 않음). hover 는 위 규칙 상속. */
+/* (1.1.20 F7) 아이콘 단추 크기도 메뉴 배율을 따른다(기준점 1.25 = 기본 125% 에서 종전 28×26 · 16px 그대로).
+   ⚠1.1.19 화면에는 이 클래스를 쓰는 요소가 없다(+New·Split·창 닫기·파일 = 글자 단추 · #topbar button 공통 규칙이 이미 배율을 따른다) —
+   다시 아이콘으로 바뀌어도 배율 밖으로 새지 않게 규칙만 맞춰 둔다. */
 #topbar button.icon-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 28px; height: 26px; padding: 0; flex: none; line-height: 0;
+  width: calc(28px * var(--ui-chrome-scale) / 1.25); height: calc(26px * var(--ui-chrome-scale) / 1.25); padding: 0; flex: none; line-height: 0;
 }
-#topbar button.icon-btn svg { width: 16px; height: 16px; display: block; pointer-events: none; }
+#topbar button.icon-btn svg { width: calc(16px * var(--ui-chrome-scale) / 1.25); height: calc(16px * var(--ui-chrome-scale) / 1.25); display: block; pointer-events: none; }
 .badge {
   display: inline-block; min-width: 16px; padding: 0 4px;
   border-radius: 8px; background: var(--error); color: #fff;
@@ -397,6 +402,8 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-seat { display: flex; align-items: center; gap: .4em; padding: 1px 4px; border-radius: 4px; cursor: pointer; min-width: 0; white-space: nowrap; }
 .ws-seat:hover { background: #1c2128; }
 .ws-seat.named { cursor: default; }
+/* (1.1.20 F4) 이름 보고자 줄(master·cso)은 번호 칸 한 칸만 남는다(이름 칸 = 같은 말이라 비움) — 그 한 칸을 이름 글자색으로(종전 두 번째 「master」 와 같은 밝기). */
+.ws-seat.named .ws-seat-no { color: var(--text); }
 .ws-seat.st-exited { opacity: .55; }
 /* (1f · master#94f497c9 ②) 좌석 줄·상황판 표지 = 역할 점(.pane .pane-role-dot act-*)과 같은 모양·같은 색 규칙 — 같은 값 = 같은 모양.
    좌석 줄 = 그 좌석 역할색(--role-color · JS) · 상황판 = 역할이 섞인 합이라 글자색. */
@@ -575,6 +582,18 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
   font-size: calc(10px * var(--ui-chrome-scale)); line-height: 1.35; color: var(--text);
 }
 #theme-pop button, #theme-pop select, #theme-pop input { font: inherit; color: var(--text); }
+/* (1.1.20 · cysr-1120-uifix F3 · 박사님 11-25 「흰색 배경에 글자가 거의 인식하기 어렵다」) 팝오버 안 단추의 **기본 꼴** — 한 곳.
+   원인: 위 규칙이 글자색(밝은 --text)만 주고 바탕을 주지 않아, 꼴 클래스가 없는 단추(컨트롤 센터 열기 · 자동 보고 켜기/끄기 ·
+   셸 cysr 설치/해제 · A− A＋ · ＋ 새 워크스페이스)에 브라우저 기본 단추 바탕(WebKit 실측 rgb(192,192,192))이 새어 대비 1.18:1 이었다.
+   → 「이 구획만 기본값으로」(.theme-pop-reset)와 같은 어두운 바탕·테두리. 꼴 클래스가 있는 단추(.theme-pop-reset · .sp-sec-head ·
+   .tb-move · .tb-toggle)는 선택자가 더 세서 자기 꼴 그대로다. 새 단추도 클래스 없이 넣으면 이 꼴을 받는다. */
+#theme-pop button {
+  padding: .25em .6em; cursor: pointer;
+  background: var(--bar);
+  border: 1px solid var(--border); border-radius: 6px;
+}
+#theme-pop button:hover:not(:disabled) { border-color: var(--accent); }
+#theme-pop button:disabled { opacity: .55; cursor: not-allowed; }
 /* 구획(제목 줄 + 접기) — 제목 줄을 누르면 그 구획 몸통이 접힌다. */
 #theme-pop .sp-sec + .sp-sec { border-top: 1px solid var(--border); padding-top: .45em; }
 #theme-pop .sp-sec-head {
@@ -592,6 +611,9 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 }
 /* 좁아서 접히면 조작 부품이 아랫줄 오른쪽에 선다(넓을 때는 위 space-between 과 같은 자리 = 무변경). */
 #theme-pop .theme-pop-row > * { margin-left: auto; }
+/* (1.1.20 · cysr-1120-uifix F2) 「왼쪽 목록 글자 크기」 조절부 = [지금 %] [A−] [A＋] 한 묶음 — 좁아서 접혀도 셋이 함께 아랫줄로 간다. % 칸 폭을 고정(em)해 100%↔90% 에서 단추가 흔들리지 않게. */
+#theme-pop .sp-wsfont { display: inline-flex; align-items: center; gap: .4em; }
+#theme-pop .sp-wsfont-pct { min-width: 3em; text-align: right; color: var(--text); }
 #theme-pop input[type="color"] {
   width: 2.4em; height: 1.4em; padding: 0; cursor: pointer;
   background: none; border: 1px solid var(--border); border-radius: 4px;

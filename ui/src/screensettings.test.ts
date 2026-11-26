@@ -41,8 +41,8 @@ describe("이름·입구 — 「화면 설정」", () => {
     expect(pop).toContain('head.setAttribute("aria-expanded", String(!folded));');
   });
 
-  it("① 글자·배경 = 종전 항목 8개 + 묶음 탭 노브 1개(tabs-sidebar 조각2 · 기본 켜짐 · 끄면 전부 나란히)", () => {
-    expect(pop).toContain("look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow,");
+  it("① 글자·배경 = 종전 항목 8개 + 묶음 탭 노브 1개(tabs-sidebar 조각2 · 기본 켜짐 · 끄면 전부 나란히) + (1.1.20 F2) 메뉴 크기 바로 아래 「왼쪽 목록 글자 크기」", () => {
+    expect(pop).toContain("look.body.append(ccOpenRow, row, fontRow, titleSizeRow, titleWeightRow, titleColorRow, groupTabsRow, boardPosRow, termWeightRow, menuWeightRow, menuSizeRow, wsFontRow,");
     for (const t of ['"배경색"', '"폰트"', '"제목 크기"', '"제목 굵기"', '"제목=역할색"', '"묶음 탭"', '"본문 굵기"', '"메뉴 굵기"', '"메뉴 크기(%)"']) expect(pop).toContain(t);
   });
 
@@ -408,7 +408,7 @@ describe("사용 설명서", () => {
   const manual = read("../../USER-MANUAL.md");
   it("상단 단추 켬끔·순서 안내 · 단추 이름 = 화면 설정(옛 이름으로 누르라는 안내 0)", () => {
     expect(manual).toContain("상단 단추는 `화면 설정` → 「상단 단추」에서 하나씩 켜고 끄고, 순서를 바꿉니다");
-    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `Control Center` · `완전 초기화` 가 꺼져 있습니다"); // 1.1.15 1e
+    expect(manual).toContain("처음에는 `+ New` · `Split →` · `Split ↓` · `창 닫기` · `Control Center` · `완전 초기화` · `정렬` · `파일` 이 꺼져 있습니다"); // 1.1.15 1e · (1.1.20 #18) 1.1.19 MD-T7 정렬·파일 = TOPBAR_DEFAULT_OFF 8개와 같은 목록
     expect(manual.includes("`테마` 버튼")).toBe(false);
   });
 });
@@ -436,8 +436,8 @@ describe("MD-T11 틀 — 자동 보고 자리 · 전문가 구획(처음엔 접�
     expect((append.match(/\.sec\b/g) ?? []).length).toBe(4);
   });
 
-  it("전문가 구획 = 6줄(전문가 모드 · 계정 가림 · 계정 숨기기 목록 · 셸에 cysr 설치 · 사이드바 글자 크기 · ＋ 새 워크스페이스)", () => {
-    expect(pop).toContain("expert.body.append(expertRow, redactRow, acctList, cliRow, wsFontRow, wsNewRow);");
+  it("전문가 구획 = 5줄(전문가 모드 · 계정 가림 · 계정 숨기기 목록 · 셸에 cysr 설치 · ＋ 새 워크스페이스) — (1.1.20 F2) 글자 크기 줄은 글자·배경으로 옮겼다", () => {
+    expect(pop).toContain("expert.body.append(expertRow, redactRow, acctList, cliRow, wsNewRow);");
   });
 
   it("줄마다 기존 입구와 같은 함수 — 저장·판정 길 하나(두 입구가 서로 따라간다)", () => {
@@ -456,7 +456,7 @@ describe("MD-T11 틀 — 자동 보고 자리 · 전문가 구획(처음엔 접�
     expect(pop).toContain("toggleUsageAcctHidden(key);");
     expect(pop).toContain("for (const a of accountsCache as any[]) {");
     expect(main.includes("ccAccounts")).toBe(false);
-    // 사이드바 글자 크기
+    // 왼쪽 목록(사이드바) 글자 크기 — (1.1.20 F2) 글자·배경 구획 · 같은 함수
     expect(pop).toContain("applyWsbarFontStep(dir)");
     expect(pop).toContain('mkWsFont("A−", -1,');
     expect(pop).toContain('mkWsFont("A＋", +1,');

@@ -59,11 +59,36 @@ mkdir -p "$OUTDIR"
 OUTDIR="$(cd "$OUTDIR" && pwd)"
 ROWS=()
 
+# ★1.1.20 #57(TICKET=cysr-1120-integ2 · master#ddf562c2 ③): 두 타깃이 **같은 build_id** 를 갖게 한 번 정해 넘긴다.
+#   build.rs 는 CYSR_BUILD_ID 가 없으면 타깃마다 빌드 시각(UTC 분)으로 따로 찍는다(build.rs local_build_id) — 그러면 arm64·x64 의
+#   build_id 가 갈려, 발행 재료 수집(collect-inputs.sh mac … macos-x64 --from-build-info)의 정적 대조가 거부한다(fail-closed).
+#   형식 = build.rs local_build_id 와 같은 `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>` · 이미 주어졌으면 그 값 그대로.
+#   release_seq 는 부른 쪽이 export 한 CYSR_RELEASE_SEQ 를 두 타깃이 함께 받는다(없으면 0 = 미발행 빌드 · build.rs).
+#   ⚠타깃을 따로따로 두 번 부를 때는 첫 실행이 찍은 값(아래 줄)을 export 하고 **같은 커밋·같은 작업트리 상태에서** 부른다 —
+#     build.rs 가 받은 값의 커밋 12자·-dirty 표기를 지금 HEAD·작업트리와 대조해 다르면(다른 커밋 · 공백 · 형식 밖) 빌드를 멈춘다
+#     (1.1.20 #57 R1 · src/update/build_id_guard.rs) — 다른 커밋에서 그 값을 재사용할 수 없다.
+# (검증 R1-b) git status 실패를 「깨끗」 으로 보지 않는다 — 실패 = 거부(exit 2).
+_bid_now() {  # 지금 HEAD 12자 + (추적 파일 변경 있으면) -dirty
+  local sha st
+  sha="$(git rev-parse --short=12 HEAD)" || { echo "✗ git rev-parse HEAD 실패 — build_id 를 정할 수 없다" >&2; return 2; }
+  st="$(git status --porcelain --untracked-files=no)" || { echo "✗ git status 실패 — 작업트리 상태를 모르면 build_id 를 정하지 않는다" >&2; return 2; }
+  if [ -n "$st" ]; then printf '%s-dirty\n' "$sha"; else printf '%s\n' "$sha"; fi
+}
+if [ -z "${CYSR_BUILD_ID:-}" ]; then
+  _bid_head="$(_bid_now)" || exit 2
+  CYSR_BUILD_ID="${_bid_head}.$(date -u +%Y%m%dT%H%MZ)"
+fi
+export CYSR_BUILD_ID
+echo "build_id(이 실행의 모든 타깃 공통) = $CYSR_BUILD_ID · release_seq = ${CYSR_RELEASE_SEQ:-0(미발행)}"
+
 for T in "${TARGETS[@]}"; do
   echo
   echo "════ $T ════"
   # ⚠두 아키텍처를 이어서 만들 때 순서가 중요하다: mac_prep_runtime 은 src-tauri/runtime 을 **지우고 다시 받는다**.
   #   그래서 한 타깃을 끝까지 묶은 뒤 다음 타깃으로 간다(동시에 돌리면 런타임이 섞인다).
+  # (검증 R1-a·R1-b) 타깃마다 다시 대조 — 앞 타깃 빌드 사이에 소스를 고쳤거나 HEAD 가 움직였으면(또는 status 실패) 이 타깃을 만들지 않는다.
+  _bid_head="$(_bid_now)" || exit 2
+  [ "${CYSR_BUILD_ID%%.*}" = "$_bid_head" ] || { echo "✗ $T: build_id $CYSR_BUILD_ID 의 커밋·-dirty ≠ 지금 $_bid_head — 빌드 중단" >&2; exit 2; }
   mac_resolve_target "$T"
   mac_prep_runtime
   mac_precompile_python

@@ -11,6 +11,10 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+// (1.1.20 #57 R1) 넘겨받은 CYSR_BUILD_ID 검사 — lib 시험과 같은 파일(src/update/build_id_guard.rs).
+#[path = "src/update/build_id_guard.rs"]
+mod build_id_guard;
+
 fn main() {
     // cysjavis-pack 전체를 임베드한다. 소스 = git 인덱스(`git ls-files`) — 디렉터리 워크가
     // 아니라 추적 집합을 SOT로 삼아 gitignore 경계를 그대로 따른다. 어떤 파일이든 변경 시 재빌드.
@@ -45,8 +49,28 @@ fn main() {
     //   `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`. 릴리스 CI 는 매트릭스 레그가 같은 값을 갖도록
     //   CYSR_BUILD_ID 를 넘긴다(레그마다 빌드 시각이 달라 각자 찍으면 latest.json 한 줄과 어긋난다).
     println!("cargo:rerun-if-env-changed=CYSR_BUILD_ID");
+    // ★1.1.20 #57 R1: 값을 받았으면(빈 문자열 아님) 그대로 굽기 전에 「지금 HEAD 12자 · 지금 -dirty 여부 · UTC 분 꼴」 을 대조하고
+    //   아니면 빌드를 멈춘다(공백·다른 커밋·-dirty 불일치 포함 · trim 하지 않는다). 안 받았으면 종전대로 스스로 찍는다.
+    println!("cargo:rerun-if-changed=src/update/build_id_guard.rs");
     let build_id = match env::var("CYSR_BUILD_ID") {
-        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        Ok(v) if !v.is_empty() => {
+            // (검증 R1-a) 같은 커밋에서 추적 소스를 고친 뒤 같은 깨끗한 id 로 다시 빌드하면 이 스크립트가 안 돌아 검사가 빠졌다 →
+            //   id 를 받은 갈래에서는 소스 전체를 감시해 다시 돌게 한다(디렉터리 = 아래 전부 · 실재하는 경로만 — 없는 경로는 늘 재실행).
+            for p in ["src", "src-tauri", "vendor", "Cargo.toml", "Cargo.lock"] {
+                if Path::new(&manifest_dir).join(p).exists() {
+                    println!("cargo:rerun-if-changed={p}");
+                }
+            }
+            // (검증 R1-b) git status 실패를 「깨끗」 으로 보지 않는다 — 이 갈래에서는 실패 = 빌드 중단.
+            let (head12, dirty) = match head_and_dirty_strict(&manifest_dir) {
+                Ok(x) => x,
+                Err(why) => panic!("{why} — CYSR_BUILD_ID 를 대조할 수 없어 빌드 중단(build.rs)"),
+            };
+            if let Some(why) = build_id_guard::given_build_id_problem(&v, &head12, dirty) {
+                panic!("{why} — 빌드 중단(build.rs · src/update/build_id_guard.rs)");
+            }
+            v
+        }
         _ => local_build_id(&manifest_dir),
     };
     println!("cargo:rustc-env=CYS_BUILD_ID={build_id}");
@@ -361,6 +385,26 @@ fn head_watch_paths(manifest_dir: &str) -> Vec<String> {
 /// CYSR_BUILD_ID 미지정(로컬 빌드)일 때의 build_id — `<커밋 12자>[-dirty].<UTC yyyymmddTHHMMZ>`.
 /// git 실패 시 커밋 자리는 "unknown"(업데이터 대조에서 불일치 = 안전측). 시각은 build.rs 가 다시 돌 때만
 /// 갱신된다(rerun 조건 밖의 편집은 옛 시각·옛 dirty 표기를 유지한다 — 로컬 판별용이라 수용).
+/// (1.1.20 #57 R1 · 검증 R1-b) 받은 id 대조용 git 관측 — `(HEAD 12자, 추적 파일 변경 있음)` · git 실패는 Err(원인 문구).
+///   local_build_id(안 받은 갈래 · `unwrap_or(false)`)와 달리 status 실패를 깨끗으로 보지 않는다.
+fn head_and_dirty_strict(manifest_dir: &str) -> Result<(String, bool), String> {
+    let run = |args: &[&str]| -> Result<String, String> {
+        let o = Command::new("git").args(args).current_dir(manifest_dir).output().map_err(|e| format!("git {} 실행 실패: {e}", args.join(" ")))?;
+        if !o.status.success() {
+            return Err(format!(
+                "git {} 실패(rc {:?}): {}",
+                args.join(" "),
+                o.status.code(),
+                String::from_utf8_lossy(&o.stderr).trim().chars().take(200).collect::<String>()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+    let head = run(&["rev-parse", "--short=12", "HEAD"])?;
+    let dirty = !run(&["status", "--porcelain", "--untracked-files=no"])?.is_empty();
+    Ok((head, dirty))
+}
+
 fn local_build_id(manifest_dir: &str) -> String {
     let git = |args: &[&str]| {
         Command::new("git")

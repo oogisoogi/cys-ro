@@ -198,11 +198,16 @@ export function stateAgeSecs(rec: ActivityRecord | undefined, nowMs: number, vie
 function toRow(i: SeatInput): SeatRow {
   const state = seatState(i);
   const ageSecs = i.ageSecs ?? null;
+  const no = i.label || String(i.displayNo ?? i.sid);
+  const name = seatName(i);
   return {
     sid: i.sid,
     named: !!i.label,
-    no: i.label || String(i.displayNo ?? i.sid),
-    name: seatName(i),
+    no,
+    // (1.1.20 · cysr-1120-uifix F4 · 박사님 11-25 「마스터, cso가 각각 2개씩 연이어 있는 이유가 무엇인가?」)
+    //   이름 보고자 줄(master·cso — namedSeatInputs)은 번호 칸(label)과 이름 칸(title 마지막 조각)에 같은 이름이 들어가
+    //   「master master」 로 두 번 그려졌다. 이름이 번호 칸 글과 같으면 이름 칸을 비운다 — 한 줄에 같은 말 한 번.
+    name: name === no ? "" : name,
     state,
     tag: seatTag(i, state),
     ctxPct: i.ctxPct,

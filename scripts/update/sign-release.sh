@@ -30,6 +30,17 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 # shellcheck source=lib/offline-sign.sh
 . "$HERE/lib/offline-sign.sh"
+# ★1.1.20(#39 · F9 · B4): 산출 임시 파일(본문 사본 · 서명)과 아래 pyc 임시 자리는 어떻게 끝나든 지운다(EXIT) · INT·TERM·HUP = rc 2 로 끝냄.
+NOPYC="" TMP_BODY="" TMP_SIG=""
+_sign_release_cleanup() {
+  set +e  # (검증 R4) EXIT 정리의 실패가 set -e 로 종료 코드를 2 → 1 로 바꾸지 않게(계약 = 0 | 2)
+  [ -z "$TMP_BODY" ] || rm -f "$TMP_BODY"
+  [ -z "$TMP_SIG" ] || rm -f "$TMP_SIG"
+  [ -z "$NOPYC" ] || rmdir "$NOPYC" 2>/dev/null
+  return 0
+}
+trap _sign_release_cleanup EXIT
+trap 'exit 2' INT TERM HUP
 
 BODY="" MEDIA="" KEY="" KEYRING="$ROOT/cysjavis-pack/trusted-keys.json" OUT_DIR="." WAIT=300 EXPECT_HEAD="" EXPECT_HEAD_SET=0
 while [ $# -gt 0 ]; do
@@ -143,12 +154,11 @@ except subprocess.CalledProcessError as e:
 PY
   # ③ 의 __pycache__ 예외가 안전하려면 그 자리를 읽지 않아야 한다 — 이 실행의 python 은 pyc 를 빈 임시 자리에서만 찾고 쓰지 않는다
   NOPYC="$(mktemp -d)" || { echo "거부: 임시 폴더를 만들지 못했다" >&2; exit 2; }
-  trap 'rmdir "$NOPYC" 2>/dev/null' EXIT
   export PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$NOPYC"
 fi
 
 # 본문 서식 확인(생산자 검사) — kind·component·release_seq·key_id 를 읽는다.
-META="$(python3 - "$HERE" "$BODY" <<'PY'
+META="$(_offline_py - "$HERE" "$BODY" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[1])
 import update_common as uc
@@ -169,11 +179,19 @@ read -r COMP SEQ KID <<<"$META"
 mkdir -p "$OUT_DIR"
 OUT_BODY="$OUT_DIR/$COMP-release-$SEQ.json"
 [ -e "$OUT_BODY" ] || [ -e "$OUT_BODY.minisig" ] && { echo "거부: 산출물이 이미 있다(덮어쓰기 0): $OUT_BODY" >&2; exit 2; }
-DIGEST="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$BODY")"
+DIGEST="$(offline_sha256 "$BODY")" || exit 2  # (F8) 계산 실패·형식 밖 = 거부
 
-if ! offline_sign release "$BODY" "$KEY" "$MEDIA" "$KEYRING" "$KID" "$OUT_BODY.minisig" \
+# (★1.1.20 F9) 본문을 산출 폴더의 임시 사본으로 먼저 옮겨 그 바이트(= 게시될 바이트)에 서명하고, 본문 → 서명 순서로 놓는다.
+#   종전 = 서명(.minisig)을 산출 자리에 먼저 쓰고 본문은 그 뒤 cp — cp 가 실패하면 서명만 남아 다시 돌릴 때 「이미 있다」 로 막혔다.
+TMP_BODY="$OUT_DIR/.$COMP-release-$SEQ.json.tmp$$"
+TMP_SIG="$TMP_BODY.minisig"
+cp "$BODY" "$TMP_BODY" || { echo "거부: 본문을 산출 폴더로 옮기지 못했다(cp 실패) — 산출 0" >&2; exit 2; }
+TSHA="$(offline_sha256 "$TMP_BODY")" || exit 2
+[ "$TSHA" = "$DIGEST" ] || { echo "거부: 산출 폴더 본문 사본이 원본과 다르다 — 산출 0" >&2; exit 2; }
+if ! offline_sign release "$TMP_BODY" "$KEY" "$MEDIA" "$KEYRING" "$KID" "$TMP_SIG" \
      "$COMP-release seq=$SEQ sha256=$DIGEST" "$WAIT"; then
   exit 2
 fi
-cp "$BODY" "$OUT_BODY"
+offline_place_pair "$TMP_BODY" "$TMP_SIG" "$OUT_BODY" || exit 2
+TMP_BODY="" TMP_SIG=""
 echo "✅ U 의식 통과 — $OUT_BODY(.minisig) · key $KID · 본문 sha256 $DIGEST"

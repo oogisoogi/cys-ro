@@ -39,7 +39,9 @@ export function seatRowTitle(r: SeatRow): string {
       : `CTX ${Math.round(r.ctxPct)}%${r.ctxSrc === "self" ? " · 자기보고" : ""}`;
   const tag = r.tag ? ` · ${r.tag}` : "";
   const tip = r.ageText ? seatAgeTip(r.ageSecs ?? null) : ""; // (cysr-1119-s7 BA5) 접근 이름에 「N분째」
-  return `${who} · ${r.name || "(이름 없음)"}\n상태: ${SEAT_STATE_LABEL[r.state]}${tag}${tip ? ` · ${tip}` : ""}\n${ctx}`;
+  // (1.1.20 F4) 이름 보고자는 이름이 곧 번호 칸 글이라 이름 칸이 비어 있다 — 「(이름 없음)」 대신 who 만.
+  const name = r.name ? ` · ${r.name}` : r.named ? "" : " · (이름 없음)";
+  return `${who}${name}\n상태: ${SEAT_STATE_LABEL[r.state]}${tag}${tip ? ` · ${tip}` : ""}\n${ctx}`;
 }
 
 export interface SeatRowsDomOpts {

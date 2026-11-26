@@ -129,6 +129,8 @@ windows-sys = { version = "0.59", features = [
     #   설정 폴더 **핸들 기준**으로 한 요소씩 reparse 를 따르지 않고 연다(src/bound_open.rs · 유닉스 openat+O_NOFOLLOW 와 같은 결속).
     "Wdk_Foundation",
     "Wdk_Storage_FileSystem",
+    # ★1.1.21(TICKET=cysr-win-cysd-stderr-1126): GetStdHandle·SetStdHandle·GetConsoleMode — cysd 표준 오류가 버려지는 기동이면 로그 파일로 붙는다(src/bin/cysd/winlog.rs).
+    "Win32_System_Console",
 ] }
 
 # Windows 전용(호스트 게이트): cys.exe·cysd.exe(순수 Rust CLI)에 PE 버전리소스·매니페스트·아이콘을

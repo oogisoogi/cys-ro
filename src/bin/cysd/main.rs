@@ -78,6 +78,8 @@ mod team;
 mod teamtoken;
 mod trash;
 mod undo;
+// ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 윈도우 표준 오류가 버려지는 기동(작업 스케줄러·null)이면 상태 폴더 cysd.log 로 붙는다 — 맥은 무동작.
+mod winlog;
 mod update_hold;
 mod usage;
 mod watch_wake;
@@ -1241,6 +1243,10 @@ fn main() {
         }
         CysdCli::Run => {}
     }
+    // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 데몬 실행 갈래의 **첫 동작** — 어떤 로그 줄(아래 `[cysd] v…` 포함)보다 먼저 붙어야
+    //   그 줄들이 윈도우 로그 파일에 남는다. 표준 오류를 누가 받고 있으면(콘솔·파이프·파일) 그대로 두고, 맥·리눅스는 무동작(winlog.rs).
+    #[cfg(windows)]
+    winlog::attach_if_discarded(&state::state_dir(&cys::socket_path()));
     cys::seal_python_bytecode_in_process();
     async_main();
 }
@@ -1358,6 +1364,9 @@ async fn async_main() {
             }
         }
     };
+    // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 로그 회전은 게이트를 이긴 데몬만(패자가 승자의 cysd.log 를 밀어내지 않게) — 기동 직후 1회 + 10분마다.
+    #[cfg(windows)]
+    winlog::spawn_rotation_if_attached();
 
     // windows .prev sweep 은 위 싱글턴 게이트 **뒤**에서 수행 — 승자만 잔해를 정리한다(패자는 이미 즉사).
     // ★무중단 rename-swap 잔해 청소(nsis-hooks.nsh의 짝): 업데이트가 잠긴 파일을 죽이는 대신

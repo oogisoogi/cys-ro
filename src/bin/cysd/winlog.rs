@@ -32,14 +32,15 @@
 //!     표준 오류 잠금 안에서 하고, 붙을 때 기본 패닉 훅을 같은 잠금 안에서 부르게 감싼다 — 모든 표준 오류 쓰기(eprintln!·보호 매크로·패닉 출력)가
 //!     교체와 줄을 선다(codex 2R major 2). 옛 파일은 그래도 한 주기 더 살린 뒤 닫는다(여유).
 //!     ⑶ 표준 오류를 **상속**하는 자식(윈도우에선 auto-restore 로그 열기 실패 때의 `Stdio::inherit()` 폴백 — 「증거 보존 · null 금지」 의도의 기존 코드 ·
-//!     seatkeep 의 inherit 은 `#[cfg(unix)]`)은 복제 핸들을 쥐어 회전 뒤에도 옛 파일(prev)에 쓴다. 그래서 회전 전에 prev 를 배타로 열어 보아
+//!     seatkeep 의 inherit 은 `#[cfg(unix)]`)은 복제 핸들을 쥐어 회전 뒤에도 옛 파일(prev)에 쓴다. 그래서 회전 전에 prev 를 탐침([`held_by_other`])으로 열어 보아
 //!     누가 쥐고 있으면 **이번 회전을 미룬다**(지우기 예약 자체를 하지 않는다 — 예약된 지우기는 취소되지 않아 그 자식이 끝날 때 기록이 함께 사라진다 ·
 //!     codex 2R major 1). 미루는 동안 cur 는 상한을 넘어 자란다(그 자식이 사는 동안만 · 맥 launchd 로그는 상한 자체가 없다).
-//!     ⑷ 탐침은 **쓰기 핸들만** 본다(쓰기 공유 배제 · 읽기 뷰어는 통과 · codex 3R). 옛 보존본은 고유 이름(`cysd.old-…log`)으로 먼저 비켜 놓고 지워
+//!     ⑷ 탐침은 쓰기 공유를 배제한 읽기 열기다 — 쓰기 핸들(또는 읽기 공유를 주지 않는 핸들)이 있으면 미루고, 읽기 공유를 주는 뷰어는 통과한다(codex 3R) ·
+//!     성공·파일 없음 말고는 모두 미룬다(접근 거부 = writer 유무를 모름 · codex 4R). 옛 보존본은 고유 이름(`cysd.old-…log`)으로 먼저 비켜 놓고 지워
 //!     지우기 대기 파일계에서도 prev 이름이 바로 빈다. 지우기 공유를 주지 않는 뷰어(.NET FileShare.ReadWrite — `Get-Content -Wait` 등)가 cur·prev 를
 //!     쥐는 동안은 이름 옮기기가 실패해 다음 점검에 다시 한다(그 뷰어가 열려 있는 동안 cur 가 상한을 넘는다 · 윈도우 로그 회전기 공통 한계).
 //!   · 권한 = `%LOCALAPPDATA%` 의 사용자 전용 ACL 을 상속한다(따로 ACL 을 걸지 않는다 · 같은 폴더의 transcripts.db·operator.token 과 같은 보호).
-//!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전 알림 두 종류뿐).
+//!     싣는 내용은 맥 cysd.log 가 이미 싣는 것과 같은 줄들이다(같은 `eprintln!` 호출처 — 새로 더하는 줄은 붙음·회전·미룸·실패·멈춤 알림뿐이고 경로·바이트 수만 싣는다).
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use std::path::{Path, PathBuf};
@@ -148,20 +149,18 @@ pub fn rotate_if_over(cur_len: u64, cur: &Path, prev: &Path, cap: u64) -> Rotate
     rotate_if_over_with(cur_len, cur, prev, cap, held_by_other, open_append)
 }
 
-/// 누가 이 파일을 **쓰기로** 열고 있는가 — 윈도우 = 읽기 접근 · 공유 = 읽기+지우기(쓰기 공유 배제)로 열어 보아 공유 위반(32)이면 쓰기 핸들이 있다.
-/// 읽기 전용 뷰어는 걸리지 않는다(codex 3R major: 배타 탐침은 뷰어 하나로 회전을 영구히 미뤘다). 이 데몬의 옛 핸들은 회전 점검 첫머리에서 이미
-/// 닫았으므로 쓰기로 쥔 쪽은 stderr 를 상속한 자식이다. 파일이 없거나 다른 오류면 「안 쥠」. 윈도우 밖 = 늘 false(회전은 윈도우 전용).
+/// 이 파일을 지금 지워도 되는지 모르는가(= 회전을 미룰 것인가) — 윈도우 = 읽기 접근 · 공유 = 읽기+지우기(쓰기 공유 배제)로 열어 본다.
+/// 쓰기 핸들이 있으면(stderr 를 상속한 자식 — 이 데몬의 옛 핸들은 회전 점검 첫머리에서 이미 닫았다) 공유 위반(32)이 난다. 읽기 공유를 주는 뷰어는
+/// 통과한다(codex 3R major: 공유 0 탐침은 뷰어 하나로 회전을 영구히 미뤘다). 32 는 「쓰기 핸들 또는 읽기 공유를 주지 않는 핸들」이다.
+/// 판정은 [`probe_blocks`] — **성공·파일 없음만 통과**, 그 밖 오류(접근 거부 등 · writer 가 있는지 모름)는 미룸(codex 4R major).
+/// 윈도우 밖 = 늘 false(회전은 윈도우 전용).
 pub fn held_by_other(path: &Path) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
-        const ERROR_SHARING_VIOLATION: i32 = 32;
         const FILE_SHARE_READ: u32 = 0x1;
         const FILE_SHARE_DELETE: u32 = 0x4;
-        match std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE).open(path) {
-            Ok(_) => false,
-            Err(e) => e.raw_os_error() == Some(ERROR_SHARING_VIOLATION),
-        }
+        probe_blocks(std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE).open(path).map(drop))
     }
     #[cfg(not(windows))]
     {
@@ -170,14 +169,24 @@ pub fn held_by_other(path: &Path) -> bool {
     }
 }
 
+/// 탐침 결과 판정(순수): 열림·파일 없음 = 지워도 됨(false) · 그 밖(공유 위반·접근 거부·모름) = 미룸(true).
+pub fn probe_blocks(r: std::io::Result<()>) -> bool {
+    match r {
+        Ok(()) => false,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
 /// 비켜 둘 이름(순수): prev 와 같은 폴더의 `cysd.old-<pid>-<나노초>.log` — `.log` 로 끝나 갱신 스냅샷 제외에 걸리고, 초기화는 접두 `cysd.old-` 로 잡는다.
 pub fn trash_path(prev: &Path, pid: u32, nanos: u128) -> PathBuf {
     prev.with_file_name(format!("{TRASH_PREFIX}{pid}-{nanos}.log"))
 }
 
-/// 비켜 둔 파일 이름인가(순수).
+/// 비켜 둔 파일 이름인가(순수) — 생성 규약 `cysd.old-<숫자 pid>-<숫자 나노초>.log` 와 정확히 맞을 때만(codex 4R major: 비슷한 사용자 파일을 지우지 않게).
 pub fn is_trash_name(name: &str) -> bool {
-    name.starts_with(TRASH_PREFIX) && name.ends_with(".log")
+    let Some(mid) = name.strip_prefix(TRASH_PREFIX).and_then(|r| r.strip_suffix(".log")) else { return false };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    matches!(mid.split_once('-'), Some((pid, nanos)) if digits(pid) && digits(nanos))
 }
 
 /// 지우지 못하고 남은 비켜 둔 파일을 걷는다(best-effort · 뷰어가 아직 쥐고 있으면 다음에).
@@ -332,11 +341,12 @@ mod imp {
             let _err = std::io::stderr().lock();
             g.retired = None;
         }
-        if g.stuck {
-            return;
-        }
+        // 남은 비켜 둔 파일 걷기는 멈춤(stuck)과 무관하게 매 점검(codex 4R minor).
         if let Some(dir) = g.cur_path.parent() {
             sweep_trash(dir);
+        }
+        if g.stuck {
+            return;
         }
         let len = g.cur.metadata().map(|md| md.len()).unwrap_or(0);
         let (cur_path, prev_path) = (g.cur_path.clone(), g.prev_path.clone());
@@ -512,11 +522,27 @@ mod tests {
         assert_eq!(t.file_name().unwrap().to_str().unwrap(), "cysd.old-7-42.log");
         assert!(cys::update::snapshot::is_excluded("cysd.old-7-42.log"), "갱신 스냅샷이 건드리지 않는다");
         assert!(!is_trash_name(LOG_NAME) && !is_trash_name(PREV_NAME) && !is_trash_name("cysd.old-1.txt"));
+        for user in ["cysd.old-notes.log", "cysd.old-.log", "cysd.old-1-.log", "cysd.old--2.log", "cysd.old-1-2-3.log", "cysd.old-1x-2.log"] {
+            assert!(!is_trash_name(user), "생성 규약 밖 이름은 지우지 않는다: {user}");
+            std::fs::write(d.join(user), b"u").unwrap();
+        }
         std::fs::write(&t, b"x").unwrap();
         sweep_trash(&d);
         assert_eq!(left(&d), 0, "남은 비켜 둔 파일을 걷는다");
+        assert!(d.join("cysd.old-notes.log").exists() && d.join("cysd.old-.log").exists(), "비슷한 사용자 파일은 남는다");
         assert!(cur.exists() && prev.exists(), "sweep 은 로그 두 파일을 건드리지 않는다");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// codex 4R major: 탐침은 성공·파일 없음만 통과 — 접근 거부·공유 위반·그 밖 오류는 「writer 가 있는지 모름」이라 미룬다.
+    #[test]
+    fn probe_passes_only_on_success_or_not_found() {
+        use std::io::{Error, ErrorKind};
+        assert!(!probe_blocks(Ok(())));
+        assert!(!probe_blocks(Err(Error::from(ErrorKind::NotFound))));
+        assert!(probe_blocks(Err(Error::from(ErrorKind::PermissionDenied))), "읽기 권한만 없는 ACL — writer 가 살아 있을 수 있다");
+        assert!(probe_blocks(Err(Error::from_raw_os_error(32))), "공유 위반");
+        assert!(probe_blocks(Err(Error::other("모름"))));
     }
 
     /// codex 3R: 실제 윈도우 핸들로 — 읽기 뷰어(지우기 공유)는 「안 쥠」이고 회전이 진행된다 · 쓰기 핸들(상속 writer 모양)은 「쥠」.

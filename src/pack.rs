@@ -615,10 +615,15 @@ pub fn hook_command_for(pack_dir: &Path, script: &str) -> String {
     if cfg!(windows) {
         // 런처가 없으면 종전 문자열 — **등록 여부는 [`shell_hooks_supported`] 가 가른다**.
         let launcher = windows_hook_launcher().unwrap_or_else(|| "bash".to_string());
-        format!("{launcher} \"{}\"", path.display().to_string().replace('\\', "/"))
+        windows_hook_command(&launcher, &path)
     } else {
         format!("sh {}", path.display())
     }
+}
+
+/// Windows 훅 명령 꼴 한 곳(`hook_command_for` 와 doctor 런처 변형 판정이 같은 글자를 내게).
+fn windows_hook_command(launcher: &str, script_path: &Path) -> String {
+    format!("{launcher} \"{}\"", script_path.display().to_string().replace('\\', "/"))
 }
 
 /// ★win-hooks-no-bash(2026-09-16 · 샌드박스 실증: git-bash 없는 Windows 에서 매 턴 훅마다
@@ -841,6 +846,82 @@ pub fn hook_registered_normalized_in(
             })
         })
         .unwrap_or(false)
+}
+
+/// ★win-doctor-hook(1.1.21 · 방송실 PC 실측 11-25) doctor **관측 전용** 판정(순수):
+/// `event` 에 「런처 후보 중 하나 + 같은 스크립트 경로」 인 command 가 등록돼 있는가.
+///
+/// 왜: [`hook_command_for`] 의 Windows 런처는 **부르는 프로세스의 PATH** 로 갈린다 — PATH 에 bash 가
+/// 있으면 `bash`, 없으면 첫 실재 후보의 절대경로. 등록한 쪽(데몬·설치기 = PATH 에 bash 없음 →
+/// `C:/…/cys/runtime/git/bin/bash.exe "…"`)과 doctor 를 띄운 좌석 셸(PATH 에 동봉 bash → `bash "…"`)이
+/// 달라 글자 동등이 깨지고, 훅이 등록·작동하는데도 「각성 hook 미등록」 WARN 이 났다.
+/// 인정하는 런처 = [`windows_hook_launcher_from`] 이 이 기계에서 낼 수 있는 값 전부 — `bash` +
+/// **실재하는**(`is_file`) 후보 각각. 실재하지 않는 후보 경로로 등록된 훅은 실행되지 않으므로 인정하지
+/// 않는다(여전히 WARN). 비교 = [`normalize_hook_command_for_compare`] windows 규칙(따옴표·`\`/`/`·
+/// 대소문자·`/c/`·`//?/` 정규화).
+/// ⛔집행 경로(`merge_desired_hooks`·`verify_desired_hooks_registered`)에는 쓰지 않는다 — 그쪽은 바이트
+/// 동등이 계약이다(위 `normalize_hook_command_for_compare` 주석).
+pub fn hook_registered_any_windows_launcher_in(
+    root: &serde_json::Value,
+    event: &str,
+    script_path: &Path,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> bool {
+    let mut launchers: Vec<String> = Vec::new();
+    if let Some(l) = windows_hook_launcher_from(true, candidates, &is_file) {
+        launchers.push(l);
+    }
+    for c in candidates {
+        if let Some(l) = windows_hook_launcher_from(false, std::slice::from_ref(c), &is_file) {
+            launchers.push(l);
+        }
+    }
+    let wants: Vec<String> = launchers
+        .iter()
+        .map(|l| normalize_hook_command_for_compare(&windows_hook_command(l, script_path), true))
+        .collect();
+    root.get("hooks")
+        .and_then(|h| h.get(event))
+        .and_then(|v| v.as_array())
+        .is_some_and(|arr| {
+            arr.iter().any(|m| {
+                m.get("hooks").and_then(|v| v.as_array()).is_some_and(|hs| {
+                    hs.iter().any(|h| {
+                        h.get("command").and_then(|c| c.as_str()).is_some_and(|c| {
+                            let got = normalize_hook_command_for_compare(c, true);
+                            wants.iter().any(|w| *w == got)
+                        })
+                    })
+                })
+            })
+        })
+}
+
+/// `cys doctor` 각성 hook 판정(관측 전용) — unix = 종전 글자 동등 그대로([`hook_registered_in`]).
+/// Windows = 글자 동등 **또는** [`hook_registered_any_windows_launcher_in`](이 기계 env 의 후보).
+pub fn doctor_hook_registered_in(
+    root: &serde_json::Value,
+    event: &str,
+    pack_dir: &Path,
+    script: &str,
+) -> bool {
+    if hook_registered_in(root, event, &hook_command_for(pack_dir, script)) {
+        return true;
+    }
+    if !cfg!(windows) {
+        return false;
+    }
+    hook_registered_any_windows_launcher_in(
+        root,
+        event,
+        &pack_dir.join("hooks").join(script),
+        &windows_bash_candidates_from(
+            std::env::var("LOCALAPPDATA").ok().as_deref(),
+            std::env::var("ProgramFiles").ok().as_deref(),
+        ),
+        |p| Path::new(p).is_file(),
+    )
 }
 
 /// ★U10(0.14.41) 각성 훅 누락 목록 — **레인 팩 하나**를 기대값으로 삼는다(관측 전용·순수).
@@ -8030,6 +8111,106 @@ mod tests {
         assert!(windows_bash_candidates_from(None, None).is_empty());
         #[cfg(unix)]
         assert!(shell_hooks_supported(), "unix 는 항상 sh");
+    }
+
+    /// settings 루트 1개(event 하나에 command 들) — 아래 doctor 런처 변형 시험 전용.
+    fn win_doctor_root(event: &str, cmds: &[&str]) -> serde_json::Value {
+        let hs: Vec<serde_json::Value> = cmds
+            .iter()
+            .map(|c| serde_json::json!({"type": "command", "command": c}))
+            .collect();
+        serde_json::json!({"hooks": {event: [{"hooks": hs}]}})
+    }
+
+    /// ★win-doctor-hook(1.1.21): 방송실 PC(DESKTOP-LHRD50I · 11-25 실측) 꼴 — 데몬이 PATH 에 bash 없이
+    /// 등록한 `C:/…/cys/runtime/git/bin/bash.exe "…"` 를, PATH 에 bash 가 있는 좌석 셸의 doctor 도
+    /// 「등록됨」 으로 본다. 표기(구분자·대소문자·따옴표·MSYS `/c/`)는 정규화 · 진짜 미등록은 여전히 미등록.
+    #[test]
+    fn win_doctor_hook_any_launcher_same_script() {
+        let la = "C:\\Users\\admin\\AppData\\Local";
+        let cands = windows_bash_candidates_from(Some(la), Some("C:\\Program Files"));
+        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let only_bundled = |p: &str| p == bundled;
+        let script = Path::new("C:/Users/admin/.cys/pack/hooks/session-start.sh");
+        let ok = |cmds: &[&str], is_file: &dyn Fn(&str) -> bool| {
+            hook_registered_any_windows_launcher_in(
+                &win_doctor_root("SessionStart", cmds),
+                "SessionStart",
+                script,
+                &cands,
+                is_file,
+            )
+        };
+        // ① 방송실 PC 등록 글자 그대로(데몬 = 동봉 bash 절대경로)
+        assert!(ok(
+            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &only_bundled
+        ));
+        // ② 좌석 셸 꼴(`bash "…"`) — 런처 = bash
+        assert!(ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        // ③ 표기 변형: 역슬래시·소문자 드라이브·따옴표 런처·MSYS /c/ 스크립트
+        assert!(ok(
+            &["\"c:\\users\\admin\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh"],
+            &only_bundled
+        ));
+        assert!(ok(&["BASH '/c/Users/admin/.cys/pack/hooks/session-start.sh'"], &only_bundled));
+        // ④ 공백 후보(Program Files) — 실재할 때만 인정
+        let pf_cmd = "\"C:/Program Files/Git/bin/bash.exe\" \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"";
+        assert!(ok(&[pf_cmd], &|p: &str| p.starts_with("C:\\Program Files")));
+        // ── 진짜 미등록 = 여전히 미등록 ──
+        // ⑤ 런처 파일이 실재하지 않는 절대경로(훅이 실행되지 않는다)
+        assert!(!ok(&[pf_cmd], &only_bundled));
+        assert!(!ok(
+            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &|_: &str| false
+        ));
+        // ⑥ 후보가 아닌 런처
+        assert!(!ok(&["sh \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(
+            &["C:/Tools/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &|_: &str| true
+        ));
+        // ⑦ 다른 스크립트·다른 팩·꼬리 인자·빈 등록·다른 이벤트
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/role-bootstrap.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack-dept-x/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\" --x"], &only_bundled));
+        assert!(!ok(&[], &only_bundled));
+        assert!(!hook_registered_any_windows_launcher_in(
+            &win_doctor_root(
+                "UserPromptSubmit",
+                &["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""]
+            ),
+            "SessionStart",
+            script,
+            &cands,
+            only_bundled,
+        ));
+        assert!(!hook_registered_any_windows_launcher_in(
+            &serde_json::json!({}),
+            "SessionStart",
+            script,
+            &cands,
+            only_bundled,
+        ));
+    }
+
+    /// ★win-doctor-hook(1.1.21): doctor 판정 입구 — unix(맥) 는 종전 글자 동등 그대로.
+    /// 맥 꼴 `sh <path>` 는 등록 · 런처·따옴표만 다른 꼴은 **종전처럼 미등록**(맥 동작 무변).
+    #[cfg(unix)]
+    #[test]
+    fn win_doctor_hook_unix_stays_byte_equal() {
+        let pack = Path::new("/Users/u/.cys/pack");
+        let mac = hook_command_for(pack, "session-start.sh");
+        assert_eq!(mac, "sh /Users/u/.cys/pack/hooks/session-start.sh");
+        let reg = |c: &str| {
+            doctor_hook_registered_in(&win_doctor_root("SessionStart", &[c]), "SessionStart", pack, "session-start.sh")
+        };
+        assert!(reg(&mac));
+        assert_eq!(reg(&mac), hook_registered_in(&win_doctor_root("SessionStart", &[&mac]), "SessionStart", &mac));
+        assert!(!reg("bash /Users/u/.cys/pack/hooks/session-start.sh"));
+        assert!(!reg("sh \"/Users/u/.cys/pack/hooks/session-start.sh\""));
+        assert!(!reg("sh /Users/u/.cys/pack/hooks/role-bootstrap.sh"));
+        assert!(!doctor_hook_registered_in(&serde_json::json!({}), "SessionStart", pack, "session-start.sh"));
     }
 
     #[test]

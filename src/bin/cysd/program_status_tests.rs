@@ -607,6 +607,11 @@ fn shell_prompt_ends_the_life() {
 ///   (450ms 멈춤 · 50ms 돌림 · 파이썬 자식은 안 멈춤): 고치기 전 4/10 붉음(전부 `(1, 0, false)`).
 ///   → 넘기기를 시각이 아니라 **순서**에 묶는다: 시험이 첫 단언을 마친 뒤 `go` 파일을 만들고, 파이썬은 그것을 본 뒤에만 넘긴다
 ///   (20초 안에 못 보면 넘기지 않고 끝난다 = 둘째 전제 단언이 붉음 · 고아 없음).
+/// ★TICKET=debug-cysr-ci-flaky-1126 F4(깜빡이 고침 · 시험만 · 제품 판정·단언 그대로): 종전 파이썬은 그룹 만들기를 부모(`setpgid(pid,pid)`)와
+///   자식(`setpgid(0,0)`)이 **동시에** 했다 — macOS 는 둘이 겹치면 한쪽에 EPERM 을 준다(같은 꼴 20,000회 = 부모 44 + 자식 약 58 · 0.5%).
+///   그러면 파이썬이 Traceback 으로 죽어 「자식 보고 출력이 나오지 않았다(전제)」로 붉었고(v1.1.20 1,300회 중 3), 부모가 죽은 경우 자식은
+///   제 쓰기 끝을 쥔 채 `read` 에서 영영 기다려 고아로 남았다. → 그룹은 **자식만** 만들고 둘째 관으로 「만들었다」를 알린 뒤에야
+///   부모가 전경을 넘긴다(순서 고정 · 같은 대조 20,000회 = 0) · 자식은 쓰기 끝을 닫아 부모가 죽으면 EOF 로 끝난다(고아 0).
 #[cfg(unix)]
 #[test]
 fn live_seat_foreground_handoff_ends_the_life() {
@@ -635,11 +640,13 @@ while not os.path.exists(go) and time.time()<end: time.sleep(0.02)
 if not os.path.exists(go): os._exit(3)
 signal.signal(signal.SIGTTOU, signal.SIG_IGN)
 r,wp=os.pipe()
+r2,w2=os.pipe()
 pid=os.fork()
 if pid==0:
-    os.setpgid(0,0); os.read(r,1)
+    os.close(wp); os.setpgid(0,0); os.write(w2,b'x')
+    if not os.read(r,1): os._exit(0)
     w(b'\x1b]7501;state=blocked:kind=permission:app=second\x07HANDED'); time.sleep(3); os._exit(0)
-os.setpgid(pid,pid); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
+os.read(r2,1); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
 "#;
     let script = dir.join("fg.py");
     std::fs::write(&script, py).unwrap();

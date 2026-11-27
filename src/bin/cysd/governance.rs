@@ -3550,6 +3550,9 @@ pub fn persist_topology(daemon: &Arc<Daemon>) {
             }
         }
     }
+    // ★(1.1.21 · cysr-1121-restore D3) 쓰는 쪽도 master 를 맨 앞에(방어 한 겹 — 읽는 쪽 `cys restore` 가 정본 정렬).
+    //   같은 lib 규칙 하나(`cys::sort_saved_master_first` · 안정 정렬) — 나머지 역할 순서는 바꾸지 않는다.
+    cys::sort_saved_master_first(&mut entries);
     let content = serde_json::to_string_pretty(&json!({
         "schema_version": 1,          // ★A-S1 스키마 마커 — 이 키 부재=legacy topology(phoenix 는 경고+진행)
         "tombstones_rev": rev,        // ★A-S1 단조 카운터
@@ -31753,6 +31756,48 @@ mod tests {
             .filter(|e| e["role"] == "master")
             .count();
         assert_eq!(masters, 1, "중복 역할이 그대로 복제됐다 (entries={:?})", v["entries"]);
+    }
+
+    /// ★(1.1.21 · cysr-1121-restore D3) 쓰는 쪽도 master 를 맨 앞에 — ① 살아 있지 않아 **직전 파일에서 보존**되는 master
+    /// (종전엔 live 항목 뒤에 붙었다) ② 살아 있는 master(HashMap 순회 어디에 있든) 둘 다 영속마다 첫째 · 나머지 순서는 건드리지 않는다.
+    #[test]
+    fn persisted_topology_puts_master_first_preserved_or_live() {
+        let roles_on_disk = |p: &std::path::Path| -> Vec<String> {
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            v["entries"].as_array().unwrap().iter().map(|e| e["role"].as_str().unwrap_or("").to_string()).collect()
+        };
+        // ① 보존 master — 직전 파일 = [worker-9, master](둘 다 지금 죽음) · live = cso·worker
+        let daemon = drill_daemon("topo-master-first-preserved");
+        let dir = crate::state::state_dir(&daemon.socket_path);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("topology.json");
+        std::fs::write(
+            &path,
+            r#"{"schema_version":1,"tombstones":[],"tombstones_rev":0,"updated_at":1.0,
+                "entries":[{"role":"worker-9","agent":"claude","cwd":"/a"},
+                           {"role":"master","agent":"claude","cwd":"/m","session_id":"SM"}]}"#,
+        )
+        .unwrap();
+        spawn_role_surface(&daemon, "cso");
+        spawn_role_surface(&daemon, "worker");
+        persist_topology(&daemon);
+        let got = roles_on_disk(&path);
+        assert_eq!(got.first().map(String::as_str), Some("master"), "보존 master 가 첫째가 아니다: {got:?}");
+        assert_eq!(got.iter().filter(|r| r.as_str() == "master").count(), 1, "{got:?}");
+        assert_eq!(got.last().map(String::as_str), Some("worker-9"), "나머지 순서(보존분은 live 뒤)가 바뀌었다: {got:?}");
+
+        // ② 살아 있는 master — 여러 역할 사이에 끼어 있어도 영속할 때마다 첫째
+        let daemon = drill_daemon("topo-master-first-live");
+        let path = crate::state::state_dir(&daemon.socket_path).join("topology.json");
+        for r in ["worker", "cso", "reviewer-codex", "master", "worker-2"] {
+            spawn_role_surface(&daemon, r);
+        }
+        for _ in 0..3 {
+            persist_topology(&daemon);
+            let got = roles_on_disk(&path);
+            assert_eq!(got.first().map(String::as_str), Some("master"), "live master 가 첫째가 아니다: {got:?}");
+            assert_eq!(got.len(), 5, "{got:?}");
+        }
     }
 
     /// watchdog가 자력종료(exited) surface를 회수해도 역할을 묘비에 올리지 않는다 —

@@ -1189,6 +1189,11 @@ def cys(*args, socket=None, timeout=25, owner=None):
     #   데몬은 토큰 일치 ∧ pane 무귀속일 때만 오너로 본다 — 좌석 안에서 phoenix 를 돌리면 효과 없음).
     #   주입 호출에만 싣는다 — 조회 동사에는 불필요하다. ★1.1.8 병합: owner 미지정(None) = 동사로 판정(`reinject` 만 True) —
     #   원작자 검체들이 cys() 를 고정 서명(*args, socket, timeout) 대역으로 갈아 끼우므로 호출부는 새 키워드를 넘기지 않는다.
+    # ★(1.1.21 · cysr-1121-restore D5) 자동 복원 자신의 `cys launch-agent`(fresh 강등 · spawn_fresh_production)만 표지를 싣는다 —
+    #   cys 는 자동 복원 중 대상 역할의 보통 launch-agent 를 rc 95 로 거절하는데, 복원 자신의 기동은 거절하면 안 된다.
+    #   동사로 판정(owner 와 같은 꼴) · 다른 동사(list 등 데몬을 되살릴 수 있는 호출)에는 싣지 않는다 = 데몬·좌석으로 새지 않음.
+    if bool(args) and str(args[0]) == "launch-agent":
+        env["CYS_AUTO_RESTORE_SELF"] = "1"
     if owner is None:
         owner = bool(args) and str(args[0]) == "reinject"
     if owner:
@@ -3023,6 +3028,12 @@ def agy_policy_skipped_in(out):
     return set(AGY_SKIP_LINE_RE.findall(out or ""))
 
 
+def restore_order(roles):
+    """★(1.1.21 · TICKET=cysr-1121-restore D4) 복원 기동 순서 = master 먼저(순수 · 안정 정렬 — 나머지는 받은 순서 그대로).
+    ⚠같은 규칙의 Rust 짝 = `src/lib.rs` `restore_role_rank`·`sort_saved_master_first`(cys restore · cysd persist_topology) — 한쪽만 바꾸지 않는다."""
+    return sorted(roles, key=lambda r: 0 if r == "master" else 1)
+
+
 def manual_seat_roles(live_end, policy_skipped=()):
     """★SEAT 빈 좌석 잔존 역할 — 좌석은 있으나 에이전트가 앉지 않은 역할(정직 보고 · 사람 개입 필요).
     ★agy 좌석 문(codex 1R minor): 문이 닫혀 **정책으로 건너뛴** 역할은 뺀다 — 같은 좌석을 「건너뜀(고장 아님)」과
@@ -4011,7 +4022,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #    roster 를 막지 않고, 세션핀을 버리고 fresh(무 resume) 재기동으로 '강등'해 부활을 마무리한다.
     #    fresh 는 원 세션 보존이 아니라 새 세션 + 디렉티브/원장 재주입이다(정직: resumed→fresh 전환을 저널에 명시).
     #    fresh 는 최후수단 — resume 성공/재시도 회복은 이 지점에 오지 않는다.
-    need = need + [r for r in forced_fresh if r not in need and r not in session_lease_held]
+    # ★(1.1.21 D4) 역할마다 기동하는 길(fresh 강등 루프 · 아래 `for role in need`)의 순서를 여기서 정한다 = master 먼저.
+    #   force_fresh 역할은 위에서 빠졌다가 여기서 **뒤에** 붙으므로(master 가 force_fresh 면 끝으로 밀림) 합친 결과를 정렬한다.
+    #   이 뒤 거르기(_hold_profile_refused · 빈 좌석 재사용 · 사람 입력 보류)는 순서를 보존한다. resume 회차는 일괄 `cys restore`(Rust D2 가 순서).
+    need = restore_order(need + [r for r in forced_fresh if r not in need and r not in session_lease_held])
 
     def _hold_profile_refused(roles):
         """★dbg-119 ①(master#7a176ca4): Rust `cys restore` 가 계정 프로필 거부(unobserved · seat_profile 검증 실패)로

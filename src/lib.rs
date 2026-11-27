@@ -2502,6 +2502,20 @@ pub fn restore_config_dir_under(entry: &serde_json::Value, home: &Path) -> Resul
     Ok(entry["claude_config_dir"].as_str().map(String::from))
 }
 
+/// ★(1.1.21 · TICKET=cysr-1121-restore) 복원 자리 여는 순위 — 작을수록 먼저. master = 0 · 그 밖 = 1.
+/// 근거: 저장 목록(topology.json `entries`)은 데몬 `surfaces` HashMap 순회 순서라 데몬 프로세스마다 바뀌었다
+/// (governance.rs `persist_topology`) → 갱신 뒤 master 가 뒤에 서면 설치기·다른 길이 master 자리를 먼저 잡아
+/// 옛 대화를 못 이었다. ⚠같은 규칙의 팩 쪽 짝 = `javis_phoenix.py` `restore_order` — 한쪽만 바꾸지 않는다.
+pub fn restore_role_rank(role: &str) -> u8 {
+    if role == "master" { 0 } else { 1 }
+}
+
+/// 저장 목록을 복원 순위로 정렬한다 — **안정 정렬**(순위가 같으면 원래 순서 그대로 · master 만 앞으로 나온다).
+/// 읽는 쪽(`cys restore` 순회 직전)과 쓰는 쪽(cysd `persist_topology`)이 같은 이 함수 하나를 쓴다.
+pub fn sort_saved_master_first(entries: &mut [serde_json::Value]) {
+    entries.sort_by_key(|e| restore_role_rank(e["role"].as_str().unwrap_or("")));
+}
+
 /// topology 엔트리의 설정 폴더 권위 칸(데몬 persist_topology 가 claude 좌석에 쓴다) — `"os"`(OS env 관측) ·
 /// `"recorded"`(관측 불가 기계 = 윈도우 · 기록값) · `"unobserved"`(관측 가능 기계인데 관측 전).
 pub const CONFIG_DIR_AUTHORITY_KEY: &str = "config_dir_authority";
@@ -3239,6 +3253,47 @@ pub mod dormant {
 // (1.1.8 병합: 이 시험 mod 는 원래 daemon_state_dir_for 바로 뒤에 있었다 — 원작자 소스 핀
 //  macos_devtools::spawn_env_pairs_wires_seventh_verdict_through_single_source_source_pin 이 「첫 cfg(test) 속성 앞 = 프로덕션」
 //  으로 자르므로 spawn_env_pairs 뒤로 옮겼다 · 내용 무변경.)
+#[cfg(test)]
+mod restore_order_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn roles(v: &[serde_json::Value]) -> Vec<String> {
+        v.iter().map(|e| e["role"].as_str().unwrap_or("-").to_string()).collect()
+    }
+
+    #[test]
+    fn master_moves_to_front_others_keep_relative_order() {
+        for (input, want) in [
+            (vec!["worker", "cso", "master"], vec!["master", "worker", "cso"]),
+            (vec!["cso", "master", "worker-2", "worker"], vec!["master", "cso", "worker-2", "worker"]),
+            (vec!["master", "worker", "cso"], vec!["master", "worker", "cso"]),
+            (vec!["worker", "cso"], vec!["worker", "cso"]),
+            (vec![], vec![]),
+        ] {
+            let mut v: Vec<_> = input.iter().map(|r| json!({"role": r})).collect();
+            sort_saved_master_first(&mut v);
+            assert_eq!(roles(&v), want, "입력 {input:?}");
+        }
+    }
+
+    #[test]
+    fn roleless_and_lookalike_roles_are_not_master() {
+        let mut v = vec![json!({"agent": "claude"}), json!({"role": "master-2"}), json!({"role": "dept-master"}), json!({"role": "master"})];
+        sort_saved_master_first(&mut v);
+        assert_eq!(roles(&v), vec!["master", "-", "master-2", "dept-master"]);
+        assert_eq!((restore_role_rank("master"), restore_role_rank("Master"), restore_role_rank("")), (0, 1, 1));
+    }
+
+    #[test]
+    fn duplicate_master_rows_keep_their_order() {
+        // 승계 도중 영속(같은 역할 두 줄 · 일시) — 안정 정렬이라 두 master 줄 사이 순서는 그대로다.
+        let mut v = vec![json!({"role": "worker"}), json!({"role": "master", "n": 1}), json!({"role": "master", "n": 2})];
+        sort_saved_master_first(&mut v);
+        assert_eq!(v.iter().map(|e| e["n"].as_i64().unwrap_or(0)).collect::<Vec<_>>(), vec![1, 2, 0]);
+    }
+}
+
 #[cfg(test)]
 mod daemon_state_dir_tests {
     use super::*;

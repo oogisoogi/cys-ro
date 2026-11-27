@@ -5,15 +5,16 @@ arm64 맥에서 x64 번들 안 `cys build-info --json` 을 실행하면 Rosetta 
 **실행하지 않고**, 같은 발행의 arm64 번들 build-info(네이티브 실행 결과)를 입력으로 받아 칸마다 정적으로 대조한 뒤
 target 만 macos-x64 로 바꿔 쓴다. 칸마다 무엇으로 대조하는가(하나라도 안 맞으면 rc 2 = 재료 0 · fail-closed):
 
-  release_seq·build_id  x64 Mach-O 바이트 안 빌드 표지 `cysr-buildmark:seq=<n>;build_id=<id>;`(src/update/buildinfo.rs
+  release_seq·build_id  x64 Mach-O 바이트 안 빌드 표지 `cysr-buildmark:seq=<n>;build_id=<id>;version=<v>;`(src/update/buildinfo.rs
                         BUILD_MARK)가 **정확히 1번** · 그 글자가 arm64 값과 글자 그대로 같음. 0번(옛 판 · 표지 없음)·2번 이상 = 거부.
-                        seq 0(미발행 개발 빌드) = 거부 · build_id 의 -dirty = 거부.
+                        seq 0(미발행 개발 빌드) = 거부 · build_id 의 -dirty = 거부. 표지의 version(1.1.21 N med1) = 아래 version 칸 값.
   bundled_pack.digest   build_id 앞 12자 커밋 트리에서 build.rs 와 같은 규칙(cysjavis-pack/ 추적 파일 · 점·tests·__pycache__
                         제외 · 바이트 정렬)으로 `rel\\0content\\0` sha256 을 다시 계산 = arm64 값(src/pack.rs pack_items_sha256 식)
-                        + 그 팩 파일 내용이 전부 x64 바이트 안에 있음(PACK_ALL = include_str! 원문이 박힌 꼴).
+                        + 그 팩 파일 내용이 전부 x64 바이트 안에 있음(PACK_ALL = include_str! 원문이 박힌 꼴 · 순서대로 겹치지 않게 ·
+                        1.1.21 N med2 = 앞자리 다시 찾기 없음 · 같은 내용 파일도 제자리 · 심볼릭 링크 거부).
   keyring_ids           그 커밋의 cysjavis-pack/trusted-keys.json 바이트가 x64 바이트 안에 있음 + 그 파일에서 pack 아닌 용도
                         `용도:key_id` 를 파일 순서로 다시 만든 목록 = arm64 값(src/update/keys.rs from_trusted_keys_json·key_ids).
-  version               그 커밋 Cargo.toml [package] version = arm64 값 = bundled_pack.version.
+  version               그 커밋 Cargo.toml [package] version = arm64 값 = bundled_pack.version = x64 표지 version.
   features·trash        코드 상수(FEATURES = 빈 목록 · 맥 = 휴지통 삭제 true · cfg 차이는 windows 갈래뿐) — arm64 값이 그 상수와 같아야 함.
 
 사용: collect_x64_static.py --bin <x64 Mach-O> --from <arm64 build-info.json> --repo <저장소> --out <출력 json>
@@ -27,7 +28,7 @@ import subprocess
 import sys
 
 MARK = b"cysr-buildmark:"
-MARK_RE = re.compile(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);")
+MARK_RE = re.compile(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);")
 BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$")
 PURPOSES = {"root", "release", "feed", "win-asset", "pack"}
 
@@ -57,6 +58,8 @@ def pack_items(repo, commit):
             continue
         if typ != b"blob":
             refuse("팩 트리에 blob 아닌 항목: " + rel)
+        if mode == b"120000":  # 1.1.21 N med2: 심볼릭 링크도 typ 은 blob 이다 — 내용(가리키는 경로 글자)으로 대조하지 않는다
+            refuse("팩 트리에 심볼릭 링크 항목: " + rel)
         items.append((rel, oid.decode()))
     items.sort(key=lambda x: x[0].encode("utf-8"))
     return [(rel, git(repo, "cat-file", "blob", oid)) for rel, oid in items]
@@ -110,7 +113,7 @@ def main():
         refuse("x64 바이너리 안 빌드 표지가 %d번이다(0 = 표지 없는 옛 판 · 2+ = 모호) — 정확히 1번이어야 한다" % n)
     m = MARK_RE.match(blob, blob.index(MARK))
     if not m:
-        refuse("x64 빌드 표지가 닫힌 꼴(seq=…;build_id=…;)이 아니다")
+        refuse("x64 빌드 표지가 닫힌 꼴(seq=…;build_id=…;version=…;)이 아니다")
     if m.group(1).decode() != str(seq):
         refuse("x64 표지 seq=%s ≠ arm64 release_seq %d" % (m.group(1).decode(), seq))
     if m.group(2).decode() != bid:
@@ -123,15 +126,17 @@ def main():
     bp = bi.get("bundled_pack") or {}
     if h.hexdigest() != bp.get("digest"):
         refuse("커밋 %s 팩 다시 계산 digest %s ≠ arm64 %s" % (commit[:12], h.hexdigest(), bp.get("digest")))
-    pos, missing = 0, []
+    # 1.1.21 N med2(agy): 순서대로 · 앞 항목 끝(pos) 뒤에서만 찾는다(겹침 0) — 실패 때 맨 앞(오프셋 0)부터 다시 찾던 길을 없앴다
+    #   (뒤 파일이 빠지거나 깨져도 앞 파일·다른 상수 안의 같은 바이트에 걸려 통과할 수 있었다). 앞 항목과 내용이 글자까지 같은
+    #   파일도 예외 없이 제자리를 찾아야 한다(링커가 한 자리로 합쳤다면 거부 = fail-closed · 이유에 「같은 내용」 표시).
+    pos, missing, seen = 0, [], set()
     for rel, data in items:
         i = blob.find(data, pos, pos + len(data) + 65536) if data else pos
         if i < 0:
-            i = blob.find(data)
-        if i < 0:
-            missing.append(rel)
+            missing.append(rel + (" (앞 항목과 같은 내용)" if data in seen else ""))
         else:
             pos = i + len(data)
+        seen.add(data)
     if missing:
         refuse("x64 바이너리에 커밋 팩 내용이 없다 %d건(첫: %s)" % (len(missing), ", ".join(missing[:3])))
     kr = git(a.repo, "show", commit + ":cysjavis-pack/trusted-keys.json")
@@ -140,8 +145,9 @@ def main():
     if keyring_ids(kr) != bi.get("keyring_ids"):
         refuse("커밋 키링으로 만든 keyring_ids %r ≠ arm64 %r" % (keyring_ids(kr), bi.get("keyring_ids")))
     ver = cargo_version(git(a.repo, "show", commit + ":Cargo.toml"))
-    if bi.get("version") != ver or bp.get("version") != ver:
-        refuse("version: 커밋 Cargo.toml %s · arm64 %r · bundled_pack %r" % (ver, bi.get("version"), bp.get("version")))
+    if bi.get("version") != ver or bp.get("version") != ver or m.group(3).decode() != ver:
+        refuse("version: 커밋 Cargo.toml %s · arm64 %r · bundled_pack %r · x64 표지 %s"
+               % (ver, bi.get("version"), bp.get("version"), m.group(3).decode()))
     if bi.get("features") != [] or bi.get("trash_delete_supported") is not True:
         refuse("features(빈 목록 상수)·trash_delete_supported(맥 true 상수) 가 코드 상수와 다르다: %r %r"
                % (bi.get("features"), bi.get("trash_delete_supported")))

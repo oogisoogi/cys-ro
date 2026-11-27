@@ -55,6 +55,8 @@ case "$mode" in
       echo "collect-inputs: ⚠DR 핀 대조 건너뜀(CYS_COLLECT_DR_PIN=none · 시험 전용)" >&2
     fi
     bin="${apps[0]}/Contents/MacOS/cys"
+    # 1.1.21 N med2(agy): 번들 안 cys 는 일반 파일이어야 한다 — 심볼릭 링크면 봉인 밖 대상을 읽고 실행할 길이 생긴다(cysr 별칭만 링크 · 번들 꼴)
+    [ ! -L "$bin" ] || die "번들 안 cys 가 심볼릭 링크다(일반 파일이어야 함): $bin"
     [ -x "$bin" ] || die "번들 안 cys 없음: $bin"
     if [ "$target" = macos-arm64 ]; then
       "$bin" build-info --json > "$out/build-info-$target.json.tmp" || die "cys build-info 실패(1.1.8 U1 이전 바이너리?)"

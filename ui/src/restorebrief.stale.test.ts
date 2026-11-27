@@ -44,6 +44,24 @@ describe("④ 나옴 — 고른 요약보다 다른 파일이 더 늦다", () =>
   });
 });
 
+// (1.1.21 R) 윈 1.1.20 현장: 「알려 드려요」 줄 + 카드 맨 아래 같은 뜻 한 줄(두 줄 중복). 알림이 서면 맨 아래 줄은 비운다.
+// 대조군 = v1.1.20(fafe3eee1): foot 가 「이 기록은 2026-11-22 11:04 기준입니다 …」 → 첫 it 붉음.
+describe("R 기준 시각 문장은 카드에 한 번만", () => {
+  const timeSaid = (c: ReturnType<typeof buildBriefCard>) =>
+    [...c.lines.flatMap((l) => l.items), c.foot].filter((t) => t.includes("2026-11-22 11:04"));
+  it("알림이 서면 맨 아래 줄은 비고, 시각 문장은 「알려 드려요」 한 곳에만", () => {
+    const { card: c } = card([{ path: "canon", text: CANON_NO_REC }, { path: "cwd", text: DRAIN }]);
+    expect(note(c).length).toBe(1);
+    expect(c.foot).toBe("");
+    expect(timeSaid(c)).toEqual(["이 요약은 2026-11-22 11:04 기준이라 그 뒤 일은 빠졌을 수 있어요."]);
+  });
+  it("알림이 없으면 종전대로 맨 아래 줄 한 곳에만", () => {
+    const { card: c } = card([{ path: "cwd", text: DRAIN }]);
+    expect(note(c)).toEqual([]);
+    expect(timeSaid(c)).toEqual(["이 기록은 2026-11-22 11:04 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다."]);
+  });
+});
+
 describe("④ 안 나옴", () => {
   it("후보가 하나뿐", () => {
     expect(note(card([{ path: "cwd", text: DRAIN }]).card)).toEqual([]);

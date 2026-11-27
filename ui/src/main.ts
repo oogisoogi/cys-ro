@@ -4572,6 +4572,8 @@ function closePeek(reason: PeekCloseReason | string): void {
   peekState = null;
   peekSid = null;
   peekStats.closes[reason] = (peekStats.closes[reason] ?? 0) + 1;
+  // (1.1.21 Q) 윈 현장 「Flow 입력 뒤 보기 칸이 닫힌다」 — 까닭을 앱 로그(~/.cys/cc-open.log · 기존 UI 로그 통로)에 1줄. esc·button = 사람 · 그 밖 = 앱.
+  void invoke("log_cc_open", { line: `${new Date().toISOString()} peek-close reason=${reason} sid=${st.sid}` }).catch(() => {});
   st.ro?.disconnect();
   if (peekTimer !== undefined) {
     clearTimeout(peekTimer);

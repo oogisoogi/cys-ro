@@ -94,6 +94,8 @@ portable-pty = { path = "vendor/portable-pty", features = ["test-support"] }
 # 빌드타임 폐기 명단 형태 검증(DESIGN-pro-license §5 — 손상 revoked-licenses.json = 빌드 실패).
 [build-dependencies]
 serde_json = "1"
+# 1.1.21 N med2: 빌드 표지에 팩 digest(build.rs) — 런타임 pack_items_sha256 과 같은 식 · 이미 쓰는 판(lock 무변)
+sha2 = "0.10"
 
 # Windows 전용: named pipe에 owner-only DACL을 박아 UDS 0o600 단일-UID 봉인과 대칭화한다.
 # (기본 named pipe DACL은 같은 머신의 임의 로컬 사용자에게 read/write를 허용 — 인증 없는

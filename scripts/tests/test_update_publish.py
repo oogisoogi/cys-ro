@@ -14,6 +14,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -2402,9 +2403,10 @@ class TestCollectMacX64Static(unittest.TestCase):
         json.dump(b, open(p, "w"))
         return p, b
 
-    def payload(self, seq=5, bid=None, marks=1, flip=None, ver="1.2.3", prefix=b"", mark=None):
+    def payload(self, seq=5, bid=None, marks=1, flip=None, ver="1.2.3", prefix=b"", mark=None, pack=None):
         if mark is None:
-            mark = b"cysr-buildmark:seq=%d;build_id=%s;version=%s;" % (seq, (bid or self.bid).encode(), ver.encode())
+            mark = b"cysr-buildmark:seq=%d;build_id=%s;version=%s;pack=%s;" % (
+                seq, (bid or self.bid).encode(), ver.encode(), (pack or self.digest).encode())
         body = b"".join(d if r != flip else d[:-1] + bytes([d[-1] ^ 1]) for r, d in self.items)
         return b"\0".join(([prefix] if prefix else []) + [mark] * marks + [body, self.keyring])
 
@@ -2512,7 +2514,7 @@ class TestCollectMacX64Static(unittest.TestCase):
         p, _ = self.bi()
         kr = self.keyring.replace(b'"p2"', b'"pX"')
         self.assertNotEqual(kr, self.keyring)
-        mark = b"cysr-buildmark:seq=5;build_id=%s;version=1.2.3;" % self.bid.encode()
+        mark = b"cysr-buildmark:seq=5;build_id=%s;version=1.2.3;pack=%s;" % (self.bid.encode(), self.digest.encode())
         r, out = self.collect(self.bundle(b"\0".join([mark, b"".join(d for _, d in self.items if _ != "trusted-keys.json"), kr])), p)
         # trusted-keys.json 은 팩 안에도 있어(PACK_ALL) 팩 내용 탐색이 같은 바이트를 먼저 요구한다 — 키링 바이트 칸은 그 뒤의 이중 방어(준등가)
         self.refused(r, out, "x64 바이너리에 커밋 팩 내용이 없다 1건(첫: trusted-keys.json)")
@@ -2542,11 +2544,22 @@ class TestCollectMacX64Static(unittest.TestCase):
         self.refused(r, out, "x64 표지 1.2.4")
 
     def test_n_med1_old_mark_without_version_refused(self):
-        """1.1.20 꼴 표지(version 칸 없음) = 닫힌 꼴 아님 → 거부."""
+        """1.1.20 꼴 표지(version·pack 칸 없음) · version 만 있는 꼴 = 닫힌 꼴 아님 → 거부."""
         p, _ = self.bi()
-        old = b"cysr-buildmark:seq=5;build_id=%s;" % self.bid.encode()
-        r, out = self.collect(self.bundle(self.payload(mark=old)), p)
-        self.refused(r, out, "닫힌 꼴(seq=…;build_id=…;version=…;)")
+        for old in (b"cysr-buildmark:seq=5;build_id=%s;" % self.bid.encode(),
+                    b"cysr-buildmark:seq=5;build_id=%s;version=1.2.3;" % self.bid.encode()):
+            r, out = self.collect(self.bundle(self.payload(mark=old)), p)
+            self.refused(r, out, "닫힌 꼴(seq=…;build_id=…;version=…;pack=…;)")
+
+    def test_n_med2_mark_pack_digest_binds(self):
+        """표지 pack digest 가 커밋 재계산값과 다르면 거부 — 바이트 사슬이 (가까운 가짜 닻·뒤쪽 사본으로) 이어져도 결속은 digest 다
+        (codex N 1R major 반례 꼴: 첫 항목을 깨고 그 원문을 바로 앞에 둠)."""
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(pack="0" * 64)), p)
+        self.refused(r, out, "x64 표지 pack=" + "0" * 64)
+        first, data = self.items[0]
+        r, out = self.collect(self.bundle(self.payload(prefix=data, flip=first, pack="1" * 64)), p)
+        self.refused(r, out, "x64 표지 pack=")
 
     def test_n_med2_no_offset0_rescan(self):
         """뒤 항목이 깨졌는데 그 원래 바이트가 표지 앞(오프셋 0 쪽)에 있으면 — 옛 길(맨 앞부터 다시 찾기)은 통과 · 지금 = 거부."""
@@ -2578,7 +2591,11 @@ class TestCollectMacX64Static(unittest.TestCase):
         spec.loader.exec_module(cx)
         it = [("a", b"AAAA"), ("b", b"BBBB"), ("e", b""), ("c", b"CCCC")]
         self.assertEqual(cx.pack_chain_missing(b"xx" + b"AAAABBBBCCCC", it), [])
+        # codex N 1R major 반례: 이른 중간 사본(BBBB @4) 뒤에 유효 사슬(b @65008 · c @66012) — 사본 하나에 고정하면 거짓 거부
+        three = [("a", b"AAAA"), ("b", b"BBBB"), ("c", b"CCCC")]
+        self.assertEqual(cx.pack_chain_missing(b"AAAABBBB" + b"\0" * 65000 + b"BBBB" + b"\0" * 1000 + b"CCCC", three), [])
         self.assertEqual(cx.pack_chain_missing(b"BBBBAAAACCCC", it), ["b"])                       # 순서 바뀜
+        self.assertEqual(cx.pack_chain_missing(b"AAAA" + b"\0" * 70000 + b"BBBBCCCC", it), ["b"])  # 창 밖
         self.assertEqual(cx.pack_chain_missing(b"AAAABBBB", [("a", b"AAAABB"), ("b", b"BBBB")]), ["b"])  # 겹침
         self.assertEqual(cx.pack_chain_missing(b"AAAACCCC", [("a", b"AAAA"), ("a2", b"AAAA"), ("c", b"CCCC")]),
                          ["a2 (앞 항목과 같은 내용)"])                                              # 같은 내용 합침
@@ -2610,7 +2627,10 @@ class TestCollectMacX64Static(unittest.TestCase):
         os.rename(exe, os.path.join(app, "Contents", "MacOS", "cys-real"))
         os.symlink("cys-real", exe)
         plist = os.path.join(app, "Contents", "Info.plist")
-        open(plist, "w").write(open(plist).read().replace("<string>cys</string>", "<string>cys-real</string>"))
+        body = open(plist).read()  # 먼저 읽는다(codex N 1R minor: open(…, "w") 가 먼저 비우던 결함)
+        self.assertIn("<string>cys</string>", body)
+        open(plist, "w").write(body.replace("<string>cys</string>", "<string>cys-real</string>"))
+        self.assertEqual(plistlib.load(open(plist, "rb"))["CFBundleExecutable"], "cys-real")
         for t in (os.path.join(app, "Contents", "MacOS", "cys-real"), app):  # 안쪽 실행 파일 서명이 옛 Info.plist 에 묶여 있어 다시
             subprocess.check_call(["codesign", "-s", "-", "--force", t], stderr=subprocess.DEVNULL)
         v = run(["codesign", "--verify", "--deep", "--strict", app])
@@ -2636,9 +2656,10 @@ class TestBuildMarkInBinary(unittest.TestCase):
         """1.1.20 #57 ②: 빌드된 cys 바이트 안에 빌드 표지가 **정확히 1번** · 글자 = 그 바이너리 build-info 의 seq·build_id(개발 빌드 = seq 0)."""
         blob = open(VERIFY_BIN, "rb").read()
         self.assertEqual(blob.count(b"cysr-buildmark:"), 1)
-        m = re.search(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);", blob)
+        m = re.search(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);pack=([0-9a-f]{64});", blob)
         bi = json.loads(run([VERIFY_BIN, "build-info", "--json"], env=dict(os.environ, CYS_UPDATE_STATE_DIR=tempfile.mkdtemp())).stdout)
-        self.assertEqual((int(m.group(1)), m.group(2).decode(), m.group(3).decode()), (bi["release_seq"], bi["build_id"], bi["version"]))
+        self.assertEqual((int(m.group(1)), m.group(2).decode(), m.group(3).decode(), m.group(4).decode()),
+                         (bi["release_seq"], bi["build_id"], bi["version"], bi["bundled_pack"]["digest"]))
 
 
 class TestOfflinePyLow3(unittest.TestCase):
@@ -2692,6 +2713,8 @@ class TestOfflinePyLow3(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(d, "__pycache__")))
         r = self._py("-c", "raise SystemExit(5)")
         self.assertEqual(r.returncode, 5, r.stderr)
+        r = self._py("-c", "import sys; print(sys.pycache_prefix, sys.dont_write_bytecode, sys.flags.isolated)")
+        self.assertEqual(r.stdout.split(), ["/dev/null/cys-nopyc", "True", "1"])  # 만들 수 없는 자리 = 임시 폴더 0 · 신호로 끊겨도 잔재 0
         self.assertEqual(os.listdir(self.t), [])
         # PYTHONPYCACHEPREFIX 가 있으면 그 자리를 쓴다(새 임시 자리 0 · sign-release --expect-head 갈래 그대로)
         pfx = os.path.join(self.tmp, "pfx")

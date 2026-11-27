@@ -5,13 +5,13 @@ arm64 맥에서 x64 번들 안 `cys build-info --json` 을 실행하면 Rosetta 
 **실행하지 않고**, 같은 발행의 arm64 번들 build-info(네이티브 실행 결과)를 입력으로 받아 칸마다 정적으로 대조한 뒤
 target 만 macos-x64 로 바꿔 쓴다. 칸마다 무엇으로 대조하는가(하나라도 안 맞으면 rc 2 = 재료 0 · fail-closed):
 
-  release_seq·build_id  x64 Mach-O 바이트 안 빌드 표지 `cysr-buildmark:seq=<n>;build_id=<id>;version=<v>;`(src/update/buildinfo.rs
+  release_seq·build_id  x64 Mach-O 바이트 안 빌드 표지 `cysr-buildmark:seq=<n>;build_id=<id>;version=<v>;pack=<sha256>;`(src/update/buildinfo.rs
                         BUILD_MARK)가 **정확히 1번** · 그 글자가 arm64 값과 글자 그대로 같음. 0번(옛 판 · 표지 없음)·2번 이상 = 거부.
                         seq 0(미발행 개발 빌드) = 거부 · build_id 의 -dirty = 거부. 표지의 version(1.1.21 N med1) = 아래 version 칸 값.
   bundled_pack.digest   build_id 앞 12자 커밋 트리에서 build.rs 와 같은 규칙(cysjavis-pack/ 추적 파일 · 점·tests·__pycache__
                         제외 · 바이트 정렬)으로 `rel\\0content\\0` sha256 을 다시 계산 = arm64 값(src/pack.rs pack_items_sha256 식)
-                        + 그 팩 파일 내용이 전부 x64 바이트 안에 있음(PACK_ALL = include_str! 원문이 박힌 꼴 · 순서대로 겹치지 않게 ·
-                        1.1.21 N med2 = 앞자리 다시 찾기 없음 · 같은 내용 파일도 제자리 · 심볼릭 링크 거부).
+                        = x64 표지 pack(1.1.21 N med2 · 빌드 때 build.rs 가 같은 식으로 박은 값 = 정본 결속)
+                        + 그 팩 파일 내용이 x64 바이트 안에 순서대로 이어짐(보조 · pack_chain_missing · 심볼릭 링크 거부).
   keyring_ids           그 커밋의 cysjavis-pack/trusted-keys.json 바이트가 x64 바이트 안에 있음 + 그 파일에서 pack 아닌 용도
                         `용도:key_id` 를 파일 순서로 다시 만든 목록 = arm64 값(src/update/keys.rs from_trusted_keys_json·key_ids).
   version               그 커밋 Cargo.toml [package] version = arm64 값 = bundled_pack.version = x64 표지 version.
@@ -28,7 +28,7 @@ import subprocess
 import sys
 
 MARK = b"cysr-buildmark:"
-MARK_RE = re.compile(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);")
+MARK_RE = re.compile(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);pack=([0-9a-f]{64});")
 BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}\.[0-9]{8}T[0-9]{4}Z$")
 PURPOSES = {"root", "release", "feed", "win-asset", "pack"}
 
@@ -66,38 +66,39 @@ def pack_items(repo, commit):
 
 
 def pack_chain_missing(blob, items):
-    """팩 내용이 x64 바이트 안에 **순서대로 · 겹치지 않게** 있는가 — 못 찾은 항목 rel 목록(빈 목록 = 통과).
+    """팩 내용이 x64 바이트 안에 **순서대로 · 겹치지 않게 · 앞 항목 끝 뒤 창(len + 64KiB) 안에** 이어지는 사슬이 하나라도
+    있는가 — 없으면 사슬이 끊긴 첫 항목 rel(목록 1개) · 있으면 빈 목록. ★보조 대조다: 팩 내용의 정본 결속은 표지의
+    pack digest(빌드 때 build.rs 가 박음 = 1.1.21 N med2)이고, 이 사슬은 그 digest 대로의 바이트가 바이너리에 실제로
+    실렸는지(include_str! 원문)를 본다.
 
-    1.1.21 N med2(agy): 전에는 앞 항목 끝(pos) 근처에서 못 찾으면 맨 앞(오프셋 0)부터 다시 찾았다 — 뒤 파일이 빠지거나 깨져도
-    앞 파일·다른 상수 안의 같은 바이트에 걸려 통과할 수 있었다. 이제 다시 찾기는 없다: 첫 항목(닻)만 바이너리 전체에서 찾고
-    (실물 1.1.20 x64 = 첫 항목이 약 8.7MB 뒤 · 옛 길의 다시 찾기가 실제로 쓰인 곳은 이 한 번뿐 · 실측 2026-11-27), 나머지는 앞 항목
-    끝 뒤 창(len + 64KiB) 안에서만 찾는다. 첫 항목은 다른 include_str! 사본으로 바이너리에 여러 번 있을 수 있어(실물 = 팩 589항목
-    모두 2번 이상) 출현 자리마다 닻으로 시험해 사슬이 끝까지 이어지는 자리를 고른다 — 없으면 가장 덜 빠진 사슬의 빠진 목록.
-    빈 파일 = 찾을 바이트 없음(자리 그대로 · 종전과 같음). 앞 항목과 같은 내용 파일도 제자리가 따로 있어야 한다(표시 붙임)."""
-    first = next((d for _, d in items if d), None)
-    if first is None:
-        return []
-    best = None
-    a = blob.find(first)
-    while True:
-        if a < 0:
-            break
-        pos, missing, seen, anchored = a, [], set(), False
-        for rel, data in items:
-            if data:
-                i = a if not anchored else blob.find(data, pos, pos + len(data) + 65536)
-                anchored = True
-                if i < 0:
-                    missing.append(rel + (" (앞 항목과 같은 내용)" if data in seen else ""))
-                else:
-                    pos = i + len(data)
-            seen.add(data)
-        if not missing:
-            return []
-        if best is None or len(missing) < len(best):
-            best = missing
-        a = blob.find(first, a + 1)
-    return best if best is not None else [next(rel for rel, d in items if d)]
+    1.1.21 N med2(agy · codex N 1R): 전에는 앞 항목 끝 근처에서 못 찾으면 맨 앞(오프셋 0)부터 다시 찾았다(뒤 파일이 깨져도
+    앞쪽 같은 바이트에 걸려 통과) · 다시 찾기 없음 + 「가장 이른 출현 하나만」 으로 고르면 앞쪽 다른 사본에 걸려 정상
+    배치를 거짓 거부한다(codex 반례) → 출현 자리를 모두 들고 가는 사슬(도달 가능한 끝 자리 집합). 첫 항목만 바이너리 전체
+    (실물 1.1.19·1.1.20 x64 = 첫 항목이 약 8.7MB 뒤 · PACK_ALL 은 const 라 사본이 여럿 · 팩 589항목 모두 2번 이상 · 실측
+    2026-11-27). 빈 파일 = 찾을 바이트 없음(건너뜀 · digest 가 결속). 끝 자리 집합은 앞쪽 4096개로 자른다(병적 입력의
+    시간 상한 · 자르면 거부 쪽 = fail-closed)."""
+    ends, seen = None, set()
+    for rel, data in items:
+        if not data:
+            continue
+        new = set()
+        if ends is None:
+            i = blob.find(data)
+            while i >= 0:
+                new.add(i + len(data))
+                i = blob.find(data, i + 1)
+        else:
+            for p in ends:
+                lim = p + len(data) + 65536
+                i = blob.find(data, p, lim)
+                while i >= 0:
+                    new.add(i + len(data))
+                    i = blob.find(data, i + 1, lim)
+        if not new:
+            return [rel + (" (앞 항목과 같은 내용)" if data in seen else "")]
+        ends = sorted(new)[:4096]
+        seen.add(data)
+    return []
 
 
 def keyring_ids(raw):
@@ -148,7 +149,7 @@ def main():
         refuse("x64 바이너리 안 빌드 표지가 %d번이다(0 = 표지 없는 옛 판 · 2+ = 모호) — 정확히 1번이어야 한다" % n)
     m = MARK_RE.match(blob, blob.index(MARK))
     if not m:
-        refuse("x64 빌드 표지가 닫힌 꼴(seq=…;build_id=…;version=…;)이 아니다")
+        refuse("x64 빌드 표지가 닫힌 꼴(seq=…;build_id=…;version=…;pack=…;)이 아니다")
     if m.group(1).decode() != str(seq):
         refuse("x64 표지 seq=%s ≠ arm64 release_seq %d" % (m.group(1).decode(), seq))
     if m.group(2).decode() != bid:
@@ -161,6 +162,8 @@ def main():
     bp = bi.get("bundled_pack") or {}
     if h.hexdigest() != bp.get("digest"):
         refuse("커밋 %s 팩 다시 계산 digest %s ≠ arm64 %s" % (commit[:12], h.hexdigest(), bp.get("digest")))
+    if m.group(4).decode() != h.hexdigest():  # 1.1.21 N med2: 팩 내용의 정본 결속(빌드 때 build.rs 가 박은 digest)
+        refuse("x64 표지 pack=%s ≠ 커밋 %s 팩 다시 계산 digest %s" % (m.group(4).decode(), commit[:12], h.hexdigest()))
     missing = pack_chain_missing(blob, items)
     if missing:
         refuse("x64 바이너리에 커밋 팩 내용이 없다 %d건(첫: %s)" % (len(missing), ", ".join(missing[:3])))

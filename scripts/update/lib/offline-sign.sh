@@ -38,19 +38,12 @@ _os_dev() {  # 경로의 장치 번호(BSD·GNU stat 둘 다 — GNU 의 `stat -
 #   ⚠-I 는 PYTHON* 환경도 무시한다 — sign-release.sh --expect-head 가 세우는 pyc 차단(pyc 쓰기 끔 환경변수·PYTHONPYCACHEPREFIX =
 #   scripts/update/__pycache__ 를 읽지 않음 · 1.1.19 codex 1R B2)이 꺼지므로, update_common 을 읽는 호출은 _offline_py 로 같은 뜻을
 #   옵션(-B · -X pycache_prefix)으로 다시 준다(시험 = test_co_l3_b2_ignored_outside_and_pycache_allowed_but_not_read · -I 만 붙이면 PYC-HIJACK).
-#   ★1.1.21 N low3(agy): 늘 -B + pycache 자리 지정 — 전에는 PYTHONPYCACHEPREFIX 가 없을 때(--expect-head 없는 sign-release ·
-#   sign-revocations · gen-offline-key) 맨 -I 라 scripts/update/__pycache__ 의 pyc 를 읽고 썼다(-B 만으로는 읽기가 남는다 → 그때는
-#   이 호출만의 빈 임시 자리를 pycache_prefix 로 주고 끝나면 지운다 · 종료 코드 그대로 · 맥 `mktemp -d`(템플릿 없음)는 TMPDIR 를
-#   무시하므로 템플릿을 준다).
+#   ★1.1.21 N low3(agy · codex N 1R minor): 늘 -B + pycache 자리 지정 — 전에는 PYTHONPYCACHEPREFIX 가 없을 때(--expect-head 없는
+#   sign-release · sign-revocations · gen-offline-key) 맨 -I 라 scripts/update/__pycache__ 의 pyc 를 읽고 썼다(-B 만으로는 읽기가
+#   남는다). 그때는 만들 수도 읽을 수도 없는 자리 `/dev/null/cys-nopyc`(장치 파일 아래 = 폴더 불가)를 준다 — 임시 폴더를 만들지
+#   않으므로 신호로 끊겨도 남는 것이 없다(첫 판의 mktemp 자리는 호출자 TERM 트랩의 exit 로 정리 전에 끊기면 남았다 · codex 재현).
 _offline_py() {
-  local _pfx="${PYTHONPYCACHEPREFIX:-}" _own="" _rc=0
-  if [ -z "$_pfx" ]; then
-    _pfx="$(mktemp -d "${TMPDIR:-/tmp}/cys-nopyc.XXXXXX")" || { echo "거부: 임시 폴더를 만들지 못했다(_offline_py)" >&2; return 2; }
-    _own=1
-  fi
-  python3 -I -B -X "pycache_prefix=$_pfx" "$@" || _rc=$?
-  if [ -n "$_own" ]; then rm -rf "$_pfx"; fi
-  return "$_rc"
+  python3 -I -B -X "pycache_prefix=${PYTHONPYCACHEPREFIX:-/dev/null/cys-nopyc}" "$@"
 }
 
 _realpath() {

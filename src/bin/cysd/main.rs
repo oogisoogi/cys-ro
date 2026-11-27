@@ -1151,6 +1151,20 @@ fn scrub_update_txn_env() {
     }
 }
 
+/// ★1.1.21 A ③(설계 DESIGN-A r7.2 §2-3) 데몬은 좌석 셸 재선두 root 를 물려받지 않는다 — 좌석 안에서 뜬 데몬(CLI 자동 기동·부서 데몬)이
+/// 그 좌석의 `PATH_HELPER_ROOT`·짝 표식을 env 로 쥐면, 이 데몬의 다른 자식(스케줄 잡 등)이 옛 root 를 물려받는다(CLT 설치 뒤·롤백 뒤·앱 이동
+/// 뒤에도 고착). 좌석 스폰의 ②와 **같은 식별**(`macos_devtools::is_our_path_helper_root`)로 우리 것만 지우고 진단 표지는 늘 지운다. 사용자 값 무접촉 ·
+/// 롤백(`CYS_BOOT_GATES=0`·`CYS_MAC_SEAT_PATH=0`)이어도 돈다(롤백 = 「물려받은 우리 값도 걷음」 · §4). 맥 전용(윈도우·리눅스 무접촉).
+fn scrub_mac_seat_path_env() {
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        let base = cys::macos_devtools::path_helper_root_base(&home);
+        for k in cys::macos_devtools::scrub_boot_env(&mut cys::macos_devtools::ProcessEnv, &base) {
+            eprintln!("[cysd] scrubbed inherited seat path env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1264,6 +1278,7 @@ async fn async_main() {
     );
     scrub_claude_session_env();
     scrub_update_txn_env();
+    scrub_mac_seat_path_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
@@ -4395,6 +4410,16 @@ mod env_scrub_tests {
     /// 회귀 박제: claude 세션 안에서 spawn된 데몬이 세션 정체성 env를 보존하면 PTY 자식
     /// claude가 child-session으로 강등돼 트랜스크립트 미영속(복원·recall·T5 전부 파괴).
     /// scrub은 누설 변수만 제거하고 무관 변수는 보존해야 한다.
+    /// ★1.1.21 A ③ 부팅 scrub 배선 핀 — 기존 scrub 둘 옆(main 첫 경로)에서 돈다.
+    #[test]
+    fn boot_scrubs_inherited_seat_path_env() {
+        let src = include_str!("main.rs");
+        assert!(src.contains("fn scrub_mac_seat_path_env() {"), "부팅 scrub 정의 소실");
+        let call = src.find("    scrub_update_txn_env();\n    scrub_mac_seat_path_env();").expect("부팅 scrub 배선 소실");
+        let main_fn = src.find("\nfn main()").expect("main 소실");
+        assert!(call > main_fn, "부팅 scrub 이 main 첫 경로에 있지 않다");
+    }
+
     #[test]
     fn scrub_removes_leaky_session_vars_only() {
         std::env::set_var("CLAUDE_CODE_SESSION_ID", "parent-session");

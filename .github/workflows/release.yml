@@ -983,6 +983,17 @@ jobs:
           [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
           python3 "$f"
 
+      # (cysr 1.1.21 · TICKET=cysr-1121-macpath) 동봉 git 감싸개 시험 — ci-branch 와 같은 커밋 편입 · pack-release 미편입 사유 = ci-branch 레인 대조 ALLOWED.
+      #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
+      - name: 동봉 git 감싸개 (test_mac_git_wrapper · macOS 전용)
+        if: matrix.target == 'aarch64-apple-darwin'
+        shell: bash
+        run: |
+          set -euo pipefail
+          f="scripts/tests/test_mac_git_wrapper.py"
+          [ -f "$f" ] || { echo "::error::테스트 파일 누락: $f (git add 누락 의심)" >&2; exit 1; }
+          python3 -I "$f"
+
       # (cysr 1.1.16 · TICKET=cysr-1116-lanereg-1121) 자산 빠짐 방지 게이트 시험 — ci-branch 와 같은 커밋 편입 · pack-release 미편입 사유 = ci-branch 레인 대조 ALLOWED.
       #   타깃 무관 파이썬 시험이라 맥 두 레그 중 aarch64 1회만(위 4종 스텝과 같은 관례).
       - name: 자산 빠짐 방지 게이트 (test_asset_ledger_check · macOS 전용)

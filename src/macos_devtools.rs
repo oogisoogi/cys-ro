@@ -32,6 +32,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+// 1.1.21 A ③ 맥 좌석 셸 재선두(PATH_HELPER_ROOT) — 판정·생성·확인(설계 DESIGN-A r7.2 §2-3).
+mod seat_path;
+pub use seat_path::*;
+
 /// libxcselect 가 가장 먼저 보는 env — 설정됐고 디렉터리면 그것이 **선택된** 개발자 디렉터리다.
 pub const ENV_DEVELOPER_DIR: &str = "DEVELOPER_DIR";
 
@@ -246,6 +250,55 @@ pub fn clt_absent_child_path(exe_dir: &Path, current: Option<&OsStr>) -> Option<
 /// 직접 치는 `python3`·`git`, Claude Code 자신의 git 확인)을 **둘 다** 말한다. "전부 정상"이라고 말하면
 /// 그 뒤에 뜨는 설치 창이 거짓 안내가 된다. 재설치 채널(bundle-damaged)과 섞지 않는다 — 고장이 아니다.
 pub fn devtools_missing_notice(python_present: bool, git_present: bool) -> Option<String> {
+    devtools_missing_notice_for(python_present, git_present, &[])
+}
+
+/// ★1.1.21 A(설계 §2-5) **도구별** 안내 문구(순수). `fixed` = 좌석 셸 재선두 판정([`seat_path_verdict`])이
+/// `Applied` 로 고친 도구(그 밖 판정·시간 초과 = 빈 집합). 빠진 도구 중 고친 것이 없으면 **종전 문구 그대로**다
+/// (판정 실패·롤백·사용자 root·글자 탈락 = 설치 창 가능이 사실). 고친 도구는 「cys 좌석에서는 앱에 든 것을 씀」 ·
+/// 못 고친 도구는 종전 안내(설치 창 가능 · 설치 방법)를 함께 낸다.
+pub fn devtools_missing_notice_for(
+    python_present: bool,
+    git_present: bool,
+    fixed: &[&str],
+) -> Option<String> {
+    if python_present && git_present {
+        return None;
+    }
+    let missing: Vec<&str> = [("python3", python_present), ("git", git_present)]
+        .into_iter()
+        .filter(|(_, present)| !present)
+        .map(|(t, _)| t)
+        .collect();
+    let fixed_missing: Vec<&str> = missing.iter().copied().filter(|t| fixed.contains(t)).collect();
+    if fixed_missing.is_empty() {
+        return devtools_missing_notice_legacy(python_present, git_present);
+    }
+    let unfixed: Vec<&str> = missing.iter().copied().filter(|t| !fixed.contains(t)).collect();
+    let mut msg = format!(
+        "이 맥에는 '명령어 라인 개발자 도구'(Command Line Tools)가 없습니다 — 없는 도구: {}. \
+         cys 좌석에서는 앱에 들어 있는 {} 을 씁니다(새로 연 좌석부터). \
+         cys 밖 터미널과 fish 셸에서는 설치 창이 뜰 수 있습니다 — '나중에'를 눌러도 cys 는 계속 동작합니다.",
+        missing.join("·"),
+        fixed_missing.join("·")
+    );
+    if fixed_missing.contains(&"git") {
+        msg.push_str(
+            " 비밀번호가 드는 git 원격(push 등)은 gh 로그인 등 사용자의 git 인증 설정이 있어야 합니다.",
+        );
+    }
+    if !unfixed.is_empty() {
+        msg.push_str(&format!(
+            " 다만 {} 은 에이전트가 직접 칠 때도 그 설치 창이 뜰 수 있습니다 — 쓰려면 그 창의 '설치'를 누르거나 \
+             터미널에서 xcode-select --install 을 실행하세요.",
+            unfixed.join("·")
+        ));
+    }
+    Some(msg)
+}
+
+/// 종전(1.1.20) 문구 — 고친 도구가 없을 때 그대로 낸다.
+fn devtools_missing_notice_legacy(python_present: bool, git_present: bool) -> Option<String> {
     if python_present && git_present {
         return None;
     }
@@ -749,6 +802,33 @@ mod tests {
         assert!(!both.contains("재설치"), "고장이 아닌데 재설치를 권한다(bundle-damaged 채널과 혼동)");
         let git_only = devtools_missing_notice(true, false).unwrap();
         assert!(git_only.contains("없는 도구: git."), "빠진 도구 목록이 틀렸다: {git_only}");
+    }
+
+    /// ★1.1.21 A 도구별 안내 조합 — 둘 다 고침 · python3 만 · git 만 · 못 고침 · 판정 실패(= 빈 집합 = 종전 문구).
+    #[test]
+    fn devtools_notice_per_tool_combinations() {
+        let legacy = devtools_missing_notice(false, false).unwrap();
+        assert_eq!(devtools_missing_notice_for(false, false, &[]), Some(legacy.clone()), "판정 실패 = 종전 문구");
+        assert_eq!(devtools_missing_notice_for(true, true, &["git"]), None);
+        let both = devtools_missing_notice_for(false, false, &["python3", "git"]).unwrap();
+        assert!(both.contains("앱에 들어 있는 python3·git 을 씁니다"), "{both}");
+        assert!(both.contains("새로 연 좌석부터") && both.contains("fish") && both.contains("gh 로그인"), "{both}");
+        assert!(!both.contains("xcode-select --install"), "다 고쳤는데 설치를 권한다: {both}");
+        assert!(!both.contains("Claude Code 가 git 을 확인할 때"), "고친 뒤 거짓이 된 문장: {both}");
+        let py = devtools_missing_notice_for(false, false, &["python3"]).unwrap();
+        assert!(py.contains("앱에 들어 있는 python3 을") && py.contains("다만 git 은"), "{py}");
+        assert!(py.contains("xcode-select --install") && !py.contains("gh 로그인"), "{py}");
+        let git = devtools_missing_notice_for(false, false, &["git"]).unwrap();
+        assert!(git.contains("앱에 들어 있는 git 을") && git.contains("다만 python3 은"), "{git}");
+        assert!(git.contains("gh 로그인"), "{git}");
+        // CLT 에 python3 은 있고 git 만 없음 + git 고침 → 못 고친 도구 없음.
+        let only = devtools_missing_notice_for(true, false, &["python3", "git"]).unwrap();
+        assert!(only.contains("없는 도구: git.") && !only.contains("다만"), "{only}");
+        // 고친 도구가 CLT 에 있는 도구뿐(빠진 것과 무관) → 종전 문구.
+        assert_eq!(
+            devtools_missing_notice_for(true, false, &["python3"]),
+            devtools_missing_notice(true, false)
+        );
     }
 
     /// ★셸 짝 파리티 — `_lib.sh` `cys_clt_tool_present` 기본 후보 표가 이 파일의 표와 **같은 순서**다.

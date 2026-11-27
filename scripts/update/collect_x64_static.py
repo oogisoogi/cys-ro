@@ -75,28 +75,33 @@ def pack_chain_missing(blob, items):
     앞쪽 같은 바이트에 걸려 통과) · 다시 찾기 없음 + 「가장 이른 출현 하나만」 으로 고르면 앞쪽 다른 사본에 걸려 정상
     배치를 거짓 거부한다(codex 반례) → 출현 자리를 모두 들고 가는 사슬(도달 가능한 끝 자리 집합). 첫 항목만 바이너리 전체
     (실물 1.1.19·1.1.20 x64 = 첫 항목이 약 8.7MB 뒤 · PACK_ALL 은 const 라 사본이 여럿 · 팩 589항목 모두 2번 이상 · 실측
-    2026-11-27). 빈 파일 = 찾을 바이트 없음(건너뜀 · digest 가 결속). 끝 자리 집합은 앞쪽 4096개로 자른다(병적 입력의
-    시간 상한 · 자르면 거부 쪽 = fail-closed)."""
-    ends, seen = None, set()
+    2026-11-27). 빈 파일 = 찾을 바이트 없음(건너뜀 · digest 가 결속). 겹치는 창은 합쳐 출현마다 한 번만 열고, 한 항목의
+    출현 자리가 4096 을 넘으면 즉시 거부한다(병적 입력의 시간·메모리 상한 · fail-closed · codex N 2R minor)."""
+    cap, ends, seen = 4096, None, set()
     for rel, data in items:
         if not data:
             continue
-        new = set()
+        new = []
         if ends is None:
-            i = blob.find(data)
-            while i >= 0:
-                new.add(i + len(data))
-                i = blob.find(data, i + 1)
+            spans = [(0, len(blob))]
         else:
+            # 앞 끝 자리 p 마다 시작 자리 허용 구간 = [p, p + 64KiB] — 겹치는 구간을 합쳐 출현마다 한 번만 연다(codex N 2R minor)
+            spans = []
             for p in ends:
-                lim = p + len(data) + 65536
-                i = blob.find(data, p, lim)
-                while i >= 0:
-                    new.add(i + len(data))
-                    i = blob.find(data, i + 1, lim)
+                if spans and p <= spans[-1][1]:
+                    spans[-1] = (spans[-1][0], max(spans[-1][1], p + 65536))
+                else:
+                    spans.append((p, p + 65536))
+        for lo, hi in spans:
+            i = blob.find(data, lo, min(len(blob), hi + len(data)))
+            while i >= 0 and i <= hi:
+                new.append(i + len(data))
+                if len(new) > cap:  # 병적 입력(짧은 공통 내용 · 큰 바이너리) = 판정 불가 → 거부(fail-closed · 시간·메모리 상한)
+                    return [rel + " (출현 자리 %d 초과 · 판정 불가)" % cap]
+                i = blob.find(data, i + 1, min(len(blob), hi + len(data)))
         if not new:
             return [rel + (" (앞 항목과 같은 내용)" if data in seen else "")]
-        ends = sorted(new)[:4096]
+        ends = sorted(set(new))
         seen.add(data)
     return []
 

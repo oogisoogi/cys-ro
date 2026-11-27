@@ -2600,6 +2600,13 @@ class TestCollectMacX64Static(unittest.TestCase):
         self.assertEqual(cx.pack_chain_missing(b"AAAACCCC", [("a", b"AAAA"), ("a2", b"AAAA"), ("c", b"CCCC")]),
                          ["a2 (앞 항목과 같은 내용)"])                                              # 같은 내용 합침
         self.assertEqual(cx.pack_chain_missing(b"zz", [("e", b"")]), [])
+        # codex N 2R minor: 짧은 공통 내용 × 큰 입력 = 출현 자리 상한 즉시 거부(시간 상한) · 상한 안이면 그대로 판정
+        t0 = time.time()
+        self.assertEqual(cx.pack_chain_missing(b"A" * 100000, [("x", b"A"), ("y", b"A")]), ["x (출현 자리 4096 초과 · 판정 불가)"])
+        self.assertLess(time.time() - t0, 2.0)
+        t0 = time.time()
+        self.assertEqual(cx.pack_chain_missing(b"A" * 4000, [("x", b"A"), ("y", b"A"), ("z", b"A")]), [])
+        self.assertLess(time.time() - t0, 2.0)
         self.assertEqual(cx.pack_chain_missing(b"zz", [("a", b"AAAA")]), ["a"])
 
     def test_n_med2_symlink_in_pack_tree_refused(self):

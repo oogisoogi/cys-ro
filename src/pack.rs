@@ -889,22 +889,34 @@ pub fn windows_launcher_variant_in(
 /// 공백 든 사용자 폴더에 옛 깨진 줄이 있으면 올바른 줄을 붙이지 않을 길이 생겼다.
 /// 규칙: 따옴표 밖 공백 = 인자 경계 · `"…"`·`'…'` = 한 인자로 묶음(안의 공백·다른 따옴표 글자는 그대로) ·
 /// 역슬래시 = 글자 그대로(윈 경로 · 기존 표기 인정 범위 유지) · 닫히지 않은 따옴표 = `None`(판정 불가 = 인정 안 함).
+/// ★1.1.21 G r3(codex 3R major): 따옴표 조각이 다른 글자·다른 따옴표 조각과 **붙은** 인자(`'team''s'` · `a"b"` · `"a"b`)는
+/// 실행 셸마다 뜻이 갈린다(bash = 이어 붙임 `teams` · PowerShell `''` = 글자 `'`) → 판정 불가(`None`) = 인정 안 함(보수).
+/// 따옴표는 인자 **전체**를 감쌀 때만 쓴다(우리 두 쓰는 쪽 = `L "path"`·`"L" "path"` 꼴만 낸다).
 fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_tok = false;
     let mut quote: Option<char> = None;
+    let mut just_closed = false;
     for c in cmd.chars() {
         match quote {
-            Some(q) if c == q => quote = None,
+            Some(q) if c == q => {
+                quote = None;
+                just_closed = true;
+            }
             Some(_) => cur.push(c),
             None if c.is_whitespace() => {
                 if in_tok {
                     out.push(std::mem::take(&mut cur));
                     in_tok = false;
                 }
+                just_closed = false;
             }
+            None if just_closed => return None, // 닫는 따옴표 바로 뒤에 글자·따옴표가 붙음
             None if c == '"' || c == '\'' => {
+                if in_tok {
+                    return None; // 글자 뒤에 따옴표가 붙음
+                }
                 quote = Some(c);
                 in_tok = true;
             }
@@ -8403,8 +8415,17 @@ mod tests {
         assert!(!ok("C:/packs/teams/hooks/session-start.sh", &["bash \"C:/packs/team's/hooks/session-start.sh\""]));
         // 빈 인자 하나 더(`""`) = 인자 셋 → 인정 안 함
         assert!(!ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\" \"\""]));
+        // 반례 ⑤(codex 3R): 붙은 따옴표 조각 = 셸마다 뜻이 갈림 → 인정 안 함(기대 teams · 등록 'team''s' = PowerShell 에선 team's)
+        let teams = "C:/packs/teams/hooks/session-start.sh";
+        assert!(!ok(teams, &["bash 'C:/packs/team''s/hooks/session-start.sh'"]));
+        assert!(!ok(teams, &["bash \"C:/packs/team\"\"s/hooks/session-start.sh\""]));
+        assert!(!ok(teams, &["bash C:/packs/team\"s/hooks/session-start.sh\""]));
+        assert!(ok(teams, &["bash 'C:/packs/teams/hooks/session-start.sh'"]));
         // 분해 단위
         assert_eq!(windows_hook_argv("a \"b c\" 'd \"e'"), Some(vec!["a".into(), "b c".into(), "d \"e".into()]));
+        assert_eq!(windows_hook_argv("a 'b''c'"), None);
+        assert_eq!(windows_hook_argv("a x\"b\""), None);
+        assert_eq!(windows_hook_argv("a \"b\"x"), None);
         assert_eq!(windows_hook_argv("a \"b"), None);
         assert_eq!(windows_hook_argv("  "), Some(vec![]));
     }

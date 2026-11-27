@@ -884,12 +884,12 @@ pub fn windows_launcher_variant_in(
 }
 
 /// ★1.1.21 G(codex 1R~6R · TICKET=cysr-1121-integ): 윈 훅 command 를 **인자 경계를 지켜** 나눈다(순수).
-/// 전에는 명령 전체에서 따옴표를 지우고 공백을 합쳐 비교했다 — `bash "C:/Users/A B/x.sh"` 와 `bash "C:/Users/A" "B/x.sh"`
+/// 전에는 명령 전체에서 따옴표를 지우고 공백을 합쳐 비교했다 — `bash "C:/Users/user/A B/x.sh"` 와 `bash "C:/Users/user/A" "B/x.sh"`
 /// (다른 스크립트 + 꼬리 인자)가 같아졌고, G 가 이 비교를 병합·검증(집행)까지 넓혀 올바른 줄을 붙이지 않을 길이 생겼다.
 /// 훅을 실제로 돌리는 셸을 여기서는 모른다(bash · PowerShell · cmd→MSVCRT argv) → **세 셸이 같은 인자 목록을 내는 공통
 /// 부분집합만** 나누고, 그 밖은 `None`(판정 불가 = 인정 안 함 · 틀려도 결과는 G 이전과 같은 중복 append 쪽):
 ///  · 따옴표 밖 공백 = 인자 경계 · 큰따옴표 `"…"` = 묶음(안의 공백·홑따옴표 글자 보존) · 글자로 시작한 인자 속 큰따옴표 조각은
-///    이어 붙임(`C:/Users/"A B"/x.sh` · 4R)
+///    이어 붙임(`C:/Users/user/"A B"/x.sh` · 4R)
 ///  · None: 따옴표 밖 홑따옴표(cmd 는 글자로 넘김 · 6R) · 따옴표 밖 역슬래시(bash 는 escape 로 먹음 · 6R) · 큰따옴표 안
 ///    `\"`·`\\`·끝의 `\`(bash·MSVCRT 뜻이 갈림) · `$`·백틱·`%`(bash·PowerShell·cmd 확장) · 따옴표 밖 셸 연산·glob 글자
 ///    (`&|<>();{}*?[]^!#~`) · 큰따옴표 조각끼리 붙음(`"a""b"` · 3R) · 따옴표로 시작한 인자가 닫힌 뒤 글자(5R) · 닫히지 않은 따옴표.
@@ -8331,11 +8331,11 @@ mod tests {
     /// 「등록됨」 으로 본다. 표기(구분자·대소문자·따옴표·MSYS `/c/`)는 정규화 · 진짜 미등록은 여전히 미등록.
     #[test]
     fn win_doctor_hook_any_launcher_same_script() {
-        let la = "C:\\Users\\admin\\AppData\\Local";
+        let la = "C:\\Users\\user\\AppData\\Local";
         let cands = windows_bash_candidates_from(Some(la), Some("C:\\Program Files"));
-        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let bundled = "C:\\Users\\user\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
         let only_bundled = |p: &str| p == bundled;
-        let script = Path::new("C:/Users/admin/.cys/pack/hooks/session-start.sh");
+        let script = Path::new("C:/Users/user/.cys/pack/hooks/session-start.sh");
         let ok = |cmds: &[&str], is_file: &dyn Fn(&str) -> bool| {
             hook_registered_any_windows_launcher_in(
                 &win_doctor_root("SessionStart", cmds),
@@ -8347,45 +8347,45 @@ mod tests {
         };
         // ① 방송실 PC 등록 글자 그대로(데몬 = 동봉 bash 절대경로)
         assert!(ok(
-            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &["C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/user/.cys/pack/hooks/session-start.sh\""],
             &only_bundled
         ));
         // ② 좌석 셸 꼴(`bash "…"`) — 런처 = bash
-        assert!(ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        assert!(ok(&["bash \"C:/Users/user/.cys/pack/hooks/session-start.sh\""], &only_bundled));
         // ③ 표기 변형: 역슬래시(큰따옴표 안)·소문자 드라이브·따옴표 런처·MSYS /c/ 스크립트
         assert!(ok(
-            &["\"c:\\users\\admin\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" \"C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh\""],
+            &["\"c:\\users\\user\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" \"C:\\USERS\\user\\.cys\\pack\\hooks\\session-start.sh\""],
             &only_bundled
         ));
-        assert!(ok(&["BASH \"/c/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        assert!(ok(&["BASH \"/c/Users/user/.cys/pack/hooks/session-start.sh\""], &only_bundled));
         // ③′ G 6R: 셸마다 인자가 갈리는 표기 = 인정 안 함(따옴표 밖 역슬래시 = bash 가 먹음 · 홑따옴표 = cmd 가 글자로 넘김)
-        assert!(!ok(&["bash C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh"], &only_bundled));
-        assert!(!ok(&["BASH '/c/Users/admin/.cys/pack/hooks/session-start.sh'"], &only_bundled));
+        assert!(!ok(&["bash C:\\USERS\\user\\.cys\\pack\\hooks\\session-start.sh"], &only_bundled));
+        assert!(!ok(&["BASH '/c/Users/user/.cys/pack/hooks/session-start.sh'"], &only_bundled));
         // ④ 공백 후보(Program Files) — 실재할 때만 인정
-        let pf_cmd = "\"C:/Program Files/Git/bin/bash.exe\" \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"";
+        let pf_cmd = "\"C:/Program Files/Git/bin/bash.exe\" \"C:/Users/user/.cys/pack/hooks/session-start.sh\"";
         assert!(ok(&[pf_cmd], &|p: &str| p.starts_with("C:\\Program Files")));
         // ── 진짜 미등록 = 여전히 미등록 ──
         // ⑤ 런처 파일이 실재하지 않는 절대경로(훅이 실행되지 않는다)
         assert!(!ok(&[pf_cmd], &only_bundled));
         assert!(!ok(
-            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &["C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/user/.cys/pack/hooks/session-start.sh\""],
             &|_: &str| false
         ));
         // ⑥ 후보가 아닌 런처
-        assert!(!ok(&["sh \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(&["sh \"C:/Users/user/.cys/pack/hooks/session-start.sh\""], &only_bundled));
         assert!(!ok(
-            &["C:/Tools/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &["C:/Tools/bash.exe \"C:/Users/user/.cys/pack/hooks/session-start.sh\""],
             &|_: &str| true
         ));
         // ⑦ 다른 스크립트·다른 팩·꼬리 인자·빈 등록·다른 이벤트
-        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/role-bootstrap.sh\""], &only_bundled));
-        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack-dept-x/hooks/session-start.sh\""], &only_bundled));
-        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\" --x"], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/user/.cys/pack/hooks/role-bootstrap.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/user/.cys/pack-dept-x/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/user/.cys/pack/hooks/session-start.sh\" --x"], &only_bundled));
         assert!(!ok(&[], &only_bundled));
         assert!(!hook_registered_any_windows_launcher_in(
             &win_doctor_root(
                 "UserPromptSubmit",
-                &["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""]
+                &["bash \"C:/Users/user/.cys/pack/hooks/session-start.sh\""]
             ),
             "SessionStart",
             script,
@@ -8405,7 +8405,7 @@ mod tests {
     /// 닫히지 않은 따옴표·경로 속 따옴표 글자만 다른 줄은 **같은 스크립트가 아니다**(종전 판정 = 전부 「등록됨」).
     #[test]
     fn win_variant_keeps_argument_boundaries() {
-        let cands = windows_bash_candidates_from(Some("C:\\Users\\A B\\AppData\\Local"), None);
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\user\\A B\\AppData\\Local"), None);
         let ok = |script: &str, cmds: &[&str]| {
             hook_registered_any_windows_launcher_in(
                 &win_doctor_root("SessionStart", cmds),
@@ -8415,23 +8415,23 @@ mod tests {
                 |_: &str| false,
             )
         };
-        let sp = "C:/Users/A B/.cys/pack/hooks/session-start.sh";
-        assert!(ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\""]));
-        assert!(ok(sp, &["bash \"C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh\""]));
-        assert!(!ok(sp, &["bash 'C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh'"])); // 6R: 홑따옴표
-        // 반례 ① 경로를 두 인자로 쪼갬(= C:/Users/A 실행 + 꼬리 인자)
-        assert!(!ok(sp, &["bash \"C:/Users/A\" \"B/.cys/pack/hooks/session-start.sh\""]));
+        let sp = "C:/Users/user/A B/.cys/pack/hooks/session-start.sh";
+        assert!(ok(sp, &["bash \"C:/Users/user/A B/.cys/pack/hooks/session-start.sh\""]));
+        assert!(ok(sp, &["bash \"C:\\Users\\user\\a b\\.cys\\pack\\hooks\\session-start.sh\""]));
+        assert!(!ok(sp, &["bash 'C:\\Users\\user\\a b\\.cys\\pack\\hooks\\session-start.sh'"])); // 6R: 홑따옴표
+        // 반례 ① 경로를 두 인자로 쪼갬(= C:/Users/user/A 실행 + 꼬리 인자)
+        assert!(!ok(sp, &["bash \"C:/Users/user/A\" \"B/.cys/pack/hooks/session-start.sh\""]));
         // 반례 ② 따옴표 없는 공백 경로(= 인자 둘로 갈림)
-        assert!(!ok(sp, &["bash C:/Users/A B/.cys/pack/hooks/session-start.sh"]));
+        assert!(!ok(sp, &["bash C:/Users/user/A B/.cys/pack/hooks/session-start.sh"]));
         // 반례 ③ 닫히지 않은 따옴표 = 판정 불가 → 인정 안 함
-        assert!(!ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh"]));
+        assert!(!ok(sp, &["bash \"C:/Users/user/A B/.cys/pack/hooks/session-start.sh"]));
         // 반례 ④ 경로 속 따옴표 글자(team's ≠ teams)
         let q = "C:/packs/team's/hooks/session-start.sh";
         assert!(ok(q, &["bash \"C:/packs/team's/hooks/session-start.sh\""]));
         assert!(!ok(q, &["bash \"C:/packs/teams/hooks/session-start.sh\""]));
         assert!(!ok("C:/packs/teams/hooks/session-start.sh", &["bash \"C:/packs/team's/hooks/session-start.sh\""]));
         // 빈 인자 하나 더(`""`) = 인자 셋 → 인정 안 함
-        assert!(!ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\" \"\""]));
+        assert!(!ok(sp, &["bash \"C:/Users/user/A B/.cys/pack/hooks/session-start.sh\" \"\""]));
         // 반례 ⑤(codex 3R): 붙은 따옴표 조각 = 셸마다 뜻이 갈림 → 인정 안 함(기대 teams · 등록 'team''s' = PowerShell 에선 team's)
         let teams = "C:/packs/teams/hooks/session-start.sh";
         assert!(!ok(teams, &["bash 'C:/packs/team''s/hooks/session-start.sh'"]));
@@ -8446,9 +8446,9 @@ mod tests {
         assert!(!ok(teams, &["bash \"C:/packs/$teams/hooks/session-start.sh\""]));
         assert!(!ok(teams, &["bash C:/packs/teams/hooks/session-start.sh;"]));
         // codex 4R: 큰따옴표 조각이 글자와 붙음 = 모든 셸에서 이어 붙임 → 같은 경로면 인정(G 이전에도 인정 · 중복 append 방지)
-        assert!(ok(sp, &["bash C:/Users/\"A B\"/.cys/pack/hooks/session-start.sh"]));
+        assert!(ok(sp, &["bash C:/Users/user/\"A B\"/.cys/pack/hooks/session-start.sh"]));
         assert!(ok(teams, &["bash C:/packs/team\"s/hooks/session-start.sh\""]));
-        assert!(!ok(sp, &["bash C:/Users/\"A\" B/.cys/pack/hooks/session-start.sh"])); // 공백이 따옴표 밖 = 인자 둘
+        assert!(!ok(sp, &["bash C:/Users/user/\"A\" B/.cys/pack/hooks/session-start.sh"])); // 공백이 따옴표 밖 = 인자 둘
         // 분해 단위
         assert_eq!(windows_hook_argv("a \"b c\" \"d 'e\""), Some(vec!["a".into(), "b c".into(), "d 'e".into()]));
         assert_eq!(windows_hook_argv("a 'b c'"), None);
@@ -8481,9 +8481,9 @@ mod tests {
         std::fs::create_dir_all(&td).unwrap();
         let pack = td.join("pack");
         let script = |s: &str| pack.join("hooks").join(s);
-        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
-        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
-        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        let bundled = "C:\\Users\\user\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let l = "C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\user\\AppData\\Local"), None);
         // 소망 = 셋째 꼴(정확 일치 없음)
         let desired = |s: &str| windows_hook_command("\"C:/Program Files/Git/bin/bash.exe\"", &script(s));
         let fixed = |root: &serde_json::Value, ev: &str, s: &str| {
@@ -8548,17 +8548,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn win_doctor_hook_unix_stays_byte_equal() {
-        let pack = Path::new("/Users/u/.cys/pack");
+        let pack = Path::new("/Users/user/.cys/pack");
         let mac = hook_command_for(pack, "session-start.sh");
-        assert_eq!(mac, "sh /Users/u/.cys/pack/hooks/session-start.sh");
+        assert_eq!(mac, "sh /Users/user/.cys/pack/hooks/session-start.sh");
         let reg = |c: &str| {
             doctor_hook_registered_in(&win_doctor_root("SessionStart", &[c]), "SessionStart", pack, "session-start.sh")
         };
         assert!(reg(&mac));
         assert_eq!(reg(&mac), hook_registered_in(&win_doctor_root("SessionStart", &[&mac]), "SessionStart", &mac));
-        assert!(!reg("bash /Users/u/.cys/pack/hooks/session-start.sh"));
-        assert!(!reg("sh \"/Users/u/.cys/pack/hooks/session-start.sh\""));
-        assert!(!reg("sh /Users/u/.cys/pack/hooks/role-bootstrap.sh"));
+        assert!(!reg("bash /Users/user/.cys/pack/hooks/session-start.sh"));
+        assert!(!reg("sh \"/Users/user/.cys/pack/hooks/session-start.sh\""));
+        assert!(!reg("sh /Users/user/.cys/pack/hooks/role-bootstrap.sh"));
         assert!(!doctor_hook_registered_in(&serde_json::json!({}), "SessionStart", pack, "session-start.sh"));
     }
 
@@ -8566,16 +8566,16 @@ mod tests {
     /// 맥 규칙(`windows_rules=false`)은 종전 그대로 · 진짜 미등록은 여전히 누락.
     #[test]
     fn win_awakening_warn_accepts_launcher_variant() {
-        let pack = Path::new("C:/Users/admin/.cys/pack");
-        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
-        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        let pack = Path::new("C:/Users/user/.cys/pack");
+        let bundled = "C:\\Users\\user\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\user\\AppData\\Local"), None);
         let only_bundled = |p: &str| p == bundled;
-        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let l = "C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe";
         let root = serde_json::json!({"hooks": {
             "SessionStart": [{"hooks": [{"type": "command",
-                "command": format!("{l} \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"")}]}],
+                "command": format!("{l} \"C:/Users/user/.cys/pack/hooks/session-start.sh\"")}]}],
             "UserPromptSubmit": [{"hooks": [{"type": "command",
-                "command": format!("{l} \"C:/Users/admin/.cys/pack/hooks/role-bootstrap.sh\"")}]}]
+                "command": format!("{l} \"C:/Users/user/.cys/pack/hooks/role-bootstrap.sh\"")}]}]
         }});
         assert!(awakening_hooks_missing_with_in(&root, pack, true, &cands, only_bundled).is_empty());
         // 맥 규칙 = 종전(런처 변형 불인정)
@@ -8584,7 +8584,7 @@ mod tests {
         assert_eq!(awakening_hooks_missing_with_in(&root, pack, true, &cands, |_: &str| false).len(), 2);
         // 다른 팩(레인 불일치) → 누락(U10 레인 팩 하나 규약 유지)
         assert_eq!(
-            awakening_hooks_missing_with_in(&root, Path::new("C:/Users/admin/.cys/pack-dept-x"), true, &cands, only_bundled),
+            awakening_hooks_missing_with_in(&root, Path::new("C:/Users/user/.cys/pack-dept-x"), true, &cands, only_bundled),
             vec!["session-start.sh", "role-bootstrap.sh"]
         );
         assert_eq!(
@@ -8604,9 +8604,9 @@ mod tests {
         std::fs::create_dir_all(&td).unwrap();
         let pack = td.join("pack");
         let script = |s: &str| pack.join("hooks").join(s);
-        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
-        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
-        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        let bundled = "C:\\Users\\user\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let l = "C:/Users/user/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\user\\AppData\\Local"), None);
         let desired = |s: &str| windows_hook_command("bash", &script(s));
         let fixed = |root: &serde_json::Value, ev: &str, s: &str| {
             windows_launcher_variants_in(root, ev, &script(s), &cands, |p: &str| p == bundled)

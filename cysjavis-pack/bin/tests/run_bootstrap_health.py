@@ -3064,6 +3064,18 @@ sys.exit(0)
 """
 
 
+def _rust_fn_body_following_core(src, start, core, need):
+    """★1.1.21(TICKET=cysr-1121-integ · win-doctor-hook 630 이 본체를 `<이름>_core` 로 옮김): 공개 함수 본문(start 부터 첫 `\n}\n`)이
+    `<core>(` 를 부르면 그 core 함수 본문을 이어 붙여 돌려준다 — 소스 핀이 **위임을 따라가되 약해지지 않게**: 감싸개가 core 를 부른다는
+    사실과 core 본문 실재를 둘 다 요구한다(감싸개 밖으로 성질이 빠져나가면 여전히 적색). core 호출이 없으면 종전 본문 그대로."""
+    body = src[start:src.find("\n}\n", start)]
+    if (core + "(") not in body:
+        return body
+    ci = src.find("fn " + core + "(")
+    need(ci > 0, "%s 를 부르는데 그 정의를 못 찾았다" % core)
+    return body + src[ci:src.find("\n}\n", ci)]
+
+
 @specimen("H-CONC-3", "W3", "settings.json 다중 writer 경합 — 무파손·무 lost-update(공용 락+mkstemp)",
           ["G16", "A8"])
 def h_conc_3():
@@ -3170,7 +3182,7 @@ def h_conc_3():
     pk = _repo_file(os.path.join("src", "pack.rs"))
     mi = pk.find("pub fn merge_desired_hooks(")
     need(mi > 0, "Rust 병합기를 못 찾았다")
-    mbody = pk[mi:pk.find("\n}\n", mi)]
+    mbody = _rust_fn_body_following_core(pk, mi, "merge_desired_hooks_core", need)
     need("write_atomic(settings_path" in mbody,
          "Rust 병합기가 원자 쓰기를 쓰지 않는다(반쪽 등록부 = 부트 발화 소실)")
     need("std::fs::write(settings" not in _code_lines(pk), "Rust 비원자 settings write 잔존")
@@ -10925,7 +10937,8 @@ def h_seed_u21():
     need("hook_registered_with_timeout_in(" in mbody, "병합기가 2축 판정을 소비하지 않는다")
     need("raise_hook_timeout_in(" in mbody, "병합기에 교체 경로가 배선되지 않았다")
     vi = pk.find("pub fn verify_desired_hooks_registered(")
-    vbody = pk[vi:pk.find("\n}\n", vi)]
+    need(vi > 0, "verify_desired_hooks_registered 를 못 찾았다")
+    vbody = _rust_fn_body_following_core(pk, vi, "verify_desired_hooks_registered_core", need)
     need("hook_registered_with_timeout_in(" in vbody,
          "⊇ 게이트가 집행 축과 다른 판정을 쓴다(스큐가 남은 디스크를 '충족'으로 보고한다)")
     notes.append("Rust 2축 판정 + 교체 경로 + ⊇ 게이트 동축")

@@ -891,14 +891,17 @@ pub fn windows_launcher_variant_in(
 /// 역슬래시 = 글자 그대로(윈 경로 · 기존 표기 인정 범위 유지) · 닫히지 않은 따옴표 = `None`(판정 불가 = 인정 안 함).
 /// ★1.1.21 G r3·r4(codex 3R·4R): 셸마다 뜻이 갈리는 붙음만 판정 불가(`None` = 인정 안 함 · 보수) —
 /// ⓐ 따옴표 조각끼리 바로 붙음(`'team''s'` = bash `teams` · PowerShell `team's` / `"a""b"` = bash `ab` · PowerShell `a"b`)
-/// ⓑ 글자에 붙은 홑따옴표 조각(cmd 는 홑따옴표를 글자로 넘긴다). 큰따옴표 조각이 글자와 붙은 것(`C:/Users/"A B"/x.sh`)은
-/// bash·PowerShell·MSVCRT 모두 이어 붙여 한 인자로 넘기므로 인정한다(4R 반례 · G 이전에도 인정되던 표기).
+/// ⓑ 글자에 붙은 홑따옴표 조각(cmd 는 홑따옴표를 글자로 넘긴다) ⓒ 따옴표로 **시작한** 인자의 닫는 따옴표 뒤에 글자가 붙음
+/// (`"C:/packs/team"s/x.sh` = bash 는 이어 붙이고 PowerShell 은 인자 둘로 가름 · codex 5R 실측). 글자로 시작한 인자 속의
+/// 큰따옴표 조각(`C:/Users/"A B"/x.sh` · `C:/packs/team"s/x.sh"`)은 bash·PowerShell·MSVCRT 모두 이어 붙여 한 인자로 넘기므로
+/// 인정한다(4R 반례 · G 이전에도 인정되던 표기).
 fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_tok = false;
     let mut quote: Option<char> = None;
     let mut last_close: Option<char> = None;
+    let mut tok_quote_start = false;
     for c in cmd.chars() {
         match quote {
             Some(q) if c == q => {
@@ -917,12 +920,18 @@ fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
                 if last_close.is_some() || (c == '\'' && in_tok) {
                     return None; // ⓐ 조각끼리 붙음 · ⓑ 글자 뒤 홑따옴표
                 }
+                if !in_tok {
+                    tok_quote_start = true;
+                }
                 quote = Some(c);
                 in_tok = true;
             }
             None => {
-                if last_close == Some('\'') {
-                    return None; // ⓑ 홑따옴표 조각 뒤에 글자
+                if last_close == Some('\'') || (last_close.is_some() && tok_quote_start) {
+                    return None; // ⓑ 홑따옴표 조각 뒤에 글자 · ⓒ 따옴표로 시작한 인자가 닫힌 뒤 글자
+                }
+                if !in_tok {
+                    tok_quote_start = false;
                 }
                 cur.push(c);
                 in_tok = true;
@@ -8436,7 +8445,11 @@ mod tests {
         assert_eq!(windows_hook_argv("a x'b'"), None);
         assert_eq!(windows_hook_argv("a 'b'x"), None);
         assert_eq!(windows_hook_argv("a x\"b c\"d"), Some(vec!["a".into(), "xb cd".into()]));
-        assert_eq!(windows_hook_argv("a \"b\"x\"c\""), Some(vec!["a".into(), "bxc".into()]));
+        assert_eq!(windows_hook_argv("a \"b\"x\"c\""), None); // ⓒ
+        assert_eq!(windows_hook_argv("a x\"b\"y\"c\"z"), Some(vec!["a".into(), "xbycz".into()]));
+        assert_eq!(windows_hook_argv("\"a b\" \"c\""), Some(vec!["a b".into(), "c".into()]));
+        // codex 5R 반례: 따옴표로 시작한 인자가 닫힌 뒤 글자 = PowerShell 은 인자 둘 → 인정 안 함
+        assert!(!ok(teams, &["bash \"C:/packs/team\"s/hooks/session-start.sh"]));
         assert_eq!(windows_hook_argv("a \"b"), None);
         assert_eq!(windows_hook_argv("  "), Some(vec![]));
     }

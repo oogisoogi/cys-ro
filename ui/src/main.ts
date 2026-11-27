@@ -332,7 +332,7 @@ import { buildTabBar } from "./tabbar";
 import { cleanGroupName, effectiveGroup, forgetSeatGroup, parseSeatGroups, SEAT_GROUP_KEY, syncSeatGroupsFromList, uniqueKeys, type SeatGroups } from "./seatgroup"; // (tabs-sidebar 2d) 옮긴 묶음 기록 // (tabs-sidebar 2b) 탭 머리 줄 // (tabs-sidebar 조각2) 묶음 탭 판정
 import type { SeatRowsModel } from "./seatrows";
 import { PEEK_AUTOREPLY_PASS, PEEK_HISTORY_REPLAY, PEEK_MEASURE_TRIES, peekPasses, peekScale, type PeekCloseReason, type PeekDropKind } from "./peek"; // (TICKET=cysr-1119-s12 · CV-PEEK) 워커 창 보기 — 순수 판정·갈래 상수
-import { accountLimitRows, accountNeedsAction, chatLimitRows, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitTitle, nextSeat, paintBoard, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
+import { accountLimitRows, accountNeedsAction, chatLimitRows, BOARD_KEY, BOARD_OPEN_KEY, BOARD_POS_KEY, boardCounts, boardOpen, boardPos, boardVariant, limitLine, limitPct, limitStale, limitTitle, nextSeat, paintBoard, railRateRow, type BoardState } from "./statusboard"; // (tabs-sidebar 1d) 상황판 시안
 
 declare global {
   interface Window {
@@ -5386,7 +5386,7 @@ function paintStatusBoard(): void {
   const models = live.map((w) => ({ wsId: w.id, model: seatModels.get(w.id) ?? { fixed: [], groups: [] } }));
   const counts = boardCounts(models);
   const nowSecs = Date.now() / 1000;
-  const rateRows = accountRates(accountsCache, nowSecs).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
+  const rateRows = accountRates(accountsCache, nowSecs).map(railRateRow); // (J) 관측 나이·죽은 창 표지를 함께 넘긴다(오래된 값 = 「오래됨」)
   const limit = limitLine(rateRows, nowSecs);
   // (1f) 계정 줄(역할 목록)은 빼고, 손써야 할 계정 문제만 한 낱말로(accountNeedsAction).
   const acctWarn = accountNeedsAction(live.flatMap((w) => wsSeatAccts(w).flatMap((x) => (x.sig ? [parseSeatAccount(x.sig, Date.now(), SIG_STALE_MS_UI).state] : []))));
@@ -5408,7 +5408,7 @@ function paintStatusBoard(): void {
   const board = seatHost("board");
   const open = boardOpen(localStorage.getItem(BOARD_OPEN_KEY));
   const onToggle = () => { localStorage.setItem(BOARD_OPEN_KEY, open ? "0" : "1"); paintStatusBoard(); };
-  paintBoard(board, counts, { variant: statusBoard, limit, limitTitle: limitTitle(rateRows, nowSecs), limitPct: limitPct(rateRows), open, onToggle, acctWarn, onGo, approvals: offSeatApprovals, onApprovals, accounts: accountLimitRows(accountsCache, nowSecs) }); // (TICKET=cysr-1118-ui ②) 계정 둘 이상 = 계정마다 한 줄
+  paintBoard(board, counts, { variant: statusBoard, limit, limitTitle: limitTitle(rateRows, nowSecs), limitPct: limitPct(rateRows), limitStale: limitStale(rateRows), open, onToggle, acctWarn, onGo, approvals: offSeatApprovals, onApprovals, accounts: accountLimitRows(accountsCache, nowSecs) }); // (TICKET=cysr-1118-ui ②) 계정 둘 이상 = 계정마다 한 줄
   boardMore.hidden = !open;
   if (usageEl) boardMore.appendChild(usageEl);
   board.appendChild(boardMore);

@@ -45,6 +45,7 @@
 .cv-limit-name { max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
 .cv-limit.warn .cv-limit-text { color: var(--cv-wait); }
 .cv-limit.crit .cv-limit-text { color: var(--cv-err); }
+.cv-limit.stale { opacity: .6; } /* (TICKET=cysr-1121-ui J) 오래된 값 = 경고색 없이 흐리게 · 글에 「오래됨」 */
 
 .cv-log { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 12px 0; display: flex; flex-direction: column; gap: 12px; }
 .cv-empty { color: var(--cv-sub); }

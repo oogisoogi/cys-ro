@@ -178,6 +178,8 @@ export interface LimitView {
   pct: number;
   line: string;
   title: string;
+  /** (TICKET=cysr-1121-ui J) 오래된 값 — 참이면 경고색 없이 흐리게(상황판과 같은 판정 statusboard.railRateRow). */
+  stale?: boolean;
 }
 
 export type Health = "unknown" | "none" | "off" | "gate" | "busy" | "ready";

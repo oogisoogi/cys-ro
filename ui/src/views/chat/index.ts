@@ -347,7 +347,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       limits.replaceChildren();
       limits.hidden = rows.length === 0;
       for (const r of rows) {
-        const row = el("span", `cv-limit${r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`);
+        const row = el("span", `cv-limit${r.stale ? " stale" : r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`); // (J) 오래된 값 = 경고색 없이 흐리게
         row.title = r.title;
         row.append(el("span", "cv-limit-name", r.name ?? "7일 한도"), el("span", "cv-limit-text", r.line));
         // (V3) 6px 막대(왼쪽 칸에서만 보임 · 글 없음 = 글 대조 불변)

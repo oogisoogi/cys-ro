@@ -684,6 +684,25 @@ os.read(r2,1); os.tcsetpgrp(0,pid); os.write(wp,b'x'); time.sleep(3)
     assert!(wait_reports(1), "첫 보고가 상태에 반영되지 않았다(전제)");
     {
         let st = s.program_status.lock().unwrap();
+        // ★TICKET=debug-cysr-ci-flaky-1126 F4-다(진단만 · 단언·제품 그대로): 고친 뒤에도 이 단언이 `(1, 0, false)` 로 3/1,600 붉었고(11-27 06:18 무렵)
+        //   그 뒤 4,728회에서 다시 나오지 않아 원인을 못 갈랐다. 다음에 붉으면 아래 한 줄이 갈래를 가른다 —
+        //   `last_life_end` = "foreground process group changed"(보고 때 전경 그룹이 질의 때와 달리 읽힘) / "process exited"(좌석 프로세스가 끝남 · 화면에 까닭).
+        if (st.answered, st.len(), st.life_pgid.is_some()) != (1, 1, true) {
+            eprintln!(
+                "[진단 F4-다] answered {} unanswered {} reports {} unsolicited {} life_answered {} life_pgid {:?} last_life_end {:?} last_wipe {:?} fg_now {:?} exited {}\n화면:\n{}",
+                st.answered,
+                st.unanswered,
+                st.reports,
+                st.unsolicited,
+                st.life_answered,
+                st.life_pgid,
+                st.last_life_end.map(|(w, _)| w),
+                st.last_wipe.map(|(w, _)| w),
+                s.foreground_pgid_now(),
+                s.exited.load(std::sync::atomic::Ordering::Relaxed),
+                s.parser.lock().unwrap().screen().contents()
+            );
+        }
         assert_eq!((st.answered, st.len(), st.life_pgid.is_some()), (1, 1, true), "같은 전경 그룹의 보고를 받지 않았다");
     }
     std::fs::write(&go, b"1").unwrap(); // 첫 단언 뒤에만 전경을 넘긴다(순서 고정 · 위 문서)

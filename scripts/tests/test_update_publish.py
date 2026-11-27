@@ -2563,6 +2563,8 @@ class TestCollectMacX64Static(unittest.TestCase):
         같은 꼴에서 중간 항목이 깨지면 거부(닻을 바꿔도 사슬이 안 이어짐)."""
         p, _ = self.bi()
         first = self.items[0][1]
+        far = self.collect(self.bundle(self.payload(prefix=b"\0" * 100000)), p)[0]  # 사본 없이 멀리만(실물 1.1.20 꼴)
+        self.assertEqual(far.returncode, 0, far.stderr)
         decoy = first + b"\0" * 100000
         r, out = self.collect(self.bundle(self.payload(prefix=decoy)), p)
         self.assertEqual(r.returncode, 0, r.stderr)

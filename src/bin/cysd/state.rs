@@ -6542,10 +6542,9 @@ impl cys::macos_devtools::SeatEnv for BuilderSeatEnv<'_> {
 /// 배선 자식 앞 걷기 — 좌석 판정 ②와 같은 식별(`scrub_inherited_ours`) · 판정 본체(spawn 직전)가 다시 돌아도 멱등.
 #[cfg(target_os = "macos")]
 fn scrub_mac_seat_path_before_wire(builder: &mut CommandBuilder) {
-    if let Some(home) = dirs::home_dir() {
-        let base = cys::macos_devtools::path_helper_root_base(&home);
-        cys::macos_devtools::scrub_inherited_ours(&mut BuilderSeatEnv(builder), &base);
-    }
+    // 홈이 없어도 건너뛰지 않는다 — 짝 표식 같음·빈 값만으로 걷는다(codex 코드 r2 minor).
+    let base = dirs::home_dir().map(|h| cys::macos_devtools::path_helper_root_base(&h));
+    cys::macos_devtools::scrub_inherited_ours_opt(&mut BuilderSeatEnv(builder), base.as_deref());
 }
 
 /// ★1.1.21 A ③ 좌석 셸 재선두 주입(맥 좌석 · 설계 DESIGN-A r7.2 §2-3) — 판정 결과에 따라 builder env 를 고치고 데몬 로그 1줄

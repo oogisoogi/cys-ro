@@ -885,23 +885,25 @@ fn run_path_helper(
         let _ = tx.send(buf);
     });
     let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() >= timeout => {
+    // 끝났는지 볼 때 **회수하지 않는다**(unix = waitid WNOWAIT) — 좀비가 그룹 id 를 쥐고 있어야 출력 대기 시간 초과 때
+    // 그룹 종료가 남의 그룹(pid 재사용)에 닿지 않는다(codex 코드 r2 minor). 회수는 출력을 받은 뒤 `child.wait()`.
+    loop {
+        match exited_without_reaping(&mut child) {
+            Ok(true) => break,
+            Ok(false) if start.elapsed() >= timeout => {
                 kill_group(&mut child);
                 // 읽기 스레드는 기다리지 않는다(그룹 밖으로 샌 자손이 파이프를 쥐면 join 이 매달린다 — 시험 실측).
                 drop(reader);
                 return Err("timeout");
             }
-            Ok(None) => std::thread::sleep(Duration::from_millis(2)),
+            Ok(false) => std::thread::sleep(Duration::from_millis(2)),
             Err(_) => {
                 kill_group(&mut child);
                 drop(reader);
                 return Err("exec");
             }
         }
-    };
+    }
     let left = timeout.saturating_sub(start.elapsed());
     let buf = match rx.recv_timeout(left) {
         Ok(b) => b,
@@ -911,10 +913,41 @@ fn run_path_helper(
             return Err("timeout");
         }
     };
+    let status = child.wait().map_err(|_| "exec")?;
     if !status.success() {
         return Err("exec");
     }
     String::from_utf8(buf).map_err(|_| "exec")
+}
+
+/// 자식이 끝났는가 — unix 는 **회수하지 않고** 본다(`waitid(P_PID, WEXITED|WNOHANG|WNOWAIT)` · 좀비 유지 = pid·그룹 id 재사용 0).
+fn exited_without_reaping(child: &mut std::process::Child) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        // SAFETY: siginfo 는 0 으로 채운 지역 값 · pid = 아직 회수하지 않은 우리 자식.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // WNOHANG 에서 아직 안 끝났으면 si_pid = 0.
+        #[cfg(target_os = "macos")]
+        let pid = info.si_pid;
+        #[cfg(not(target_os = "macos"))]
+        let pid = unsafe { info.si_pid() };
+        Ok(pid != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        child.try_wait().map(|s| s.is_some())
+    }
 }
 
 /// 우리가 띄운 자식의 프로세스 그룹(= 자식 pid)만 끝낸다.
@@ -1006,6 +1039,8 @@ add() {{ case ":$out:" in *":$1:"*) ;; *) if [ -z "$out" ]; then out="$1"; else 
 while IFS= read -r l; do [ -n "$l" ] && add "$l"; done < "$f"
 IFS=:; for c in $PATH; do [ -n "$c" ] && add "$c"; done
 printf 'PATH="%s"; export PATH;\n' "$out"
+[ -n "${{MANPATH+x}}" ] && printf 'MANPATH="%s"; export MANPATH;\n' "$MANPATH"
+exit 0
 "#,
             etc = etc.display()
         );
@@ -1542,7 +1577,7 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         assert!(matches!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::Applied { .. })), "path_helper 자식에 데몬 env 가 샜다");
         // ⓑ 종료 코드: 맞는 출력을 내도 비0 이면 exec.
         let mut c = f.ctx.clone();
-        c.path_helper = script(&f.root, "rc1_ph", &format!("{}exit 1\n", real));
+        c.path_helper = script(&f.root, "rc1_ph", &real.replace("exit 0\n", "exit 1\n"));
         let mut env = seat_env(&f.rt);
         assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::VerifyFailed("exec")));
         // ⓒ 그룹 종료: 시간 초과 때 자손도 끝난다.
@@ -1561,6 +1596,41 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         // SAFETY: 신호 0 = 존재 확인만.
         let alive = unsafe { libc::kill(pid, 0) } == 0;
         assert!(!alive, "시간 초과 뒤 자손 {pid} 이 살아 있다 — 자기 그룹 종료가 안 됐다");
+    }
+
+    /// 좌석 MANPATH 는 path_helper 두 호출 모두에 그대로 간다(Fable·codex 코드 r1·r2 — 전달 변이 생존).
+    #[test]
+    fn manpath_is_passed_to_both_path_helper_calls() {
+        let f = fx("manpath");
+        let real = std::fs::read_to_string(&f.ctx.path_helper).unwrap();
+        let mut c = f.ctx.clone();
+        // 받은 MANPATH 를 파일에 남기고, 없으면 실패하는 path_helper(호출마다 한 줄).
+        let log = f.root.join("manpath.log");
+        c.path_helper = script(
+            &f.root,
+            "man_ph",
+            &real.replacen(
+                "#!/bin/sh\n",
+                &format!("#!/bin/sh\nprintf '%s\\n' \"${{MANPATH-<none>}}\" >> '{}'\n[ -z \"${{MANPATH+x}}\" ] && exit 4\n", log.display()),
+                1,
+            ),
+        );
+        let mut env = seat_env(&f.rt);
+        env.insert("MANPATH".into(), "/m1:/m2".into());
+        assert!(matches!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::Applied { .. })));
+        let got = std::fs::read_to_string(&log).unwrap();
+        assert_eq!(got.lines().collect::<Vec<_>>(), vec!["/m1:/m2", "/m1:/m2"], "두 호출에 좌석 MANPATH 가 안 갔다");
+        // MANPATH 없는 좌석 = 두 호출 모두 MANPATH 없음.
+        let mut c2 = f.ctx.clone();
+        let log2 = f.root.join("manpath2.log");
+        c2.path_helper = script(
+            &f.root,
+            "man_ph2",
+            &real.replacen("#!/bin/sh\n", &format!("#!/bin/sh\nprintf '%s\\n' \"${{MANPATH-<none>}}\" >> '{}'\n", log2.display()), 1),
+        );
+        let mut env = seat_env(&f.rt);
+        assert!(matches!(seat_path_verdict(&c2, &mut env), Some(SeatPathVerdict::Applied { .. })));
+        assert_eq!(std::fs::read_to_string(&log2).unwrap().lines().collect::<Vec<_>>(), vec!["<none>", "<none>"]);
     }
 
     /// 세대 dir 최상위 엄격 검사 — `etc` 밖에 무엇이 있으면 같은 세대로 보지 않는다.

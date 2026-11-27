@@ -234,7 +234,23 @@ export function versionKey(a: FeedApproval): string {
   return JSON.stringify([a.request_id, a.created_at, a.body, a.surface_id, a.fingerprint]);
 }
 
-/** 띠 항목(한 번에 하나를 보이는 쪽은 그리기) — 마스터 물음 먼저(대화가 1차 통로) · 그다음 승인 대기(오래된 것부터). */
+/** (TICKET=cysr-1121-ui L ㉢ · 박사님 11-26 「"확인이 필요해요" 창은 일반 사용자들은 무엇인지 모른다. 괜히 무엇을 해야 하나 긴장하게 된다.」)
+ *  항목이 사람에게 무엇을 바라는가 — act = 사람이 직접 답해야 나아감(마스터 창 승인 창 · 마스터가 멈춰 직접 허락이 열린 도우미 허락) ·
+ *  ask = 마스터 물음(답하면 이어 함 · 안 하면 그 일은 하지 않고 기다림) · watch = 마스터가 확인하는 중(사람 할 일 없음). */
+export type BandNeed = "act" | "ask" | "watch";
+export function bandNeed(it: BandItem): BandNeed {
+  if (it.kind === "ask") return "ask";
+  if (it.kind === "master_screen") return "act";
+  return it.stall !== null ? "act" : "watch";
+}
+const NEED_ORDER: Record<BandNeed, number> = { act: 0, ask: 1, watch: 2 };
+
+/** (L ㉡ · master 결정 = 단순안 11:0x) 마스터 물음 띠에 붙는 한 줄 — 물음은 ㉠ 으로 사용자만 할 수 있는 결정(돈·되돌릴 수 없는 바깥 일·사용자 손)으로 좁혔으므로
+ *  답이 없을 때의 안전한 기본은 언제나 「하지 않고 기다림」이다(시한·자동 결정 없음). */
+export const ASK_WAIT_NOTE = "안 누르셔도 돼요 · 답을 주실 때까지 마스터는 이 일을 하지 않고 기다려요.";
+
+/** 띠 항목(한 번에 하나를 보이는 쪽은 그리기) — ★(L ㉢ · codex ⑦) 사람이 직접 답해야 하는 것 먼저 · 그다음 마스터 물음 · 그다음 마스터가 확인하는 중
+ *  (같은 갈래 안에서는 종전 차례 = 물음은 표식 순 · 승인 대기는 오래된 것부터). */
 export function bandOf(questions: readonly Question[] | null, approvals: readonly FeedApproval[] | null, stall: StallInput, questionsKnown: boolean = questions !== null): Band {
   const items: BandItem[] = [];
   for (const q of questions ?? []) items.push({ kind: "ask", key: q.id, q });
@@ -242,14 +258,21 @@ export function bandOf(questions: readonly Question[] | null, approvals: readonl
     if (stall.masterSid !== undefined && stall.masterSid !== null && a.surface_id === stall.masterSid) items.push({ kind: "master_screen", key: versionKey(a), a });
     else items.push({ kind: "helper", key: versionKey(a), a, stall: itemStall(stall, a) });
   }
-  return { known: questionsKnown && questions !== null && approvals !== null && stall.masterSid !== undefined, items };
+  const sorted = items.map((it, i) => ({ it, i })).sort((x, y) => NEED_ORDER[bandNeed(x.it)] - NEED_ORDER[bandNeed(y.it)] || x.i - y.i).map((x) => x.it);
+  return { known: questionsKnown && questions !== null && approvals !== null && stall.masterSid !== undefined, items: sorted };
 }
 
-/** 띠 머리 글 · null = 띠 숨김(0건 확정일 때만 · FR-C1a). */
+/** 띠 머리 글 · null = 띠 숨김(0건 확정일 때만 · FR-C1a). ★(L ㉢) 「확인이 필요해요 N」 한 수 대신 갈래별로 —
+ *  「직접 답하실 것 a · 마스터 물음 b · 마스터가 확인하는 중 c」(0 인 갈래는 뺌) · 다 못 훑었으면 「· 더 살펴보는 중」(모름을 0 으로 칠하지 않음). */
 export function bandLabel(b: Band): string | null {
-  const n = b.items.length;
-  if (!b.known) return n === 0 ? "확인할 것 살펴보는 중" : `확인이 필요해요 ${n} · 더 살펴보는 중`;
-  return n === 0 ? null : `확인이 필요해요 ${n}`;
+  const c: Record<BandNeed, number> = { act: 0, ask: 0, watch: 0 };
+  for (const it of b.items) c[bandNeed(it)]++;
+  const parts: string[] = [];
+  if (c.act > 0) parts.push(`직접 답하실 것 ${c.act}`);
+  if (c.ask > 0) parts.push(`마스터 물음 ${c.ask}`);
+  if (c.watch > 0) parts.push(`마스터가 확인하는 중 ${c.watch}`);
+  if (!b.known) return parts.length === 0 ? "확인할 것 살펴보는 중" : `${parts.join(" · ")} · 더 살펴보는 중`;
+  return parts.length === 0 ? null : parts.join(" · ");
 }
 
 /** 직접 허락 단추를 누를 수 있는가(FR-C5·C5a) — 멈춤 아니면 단추 자체가 없음 · 펼치기 전 = 흐림 + 안내. 거절은 펼침 없이 됨. */

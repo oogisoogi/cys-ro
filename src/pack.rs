@@ -880,6 +880,72 @@ pub fn windows_launcher_variant_in(
     candidates: &[String],
     is_file: impl Fn(&str) -> bool,
 ) -> Option<String> {
+    windows_launcher_variants_in(root, event, script_path, candidates, is_file).into_iter().next()
+}
+
+/// ★1.1.21 G r1(codex 1R major · TICKET=cysr-1121-integ): 윈 훅 command 를 **인자 경계를 지켜** 나눈다(순수).
+/// 전에는 명령 전체에서 따옴표를 지우고 공백을 합쳐 비교했다 — `bash "C:/Users/A B/x.sh"` 와
+/// `bash "C:/Users/A" "B/x.sh"`(다른 스크립트 + 꼬리 인자)가 같아졌고, G 가 이 비교를 병합·검증(집행)까지 넓혀
+/// 공백 든 사용자 폴더에 옛 깨진 줄이 있으면 올바른 줄을 붙이지 않을 길이 생겼다.
+/// 규칙: 따옴표 밖 공백 = 인자 경계 · `"…"`·`'…'` = 한 인자로 묶음(안의 공백·다른 따옴표 글자는 그대로) ·
+/// 역슬래시 = 글자 그대로(윈 경로 · 기존 표기 인정 범위 유지) · 닫히지 않은 따옴표 = `None`(판정 불가 = 인정 안 함).
+fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_tok = false;
+    let mut quote: Option<char> = None;
+    for c in cmd.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => cur.push(c),
+            None if c.is_whitespace() => {
+                if in_tok {
+                    out.push(std::mem::take(&mut cur));
+                    in_tok = false;
+                }
+            }
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                in_tok = true;
+            }
+            None => {
+                cur.push(c);
+                in_tok = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if in_tok {
+        out.push(cur);
+    }
+    Some(out)
+}
+
+/// 윈 경로 인자 하나의 표기 정규화(`\`→`/` · `//?/` 떼기 · MSYS `/c/`→`c:/` · 소문자) — 인자 **안**의 공백·따옴표 글자는 보존.
+fn windows_path_arg_norm(tok: &str) -> String {
+    let t = tok.replace('\\', "/");
+    let t = t.strip_prefix("//?/").unwrap_or(&t);
+    let b = t.as_bytes();
+    let t = if b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b'/' {
+        format!("{}:{}", &t[1..2], &t[2..])
+    } else {
+        t.to_string()
+    };
+    t.to_lowercase()
+}
+
+/// 같은 스크립트가 **인정 런처**로 등록된 command 원문 **전부**(설정 순서 · 순수). 인정 = 인자가 정확히
+/// [런처, 스크립트] 둘이고 각각 경로 단위 정규화가 같음([`windows_hook_argv`]·[`windows_path_arg_norm`]).
+/// ★1.1.21 G r1(codex 1R minor): 병합·검증이 「인정 줄 중 timeout 충족이 하나라도 있는가」 를 보게 전부 돌려준다.
+pub fn windows_launcher_variants_in(
+    root: &serde_json::Value,
+    event: &str,
+    script_path: &Path,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> Vec<String> {
     let mut launchers: Vec<String> = Vec::new();
     if let Some(l) = windows_hook_launcher_from(true, candidates, &is_file) {
         launchers.push(l);
@@ -889,22 +955,26 @@ pub fn windows_launcher_variant_in(
             launchers.push(l);
         }
     }
-    let wants: Vec<String> = launchers
+    let norm2 = |cmd: &str| -> Option<(String, String)> {
+        match windows_hook_argv(cmd)?.as_slice() {
+            [l, s] => Some((windows_path_arg_norm(l), windows_path_arg_norm(s))),
+            _ => None,
+        }
+    };
+    let wants: Vec<(String, String)> = launchers
         .iter()
-        .map(|l| normalize_hook_command_for_compare(&windows_hook_command(l, script_path), true))
+        .filter_map(|l| norm2(&windows_hook_command(l, script_path)))
         .collect();
-    root.get("hooks")
-        .and_then(|h| h.get(event))
-        .and_then(|v| v.as_array())?
-        .iter()
+    let Some(arr) = root.get("hooks").and_then(|h| h.get(event)).and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
         .filter_map(|m| m.get("hooks").and_then(|v| v.as_array()))
         .flatten()
         .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
-        .find(|c| {
-            let got = normalize_hook_command_for_compare(c, true);
-            wants.iter().any(|w| *w == got)
-        })
+        .filter(|c| norm2(c).is_some_and(|got| wants.contains(&got)))
         .map(str::to_string)
+        .collect()
 }
 
 /// 이 기계 env(`LOCALAPPDATA`·`ProgramFiles`)의 Windows bash 후보.
@@ -915,17 +985,17 @@ fn windows_bash_candidates_env() -> Vec<String> {
     )
 }
 
-/// 이 기계 env 후보로 [`windows_launcher_variant_in`] — **unix 는 언제나 `None`**(맥 동작 무변).
+/// 이 기계 env 후보로 [`windows_launcher_variants_in`] — **unix 는 언제나 빈 목록**(맥 동작 무변).
 fn windows_launcher_variant_env(
     root: &serde_json::Value,
     event: &str,
     pack_dir: &Path,
     script: &str,
-) -> Option<String> {
+) -> Vec<String> {
     if !cfg!(windows) {
-        return None;
+        return Vec::new();
     }
-    windows_launcher_variant_in(
+    windows_launcher_variants_in(
         root,
         event,
         &pack_dir.join("hooks").join(script),
@@ -943,7 +1013,7 @@ pub fn doctor_hook_registered_in(
     script: &str,
 ) -> bool {
     hook_registered_in(root, event, &hook_command_for(pack_dir, script))
-        || windows_launcher_variant_env(root, event, pack_dir, script).is_some()
+        || !windows_launcher_variant_env(root, event, pack_dir, script).is_empty()
 }
 
 /// ★U10(0.14.41) 각성 훅 누락 목록 — **레인 팩 하나**를 기대값으로 삼는다(관측 전용·순수).
@@ -1123,8 +1193,8 @@ pub fn merge_desired_hooks(
 
 /// 소망 훅 command 를 내는 함수(`script` → command).
 type DesiredCommandFn<'a> = &'a dyn Fn(&str) -> String;
-/// 같은 스크립트가 **인정 런처**로 이미 등록된 command 원문(`root`·`event`·`script` → 원문). unix = 늘 `None`.
-type LauncherVariantFn<'a> = &'a dyn Fn(&serde_json::Value, &str, &str) -> Option<String>;
+/// 같은 스크립트가 **인정 런처**로 이미 등록된 command 원문 전부(`root`·`event`·`script` → 원문들 · 설정 순서). unix = 늘 빈 목록.
+type LauncherVariantFn<'a> = &'a dyn Fn(&serde_json::Value, &str, &str) -> Vec<String>;
 
 /// [`merge_desired_hooks`] 본체 — 소망 command·런처 변형 판정을 주입받는다(맥에서 윈 꼴 재현 시험용).
 fn merge_desired_hooks_core(
@@ -1180,10 +1250,13 @@ fn merge_desired_hooks_core(
         //   append 하지 않는다 — 런처 글자만 다른 줄을 하나 더 붙이면 같은 훅이 두 번 발화한다(맥 재현:
         //   윈 꼴 `C:/…/bash.exe "…"` 등록 + 병합 = 같은 스크립트 줄 2개). 선언 timeout 미달이면 그 줄만 올린다.
         //   unix 는 `variant` 가 늘 `None` 이라 종전 경로 그대로.
-        if let Some(existing) = variant(&root, h.event, h.script) {
+        //   ★1.1.21 G r1(codex 1R minor): 인정 줄이 여럿이면 **하나라도** 선언 timeout 을 채우면 그대로 두고, 전부 미달일 때만
+        //   첫 줄을 올린다(종전 = 첫 줄만 보고 채운 줄이 뒤에 있어도 첫 줄을 교정).
+        let variants = variant(&root, h.event, h.script);
+        if let Some(first) = variants.first() {
             if let Some(want) = declared {
-                if !hook_registered_with_timeout_in(&root, h.event, &existing, declared)
-                    && raise_hook_timeout_in(&mut root, h.event, &existing, want)
+                if !variants.iter().any(|e| hook_registered_with_timeout_in(&root, h.event, e, declared))
+                    && raise_hook_timeout_in(&mut root, h.event, first, want)
                 {
                     added.push(format!("{}←{} (timeout={want}s 교정)", h.event, h.script));
                 }
@@ -1362,7 +1435,8 @@ fn verify_desired_hooks_registered_core(
             let exact = hook_registered_with_timeout_in(&root, h.event, &desired_for(h.script), declared);
             !(exact
                 || variant(&root, h.event, h.script)
-                    .is_some_and(|e| hook_registered_with_timeout_in(&root, h.event, &e, declared)))
+                    .iter()
+                    .any(|e| hook_registered_with_timeout_in(&root, h.event, e, declared)))
         })
         .map(|h| format!("{}←{}", h.event, h.script))
         .collect()
@@ -8294,6 +8368,96 @@ mod tests {
         ));
     }
 
+    /// ★1.1.21 G r1(codex 1R major): 인정 런처 판정은 인자 경계를 지킨다 — 공백 든 경로를 쪼갠 줄·따옴표 없는 줄·
+    /// 닫히지 않은 따옴표·경로 속 따옴표 글자만 다른 줄은 **같은 스크립트가 아니다**(종전 판정 = 전부 「등록됨」).
+    #[test]
+    fn win_variant_keeps_argument_boundaries() {
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\A B\\AppData\\Local"), None);
+        let ok = |script: &str, cmds: &[&str]| {
+            hook_registered_any_windows_launcher_in(
+                &win_doctor_root("SessionStart", cmds),
+                "SessionStart",
+                Path::new(script),
+                &cands,
+                |_: &str| false,
+            )
+        };
+        let sp = "C:/Users/A B/.cys/pack/hooks/session-start.sh";
+        assert!(ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\""]));
+        assert!(ok(sp, &["bash 'C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh'"]));
+        // 반례 ① 경로를 두 인자로 쪼갬(= C:/Users/A 실행 + 꼬리 인자)
+        assert!(!ok(sp, &["bash \"C:/Users/A\" \"B/.cys/pack/hooks/session-start.sh\""]));
+        // 반례 ② 따옴표 없는 공백 경로(= 인자 둘로 갈림)
+        assert!(!ok(sp, &["bash C:/Users/A B/.cys/pack/hooks/session-start.sh"]));
+        // 반례 ③ 닫히지 않은 따옴표 = 판정 불가 → 인정 안 함
+        assert!(!ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh"]));
+        // 반례 ④ 경로 속 따옴표 글자(team's ≠ teams)
+        let q = "C:/packs/team's/hooks/session-start.sh";
+        assert!(ok(q, &["bash \"C:/packs/team's/hooks/session-start.sh\""]));
+        assert!(!ok(q, &["bash \"C:/packs/teams/hooks/session-start.sh\""]));
+        assert!(!ok("C:/packs/teams/hooks/session-start.sh", &["bash \"C:/packs/team's/hooks/session-start.sh\""]));
+        // 빈 인자 하나 더(`""`) = 인자 셋 → 인정 안 함
+        assert!(!ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\" \"\""]));
+        // 분해 단위
+        assert_eq!(windows_hook_argv("a \"b c\" 'd \"e'"), Some(vec!["a".into(), "b c".into(), "d \"e".into()]));
+        assert_eq!(windows_hook_argv("a \"b"), None);
+        assert_eq!(windows_hook_argv("  "), Some(vec![]));
+    }
+
+    /// ★1.1.21 G r1(codex 1R minor): 같은 스크립트의 인정 줄이 둘(timeout 미달 · 충족)이면 순서와 무관하게 충족 —
+    /// 검증 결손 0 · 병합기는 아무것도 안 고침. 둘 다 미달이면 첫 줄만 올린다.
+    #[test]
+    fn win_variant_timeout_any_line_satisfies() {
+        let td = std::env::temp_dir().join(format!("cys-win-var-to-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let pack = td.join("pack");
+        let script = |s: &str| pack.join("hooks").join(s);
+        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        // 소망 = 셋째 꼴(정확 일치 없음)
+        let desired = |s: &str| windows_hook_command("\"C:/Program Files/Git/bin/bash.exe\"", &script(s));
+        let fixed = |root: &serde_json::Value, ev: &str, s: &str| {
+            windows_launcher_variants_in(root, ev, &script(s), &cands, |p: &str| p == bundled)
+        };
+        let ups = AWAKENING_HOOKS.iter().find(|h| declared_timeout_for(h).is_some());
+        let Some(ups) = ups else { return };
+        let want = declared_timeout_for(ups).unwrap();
+        let low = want.saturating_sub(1).max(1);
+        let one = [DesiredHook { ..*ups }];
+        for flip in [false, true] {
+            let mut lines = vec![
+                serde_json::json!({"type": "command", "command": windows_hook_command(l, &script(ups.script)), "timeout": low}),
+                serde_json::json!({"type": "command", "command": windows_hook_command("bash", &script(ups.script)), "timeout": want}),
+            ];
+            if flip {
+                lines.reverse();
+            }
+            let p = td.join(format!("s-{flip}.json"));
+            let body = serde_json::to_string_pretty(&serde_json::json!({"hooks": {ups.event: [{"hooks": lines}]}})).unwrap();
+            std::fs::write(&p, &body).unwrap();
+            assert!(verify_desired_hooks_registered_core(&p, &one, &desired, &fixed).is_empty(), "flip={flip}");
+            assert!(merge_desired_hooks_core(&p, &one, &desired, &fixed).unwrap().is_empty(), "flip={flip}");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), body, "flip={flip}: 파일 무변");
+        }
+        // 둘 다 미달 → 첫 줄만 교정 · 그 뒤 충족
+        let p = td.join("both-low.json");
+        let lines = vec![
+            serde_json::json!({"type": "command", "command": windows_hook_command(l, &script(ups.script)), "timeout": low}),
+            serde_json::json!({"type": "command", "command": windows_hook_command("bash", &script(ups.script)), "timeout": low}),
+        ];
+        std::fs::write(&p, serde_json::to_string_pretty(&serde_json::json!({"hooks": {ups.event: [{"hooks": lines}]}})).unwrap())
+            .unwrap();
+        assert_eq!(verify_desired_hooks_registered_core(&p, &one, &desired, &fixed).len(), 1);
+        assert_eq!(merge_desired_hooks_core(&p, &one, &desired, &fixed).unwrap().len(), 1);
+        let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        let hs = v["hooks"][ups.event][0]["hooks"].as_array().unwrap();
+        assert_eq!((hs[0]["timeout"].as_u64(), hs[1]["timeout"].as_u64()), (Some(want), Some(low)));
+        assert!(verify_desired_hooks_registered_core(&p, &one, &desired, &fixed).is_empty());
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
     /// ★win-doctor-hook(1.1.21): doctor 판정 입구 — unix(맥) 는 종전 글자 동등 그대로.
     /// 맥 꼴 `sh <path>` 는 등록 · 런처·따옴표만 다른 꼴은 **종전처럼 미등록**(맥 동작 무변).
     #[cfg(unix)]
@@ -8360,12 +8524,12 @@ mod tests {
         let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
         let desired = |s: &str| windows_hook_command("bash", &script(s));
         let fixed = |root: &serde_json::Value, ev: &str, s: &str| {
-            windows_launcher_variant_in(root, ev, &script(s), &cands, |p: &str| p == bundled)
+            windows_launcher_variants_in(root, ev, &script(s), &cands, |p: &str| p == bundled)
         };
         let gone = |root: &serde_json::Value, ev: &str, s: &str| {
-            windows_launcher_variant_in(root, ev, &script(s), &cands, |_: &str| false)
+            windows_launcher_variants_in(root, ev, &script(s), &cands, |_: &str| false)
         };
-        let none = |_: &serde_json::Value, _: &str, _: &str| -> Option<String> { None };
+        let none = |_: &serde_json::Value, _: &str, _: &str| -> Vec<String> { Vec::new() };
         let seed = |name: &str, with_ups: bool| {
             let mut root = serde_json::json!({"hooks": {
                 "SessionStart": [{"hooks": [{"type": "command",
@@ -8437,7 +8601,7 @@ mod tests {
     fn win_merge_unix_variant_is_none() {
         let root = serde_json::json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command",
             "command": "bash \"/p/hooks/session-start.sh\""}]}]}});
-        assert_eq!(windows_launcher_variant_env(&root, "SessionStart", Path::new("/p"), "session-start.sh"), None);
+        assert!(windows_launcher_variant_env(&root, "SessionStart", Path::new("/p"), "session-start.sh").is_empty());
     }
 
     #[test]

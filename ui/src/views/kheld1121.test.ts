@@ -6,14 +6,14 @@
 // 대조군 = fafe3eee1(v1.1.20): U25_BUSY_PASTE_OK=false(바쁘면 붙잡음) · accepted 단계·noOtherHumanInputSince·discardHeld·agedPrefix 없음 → 아래 전부 붉음.
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { agedPrefix, ChatCore, DISCARD_FAILED_NOTE, DUP, dupPending, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, STALE, STALE_NOTE, type Deps } from "./core";
+import { agedPrefix, ChatCore, DISCARD_FAILED_NOTE, DUP, dupPending, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, LOG_MAX, STALE, STALE_NOTE, type Deps } from "./core";
 import { HUMAN_GAP_MAX, noOtherHumanInputSince, sendGate, type MasterRow } from "./judge/gate";
 import { ABSORBED_NOTE, ACCEPTED_NOTE, applyRecords, canRetry, HELD_CLICK_LABEL, mergeOutcome, QUEUE_REMOVED_NOTE, rematchPending, settleSteps, SLOW_MS, STEP_LABEL, WITH_NEXT_NOTE, type Msg, type Rec } from "./judge/msgstep";
 
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
 /** 데몬 흉내 — 사람 입력 표지 = `<세대>:<번호>` · 원자 제출이 쓰이면 번호 +1 · 다른 길 입력 = other() */
-function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolean; outcomes?: string[] } = {}) {
+function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolean; outcomes?: string[]; agedAutoSend?: boolean } = {}) {
   const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
   const mem = new Map<string, string>();
   const outs = [...(o.outcomes ?? [])]; // (K R1) 원자 제출 응답 차례 — 비면 written
@@ -33,6 +33,7 @@ function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolea
     return r;
   };
   const deps: Deps = {
+    agedAutoSend: o.agedAutoSend, // (1.1.21 B안) 생략 = 제품 기본값(끔 · 10분 넘은 말은 늘 클릭)
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === "org_status") return { surfaces: [row()] };
@@ -88,7 +89,7 @@ describe("K-1 글 — 사람이 해야 할 일이 단계 이름에 든다", () =
     expect(STALE_NOTE.startsWith("아직 안 보냈어요")).toBe(true);
     expect(Object.values(STEP_LABEL)).not.toContain("붙잡아 둠");
     const CHAT = strip(readFileSync(new URL("./chat/index.ts", import.meta.url), "utf8"));
-    expect(CHAT).toContain('needsClick(m) ? HELD_CLICK_LABEL : STEP_LABEL[m.step]');
+    expect(CHAT).toContain('needsClick(m) ? HELD_CLICK_LABEL : stepLabel(m)'); // (kfix ②·④) 단계 이름 = stepLabel
   });
   it("줄 선 말·답하는 중 안내 = 「그대로 두시면」·「누르실 것 없어요」", async () => {
     const CORE = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
@@ -100,13 +101,13 @@ describe("K-1 글 — 사람이 해야 할 일이 단계 이름에 든다", () =
 });
 
 describe("K-3 바쁠 때도 넘김 — U25 실측(받아 둔다)", () => {
-  it("마스터가 답하는 중이어도 기본값은 쓴다(쓰기 1 · 붙잡음 0)", async () => {
+  it("(C안 · 1.1.21 내림) 마스터가 답하는 중이면 기본값은 붙잡는다(쓰기 0) — 「바쁠 때 넘김」 끔", async () => {
     const h = harness({ working: true });
     await h.core.send("바쁠 때 보낸 말");
-    expect(h.writes().map((c) => c.args?.text)).toEqual(["바쁠 때 보낸 말"]);
-    expect(h.core.state.msgs[0].step).not.toBe("held");
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].step).toBe("held");
   });
-  const base = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "U25-B 첫 줄\n둘째 줄", createdAt: 1_000, sentAt: 1_000, step: "injected", thread: [], replies: [], ...o });
+  const base = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "U25-B 첫 줄\n둘째 줄", createdAt: 1_000, sentAt: 1_000, step: "injected", thread: [], replies: [], wrote: true, ...o }); // (kfix ②) 데몬이 썼다고 답한 말
   const ts = (ms: number) => new Date(ms).toISOString();
   const enq = (text: string, at: number): Rec => ({ uuid: null, parent: null, role: "queued", text, ts: ts(at) });
   it("enqueue = 「마스터가 받아 둠」(짝 uuid 없음 · 사슬 0) → 흡수 queued_command(user 레코드) = 「전달됨」 → 그 뒤 답 = 이 말의 답", () => {
@@ -144,10 +145,10 @@ describe("K-3 바쁠 때도 넘김 — U25 실측(받아 둔다)", () => {
     expect(dupPending([base({ step: "accepted" })], "U25-B 첫 줄\n둘째 줄")).toBe(true);
     expect(dupPending([base({ step: "accepted" })], "다른 글")).toBe(false);
   });
-  it("되돌리기 = gate 인자 false 면 종전(바쁨 붙잡음)", () => {
+  it("(C안) 기본값 = 바쁨 붙잡음 · gate 인자 true 면 넘김(K-3 길은 코드에 남음)", () => {
     const m: MasterRow = { surface_id: 5, exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: true };
-    expect(sendGate({ master: m, approvalSeats: [] })).toEqual({ ok: true });
-    expect(sendGate({ master: m, approvalSeats: [], busyPasteOk: false }).ok).toBe(false);
+    expect(sendGate({ master: m, approvalSeats: [] }).ok).toBe(false);
+    expect(sendGate({ master: m, approvalSeats: [], busyPasteOk: true })).toEqual({ ok: true });
   });
 });
 
@@ -169,7 +170,7 @@ describe("K-2 10분 상한 좁힘 — 받아들인 뒤 같은 좌석 다른 길 
     expect(noOtherHumanInputSince("1795:3", `1795:${HUMAN_GAP_MAX + 4}`, many)).toBe(false); // 차이 상한
   });
   it("승인 대기로 10분 넘게 붙잡힘 · 그 사이 다른 길 입력 0 → 문턱이 열리면 자동 · 앞에 「(N분 전에 쓰신 말)」", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send("그 파일 지워 줘");
     expect(h.writes()).toHaveLength(0);
@@ -260,7 +261,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
   const ORIG = "그 파일 지워 줘";
   const P = "(10분 전에 쓰신 말) ";
   it("붙잡음 → 10분 넘어 자동 → 데몬 거부(붙잡음) → 다시 자동 = 표지 한 번씩 · 원문·저장본 그대로", async () => {
-    const h = harness({ approvals: [5], outcomes: ["held", "written"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["held", "written"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -279,7 +280,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(h.core.state.msgs[0].sentText).toBe(P + ORIG);
   });
   it("표지 붙여 보낸 말이 불명 → 사람이 원문을 다시 침 = 같은 말 겹침(쓰기 0) · 표지 붙은 기록이 오면 그 말이 「전달됨」", async () => {
-    const h = harness({ approvals: [5], outcomes: ["uncertain"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["uncertain"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -300,7 +301,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(rematchPending([m0], [{ r: { uuid: "u3", parent: null, role: "user", text: P + ORIG, ts: null }, seenAt: (m0.sentAt as number) + 1 }]).msgs[0].step).toBe("delivered");
   });
   it("표지 붙여 보낸 말이 확정 실패 → 다시 보내기 = 원문(새 말 · 10분 안 = 표지 없음)", async () => {
-    const h = harness({ approvals: [5], outcomes: ["failed"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["failed"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -314,7 +315,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(h.writes().map((c) => c.args?.text)).toEqual([P + ORIG, ORIG]);
   });
   it("확정 실패 → 다시 보낸 말이 또 10분 넘게 붙잡힘 → 새 표지 한 번만(겹침 0)", async () => {
-    const h = harness({ approvals: [5], outcomes: ["failed"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["failed"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -333,7 +334,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
 
 describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠」을 사실로 두지 않음", () => {
   const ts = (ms: number) => new Date(ms).toISOString();
-  const acc = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "거둔 말", createdAt: 1_000, sentAt: 1_000, step: "accepted", note: ACCEPTED_NOTE, thread: [], replies: [], ...o });
+  const acc = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "거둔 말", createdAt: 1_000, sentAt: 1_000, step: "accepted", note: ACCEPTED_NOTE, thread: [], replies: [], wrote: true, queuedSeen: true, ...o }); // (kfix ④) 대기 들어감을 본 말
   const rm = (text: string, at: number, reason: string | null): Rec => ({ uuid: null, parent: null, role: "queue_removed", text, ts: ts(at), reason });
   it("같은 글 remove(까닭 = 사람 거둠 · 모르는 꼴 · 없음) → 「확인 중」 + 확인 불가 안내 · 다시 보내기 0", () => {
     for (const reason of ["user_cancelled", "weird_reason", null]) {
@@ -348,7 +349,7 @@ describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠�
   });
   it("다른 글 · 받아 둠 아닌 말 · 보내기 전 시각 = 그대로 · 표지 붙여 보낸 말은 sentText 로 대조", () => {
     expect(applyRecords([acc()], [rm("다른 말", 30_000, "x")]).msgs[0].step).toBe("accepted");
-    expect(applyRecords([acc({ step: "injected" })], [rm("거둔 말", 30_000, "x")]).msgs[0].step).toBe("injected");
+    expect(applyRecords([acc({ step: "injected", queuedSeen: undefined })], [rm("거둔 말", 30_000, "x")]).msgs[0].step).toBe("injected"); // 대기 들어감을 못 본 말
     expect(applyRecords([acc()], [rm("거둔 말", -10_000, "x")]).msgs[0].step).toBe("accepted");
     expect(applyRecords([acc({ sentText: "(10분 전에 쓰신 말) 거둔 말" })], [rm("(10분 전에 쓰신 말) 거둔 말", 30_000, "x")]).msgs[0].step).toBe("checking");
   });
@@ -362,8 +363,8 @@ describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠�
 
 describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u25-evidence/u25-records.txt)", () => {
   const T = (iso: string) => Date.parse(iso);
-  const mk = (id: string, text: string, sentIso: string): Msg => ({ id, text, createdAt: T(sentIso), sentAt: T(sentIso), step: "injected", thread: [], replies: [] });
-  it("U25-B: 앞 일 도구 결과 → 흡수(queued_command) → 답에 앞 일 「DONE」 = 흡수 표지 · 같이 흡수된 앞 말 없음", () => {
+  const mk = (id: string, text: string, sentIso: string): Msg => ({ id, text, createdAt: T(sentIso), sentAt: T(sentIso), step: "injected", thread: [], replies: [], wrote: true });
+  it("U25-B: 앞 일 도구 결과 → 흡수(queued_command) → 앞 일 「DONE」 = 이 말 답 아님(일반 마스터 줄 · kfix ③) · 같이 흡수된 앞 말 없음", () => {
     const m0 = mk("m0", "Run this bash command once and wait for it to finish: ping -c 30 127.0.0.1 | tail -1 .", "2026-11-27T01:28:51.000Z");
     const m1 = mk("m1", "U25-B 시험 첫 줄\n둘째 줄 끝", "2026-11-27T01:29:00.000Z");
     const recs: Rec[] = [
@@ -383,10 +384,11 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     expect(b.userUuid).toBe("9fcf96ba");
     expect(b.absorbed).toBe(true);
     expect(b.withNext).toBeUndefined();
-    expect(b.replies.map((x) => x.text)).toEqual(["DONE\n\nThe ping command finished, but its summary line"]); // 앞 일 이야기가 이 말 답에 붙음 → 화면이 흡수 표지로 알림
+    expect(b.replies).toEqual([]); // (kfix ③) 앞 일 이야기가 섞인 글 = 이 말의 답으로 붙이지 않음
+    expect(r.stray.map((x) => x.text)).toEqual(["DONE\n\nThe ping command finished, but its summary line"]);
     expect(a.replies).toEqual([]);
   });
-  it("U25-D: 두 말이 한 경계에서 흡수 → 앞 말 = 「다음 말과 함께」(withNext) · 답은 뒤 말에", () => {
+  it("U25-D: 두 말이 한 경계에서 흡수 → 앞 말 = 「다음 말과 함께」(withNext) · 한 답 = 일반 마스터 줄(kfix ③)", () => {
     const m0 = mk("m0", "Run this bash command once and wait for it to finish: ping -c 20 127.0.0.1 | tail -1 .", "2026-11-27T01:30:33.000Z");
     const m1 = mk("m1", "U25-D 말 1", "2026-11-27T01:30:39.500Z");
     const m2 = mk("m2", "U25-D 말 2", "2026-11-27T01:30:41.700Z");
@@ -411,10 +413,11 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     expect(a.replies).toEqual([]);
     expect(b.absorbed).toBe(true);
     expect(b.withNext).toBeUndefined();
-    expect(b.replies.map((x) => x.text)).toEqual(["DONE\n\nU25-D 말 1 확인\nU25-D 말 2 확인\n\nThe ping fin"]);
+    expect(b.replies).toEqual([]);
+    expect(r.stray.map((x) => x.text)).toEqual(["DONE\n\nU25-D 말 1 확인\nU25-D 말 2 확인\n\nThe ping fin"]);
     const settled = settleSteps(r.msgs, T("2026-11-27T01:31:10.000Z"), false);
     expect(settled[1].step).toBe("delivered");
-    expect(settled[2].step).toBe("replied");
+    expect(settled[2].step).toBe("delivered"); // (kfix ③) 앞 일 완료문만으로 「답함」 확정 0
   });
   it("앞 흡수 말이 이미 답을 받았으면 「함께」 아님 · 흡수 아닌 보통 user 레코드 = 표지 없음", () => {
     const m1: Msg = { id: "m1", text: "말 1", createdAt: 1_000, sentAt: 1_000, step: "replying", userUuid: "q1", thread: ["q1", "a1"], replies: [{ uuid: "a1", text: "말 1 답" }], absorbed: true };
@@ -430,11 +433,12 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     const p = mergeOutcome(m, "failed");
     expect(p.absorbed).toBeUndefined();
     expect("absorbed" in p && "withNext" in p).toBe(true);
-    expect(ABSORBED_NOTE).toBe("하던 일 중간에 받아 읽었어요 — 답에 하던 일 이야기가 섞일 수 있어요");
-    expect(WITH_NEXT_NOTE).toBe("다음 말과 함께 받아 읽었어요 — 답은 아래 말에 함께 보여요");
+    expect(ABSORBED_NOTE).toBe("하던 일 중간에 받아 읽었어요 — 그 뒤 마스터 글은 하던 일 이야기와 섞여 있어 아래 「마스터」 줄로 따로 보여요");
+    expect(WITH_NEXT_NOTE).toBe("다음 말과 함께 받아 읽었어요 — 그 뒤 마스터 글은 아래 「마스터」 줄로 따로 보여요");
     const CHAT = strip(readFileSync(new URL("./chat/index.ts", import.meta.url), "utf8"));
-    expect(CHAT).toContain('if (m.withNext) li.append(el("div", "cv-note cv-absorbed", WITH_NEXT_NOTE));');
-    expect(CHAT).toContain('else if (m.absorbed) li.append(el("div", "cv-note cv-absorbed", ABSORBED_NOTE));');
+    // (kfix2 ②′) 흡수·함께 안내는 absorbedNote 한 곳(확인 못 함이면 단정 없는 문구) — 확인된 말은 위 두 문구 그대로(kfix2_1121.test.ts 가 값 검사).
+    expect(CHAT).toContain('const ab = absorbedNote(m);');
+    expect(CHAT).toContain('if (ab) li.append(el("div", "cv-note cv-absorbed", ab));');
   });
 });
 
@@ -453,7 +457,7 @@ describe("K R1 ① 남의 사람 차례 — 표지가 같아도 세션 기록에
     expect(h.core.state.msgs[0].note).toBe(STALE_NOTE);
   });
   it("남의 차례가 받아들이기 전 시각이면 그대로 자동(대조군)", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send("그 파일 지워 줘");
     h.st.file.push({ uuid: "f1", parent: null, role: "user", text: "앞서 친 말", ts: new Date(h.getNow() - 60_000).toISOString() });
@@ -483,7 +487,7 @@ describe("K R1 ⑥ 내 표지 = written 만", () => {
     expect(h.core.state.msgs[1].code).toBe(STALE);
   });
   it("대조군 — 앞 말이 written 이면 그 번호는 내 것 → 뒤 말 10분 넘어도 자동", async () => {
-    const h = harness({ outcomes: ["written"] });
+    const h = harness({ agedAutoSend: true,  outcomes: ["written"] });
     await h.core.poll();
     await h.core.send("앞 말");
     h.st.approvals = [5];
@@ -511,5 +515,30 @@ describe("K R1 minor 「보내지 않기」 저장 실패 = 말을 지우지 않
     h.core.discardHeld(id);
     expect(h.core.state.msgs).toHaveLength(0);
     expect(h.mem.get(HOLD_KEY)).toBeUndefined();
+  });
+});
+
+describe("K 마지막(1.1.21 B안 · master#8a44f2aa) — 10분 넘은 말 자동 보냄 끔 · 정리 판정 = viewStep", () => {
+  it("기본값: 10분 넘게 붙잡힘 · 그 사이 다른 길 입력 0 이어도 자동 0 → 클릭 대기(「아직 안 보냈어요」) · 누르면 원래 글로", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.poll();
+    await h.core.send("그 파일 지워 줘");
+    h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
+    h.st.approvals = [];
+    for (let i = 0; i < 3; i++) await h.core.poll();
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].code).toBe(STALE);
+    await h.core.confirmHeld(h.core.state.msgs[0].id);
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["그 파일 지워 줘"]); // 표지 없이 원래 글
+  });
+  it("정리(LOG_MAX)는 「확인 못 함」 말을 답함으로 보고 지우지 않는다 — 같은 글 막힘 근거 유지(r4 ②)", () => {
+    const h = harness();
+    const mk = (i: number, o: Partial<Msg> = {}): Msg => ({ id: `f${i}`, text: `채움${i}`, createdAt: 1_000 + i, sentAt: 1_000 + i, step: "replied", thread: [], replies: [], ...o } as Msg);
+    const unsure = mk(-1, { id: "u", text: "같은 글", unsure: true, userUuid: "uu", thread: ["uu"] });
+    const fill = Array.from({ length: LOG_MAX }, (_, i) => mk(i));
+    (h.core as unknown as { putMsgs(m: Msg[]): boolean }).putMsgs([unsure, ...fill]);
+    expect(h.core.state.msgs.some((m) => m.id === "u")).toBe(true);
+    expect(h.core.state.msgs).toHaveLength(LOG_MAX); // 대신 답함 말 하나가 빠짐
+    expect(dupPending(h.core.state.msgs, "같은 글")).toBe(true);
   });
 });

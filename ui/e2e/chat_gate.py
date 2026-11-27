@@ -394,10 +394,10 @@ def main() -> int:
         pg.evaluate("() => { window.__CHAT.master.idle_secs = 999; }")
         pg.clock.run_for(3_100)
         b3, b4 = bubble(pg, 3), bubble(pg, 4)
-        check(b3["step"] in ("전달됨", "답하는 중") and b4["btns"] == ["한 번 더 보내기", "보내지 않기"], f"앞 말 전달 → 겹친 말에 「한 번 더 보내기」 ({b3['step']} · {b4['btns']})")
-        pg.locator(".cv-confirm").first.click()
-        pg.clock.run_for(50)
-        check(writes(pg) == n0 + 1, f"사람 클릭 1회 → 쓰기 1 ({writes(pg) - n0})")
+        # ★(TICKET=cysr-1121-ui-kfix2 ② · 통합 codex 3R major) 앞 말은 불명 응답 — 같은 글 기록이 이 화면 것인지 모름 = 「확인 못 함」 → 겹친 말은 계속 막힘(두 번 쓰기 0).
+        #   예전 기대(「한 번 더 보내기」 → 쓰기 1)는 불명 시도에서 같은 말이 두 번 가는 길이었다. 글을 바꾸면 새 말로 나간다.
+        check(b3["step"] == "확인 못 함" and b4["btns"] == ["보내지 않기"] and "확인 못 함" in b4["note"], f"불명 앞 말에 같은 글 기록 → 「확인 못 함」 · 겹친 말 「한 번 더 보내기」 0 ({b3['step']} · {b4['btns']} · {b4['note']})")
+        check(writes(pg) == n0, f"확인 못 함 동안 같은 글 쓰기 0 ({writes(pg) - n0})")
         pg.clock.run_for(40_000)
         # 120초 → 오래 걸려요 + 마스터 상태
         pg.evaluate("() => { window.__CHAT.sendOutcome = { outcome: 'uncertain', code: 'transport_uncertain' }; }")

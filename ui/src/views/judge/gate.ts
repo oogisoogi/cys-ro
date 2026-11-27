@@ -18,7 +18,7 @@ export const MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS = 31.2;
  *  증거 workers/cysr-1121-ui/u25-evidence/u25-records.txt): 원자 제출 0.7초 뒤 `queue-operation enqueue`(화면 「Queued」) → 도구 경계에서 흡수
  *  (`attachment.queued_command`) 또는 턴 끝 dequeue 뒤 user 레코드. 대기 중 둘째 원자 제출의 Ctrl-U 는 대기 말을 지우지 않는다(두 말 차례 그대로).
  *  → true = 바쁠 때도 보냄(작업 화면에서 바쁠 때 치는 것과 같은 길 · 설계 P2-DESIGN §2 「마스터가 바쁠 때」의 원래 그림). 되돌리기 = 이 값을 false 로. */
-export const U25_BUSY_PASTE_OK: boolean = true;
+export const U25_BUSY_PASTE_OK: boolean = false; // (C안 · 1.1.21 내림 · master 결정 11-27) 「바쁠 때 넘김」 끔 = 쉴 때만 보냄 · K 고침(accepted·10분 좁힘·확인 못 함 등)은 그대로
 
 /** (TICKET=cysr-chat-held-win) 자기 신고(status)가 없거나 낡았을 때 대화 화면 문턱이 「답하는 중」을 가르는 출력 정적 초.
  *  앱 공통 판정(appearance.nodeWorking)은 「출력 60초 안 = 일하는 중」이라, 자기 신고가 없는 마스터(윈 좌석 492 = 재시작 뒤 set-status 0회)에선

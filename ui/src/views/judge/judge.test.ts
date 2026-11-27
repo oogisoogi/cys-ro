@@ -97,10 +97,10 @@ describe("sendGate — 문턱(조건 하나씩 실패 = 쓰기 0)", () => {
     expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: null }] }, () => false)?.human_idle_secs).toBeNull();
     expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: "x" }] }, () => false)?.human_idle_secs).toBeUndefined();
   });
-  it("U25 실측 = 받아 둔다(TICKET=cysr-1121-ui K-3) — 바쁨 = 통과(기본값) · 인자가 거짓(되돌리기 판)이면 busy", () => {
-    expect(U25_BUSY_PASTE_OK).toBe(true);
-    expect(code(G({ master: M({ working: true }) }))).toBe("ok");
-    expect(code(G({ master: M({ working: true }), busyPasteOk: false }))).toBe("busy");
+  it("(C안 · 1.1.21 내림) 「바쁠 때 넘김」 끔 — 바쁨 = busy(기본값) · 인자가 참이면 통과(K-3 길은 코드에 남음)", () => {
+    expect(U25_BUSY_PASTE_OK).toBe(false);
+    expect(code(G({ master: M({ working: true }) }))).toBe("busy");
+    expect(code(G({ master: M({ working: true }), busyPasteOk: true }))).toBe("ok");
   });
   it("★수용 3 — 시간 상수 = 0.5 실측값(사람 보내기 뒤 큐 묶임 31.2초)", () => {
     expect(MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS).toBe(31.2);

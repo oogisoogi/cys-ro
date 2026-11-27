@@ -73,5 +73,8 @@ printf 'Bundled runtimes and their licenses (macOS):\n- CPython (python-build-st
 # 런타임 트리 전체를 대상으로 한다 → 반드시 python·node 내려받기가 **끝난 뒤**에 돈다.
 bash scripts/precompile-bundled-python.sh "$RT"   # 이 스크립트는 상단에서 repo 루트로 cd 한 상태다
 
-ls -la "$RT/python/bin/python3" "$RT/git/bin/git" "$RT/uv/uv" "$RT/node/bin/node"
+# ── 1.1.21 A: 동봉 git 감싸개(runtime/git/cysbin/git) — 머리 주석·근거 = scripts/install-mac-runtime-shims.sh ──
+bash scripts/install-mac-runtime-shims.sh "$RT"
+
+ls -la "$RT/python/bin/python3" "$RT/git/bin/git" "$RT/git/cysbin/git" "$RT/uv/uv" "$RT/node/bin/node"
 echo "✓ macOS 런타임 준비 완료 ($TARGET)"

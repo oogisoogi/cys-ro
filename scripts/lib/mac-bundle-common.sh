@@ -65,6 +65,8 @@ mac_prep_runtime() {
     bash scripts/prep-mac-runtime.sh "$TARGET"
     printf '%s' "$TARGET" > "$RT_MARKER"
   fi
+  # 1.1.21 A: 준비를 건너뛴 로컬 재빌드에도 감싸개가 실리게 — 조건 밖에서 매번(멱등 · prep 끝에서도 부름).
+  bash scripts/install-mac-runtime-shims.sh src-tauri/runtime
 }
 
 # 동봉 python 선컴파일(SEAL-2) — 조건 없이 매 빌드.

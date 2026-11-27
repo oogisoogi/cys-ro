@@ -6552,20 +6552,38 @@ fn scrub_mac_seat_path_before_wire(builder: &mut CommandBuilder) {
 /// (NotNeeded 제외). exe 위치·홈은 pane PATH 선두 주입(`spawn_env_pairs_from_process`)과 같은 출처다.
 #[cfg(target_os = "macos")]
 fn apply_mac_seat_path(builder: &mut CommandBuilder, id: u64) {
-    let Some(exe_dir) = std::env::current_exe()
+    use cys::macos_devtools::{SeatEnv, SeatPathVerdict};
+    let Some(home) = dirs::home_dir() else {
+        // 홈을 못 구해도 ②(물려받은 우리 값 걷기)는 건너뛰지 않는다 — 짝 표식 같음·빈 값만으로(Fable 코드 r1 minor).
+        let mut e = BuilderSeatEnv(builder);
+        cys::macos_devtools::scrub_inherited_ours_opt(&mut e, None);
+        e.set(cys::macos_devtools::ENV_CYS_SEAT_PATH_VERDICT, std::ffi::OsStr::new("error:home"));
+        eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = error:home(홈 디렉터리 없음)");
+        return;
+    };
+    // exe 위치를 못 구하면 runtime 없음으로 판정한다(② 걷기·진단 표지는 그대로 돈다).
+    let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-    else {
-        return;
-    };
-    let Some(home) = dirs::home_dir() else {
-        eprintln!("cysd: 좌석 {id} PATH 재선두 판정 생략 — 홈 디렉터리 없음");
-        return;
-    };
-    let ctx = cys::macos_devtools::SeatPathCtx::for_process(&exe_dir, &home);
-    let v = cys::macos_devtools::seat_path_verdict(&ctx, &mut BuilderSeatEnv(builder));
-    match v {
-        None | Some(cys::macos_devtools::SeatPathVerdict::NotNeeded) => {}
+        .unwrap_or_default();
+    let mut ctx = cys::macos_devtools::SeatPathCtx::for_process(&exe_dir, &home);
+    if exe_dir.as_os_str().is_empty() {
+        ctx.runtime_root = None;
+    }
+    match cys::macos_devtools::seat_path_verdict(&ctx, &mut BuilderSeatEnv(builder)) {
+        None => {}
+        Some(SeatPathVerdict::NotNeeded { unfixed }) if unfixed.is_empty() => {}
+        Some(SeatPathVerdict::NotNeeded { unfixed }) => {
+            eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = not-needed · 동봉본 없어 못 고친 도구 = {}", unfixed.join(","))
+        }
+        Some(v @ SeatPathVerdict::Applied { .. }) => {
+            let SeatPathVerdict::Applied { unfixed, .. } = &v else { unreachable!() };
+            if unfixed.is_empty() {
+                eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {}", v.diag());
+            } else {
+                eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {} · 못 고친 도구 = {}", v.diag(), unfixed.join(","));
+            }
+        }
         Some(v) => eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {}", v.diag()),
     }
 }

@@ -43,9 +43,12 @@ pub const GENERATIONS_MAX: u32 = 32;
 pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(1);
 const TMP_PREFIX: &str = ".tmp-";
 const TMP_STALE: Duration = Duration::from_secs(600);
-/// ⑥ 글자 검사 — path_helper 출력은 `/etc/zprofile` 이 `eval` 한다. path_helper 는 `"`·`$` 만 이스케이프하고
-/// 역따옴표는 그대로 내 `eval` 이 실행한다(Fable 실측) · 줄바꿈은 파일 꼴을 깨고 콜론은 성분을 쪼갠다.
-pub const UNSAFE_PATH_CHARS: [char; 7] = ['`', '\\', '"', '$', ':', '\n', '\r'];
+/// ⑥ 글자 검사 — path_helper 출력은 `/etc/zprofile`·`/etc/profile` 이 **따옴표 없는 역따옴표**로 `eval` 한다. path_helper 는
+/// `"`·`$`·`'` 만 백슬래시로 내고 역따옴표는 그대로 내 `eval` 이 실행한다(Fable 실측) · 줄바꿈은 파일 꼴을 깨고 콜론은 성분을
+/// 쪼갠다 · 작은따옴표는 셸 큰따옴표 안에서 백슬래시가 남아 다른 dir 이 된다 · 출력은 IFS 로 쪼개졌다 한 칸 공백으로 다시
+/// 붙으므로 탭과 **연속 공백**은 다른 dir 이 된다 · sh/bash 는 쪼갠 낱말에 경로 이름 확장을 하므로 `*`·`?`·`[` 도 뺀다
+/// (Fable 코드 r1 minor — 실측: `My  Apps` 경로 = 판정 applied 인데 로그인 셸 git 은 /usr/bin/git).
+pub const UNSAFE_PATH_CHARS: [char; 12] = ['`', '\\', '"', '$', ':', '\n', '\r', '\'', '\t', '*', '?', '['];
 
 /// 사용자별 고정 생성 자리 `<home>/.cys/path-helper-root`(cysd·부서 데몬·GUI 공용).
 pub fn path_helper_root_base(home: &Path) -> PathBuf {
@@ -86,8 +89,9 @@ pub enum SeatPathVerdict {
         fixed: Vec<&'static str>,
         unfixed: Vec<&'static str>,
     },
-    /// 고칠 dir 0(CLT 있음 · 동봉본 없음 등).
-    NotNeeded,
+    /// 고칠 dir 0. `unfixed` = CLT 에 없는데 동봉 실행 파일·runtime 이 없어 못 고친 도구(비면 = CLT 있음 · 진단은 같은 낱말 ·
+    /// cysd 는 비지 않으면 로그 1줄 — Fable 코드 r1 minor).
+    NotNeeded { unfixed: Vec<&'static str> },
     /// `CYS_BOOT_GATES=0` · `CYS_MAC_SEAT_PATH=0`.
     RolledBack,
     /// 사용자 `PATH_HELPER_ROOT` 존중(무접촉).
@@ -105,7 +109,7 @@ impl SeatPathVerdict {
     pub fn diag(&self) -> String {
         match self {
             SeatPathVerdict::Applied { fixed, .. } => format!("applied:{}", fixed.join(",")),
-            SeatPathVerdict::NotNeeded => "not-needed".into(),
+            SeatPathVerdict::NotNeeded { .. } => "not-needed".into(),
             SeatPathVerdict::RolledBack => "rolled-back".into(),
             SeatPathVerdict::UserRoot => "user-root".into(),
             SeatPathVerdict::UnsafePath => "unsafe-path".into(),
@@ -194,6 +198,11 @@ fn fix_table(rt: &Path) -> [(&'static str, PathBuf, Vec<PathBuf>); 2] {
 /// ② 식별 — 이 값이 **우리가 실은 root** 인가: 짝 표식과 같거나 `base` 바로 아래 이름(세대 `.g<n>`·`.x…` 포함).
 /// 부팅 scrub 이 같은 함수를 쓴다(codex r4 minor).
 pub fn is_our_path_helper_root(val: &OsStr, marker: Option<&OsStr>, base: &Path) -> bool {
+    is_our_path_helper_root_opt(val, marker, Some(base))
+}
+
+/// `base` 를 모를 때(홈 없음) = 짝 표식 같음만으로 식별한다.
+pub fn is_our_path_helper_root_opt(val: &OsStr, marker: Option<&OsStr>, base: Option<&Path>) -> bool {
     if val.is_empty() {
         return false;
     }
@@ -201,16 +210,24 @@ pub fn is_our_path_helper_root(val: &OsStr, marker: Option<&OsStr>, base: &Path)
         return true;
     }
     let p = Path::new(val);
-    p.file_name().is_some() && p.parent() == Some(base)
+    match base {
+        Some(b) => p.file_name().is_some() && p.parent() == Some(b),
+        None => false,
+    }
 }
 
 /// ② 물려받은 우리 값 걷기(어떤 판정보다 먼저·항상). 빈 값 `PATH_HELPER_ROOT=` 도 지운다(path_helper 실측:
 /// 빈 값 = 시스템 값). 짝 표식만 있고 값이 다르면 표식만 지운다. 돌려주는 값 = 무엇을 지웠나(로그용).
 pub fn scrub_inherited_ours(env: &mut dyn SeatEnv, base: &Path) -> (bool, bool) {
+    scrub_inherited_ours_opt(env, Some(base))
+}
+
+/// [`scrub_inherited_ours`] 의 `base` 선택판 — 홈을 못 구했을 때도 ②를 건너뛰지 않는다(짝 표식 같음 · 빈 값만으로).
+pub fn scrub_inherited_ours_opt(env: &mut dyn SeatEnv, base: Option<&Path>) -> (bool, bool) {
     let val = env.get(ENV_PATH_HELPER_ROOT);
     let marker = env.get(ENV_CYS_PATH_HELPER_ROOT);
     match val {
-        Some(v) if v.is_empty() || is_our_path_helper_root(&v, marker.as_deref(), base) => {
+        Some(v) if v.is_empty() || is_our_path_helper_root_opt(&v, marker.as_deref(), base) => {
             env.remove(ENV_PATH_HELPER_ROOT);
             env.remove(ENV_CYS_PATH_HELPER_ROOT);
             (true, marker.is_some())
@@ -267,7 +284,9 @@ impl SeatEnv for ProcessEnv {
 /// ⑥ 글자 검사 — 통과해야 path_helper 출력 문자열 = `eval` 결과(검증 문자열 비교가 곧 셸 결과).
 pub fn path_chars_safe(dir: &Path) -> bool {
     match dir.to_str() {
-        Some(s) => !s.is_empty() && !s.chars().any(|c| UNSAFE_PATH_CHARS.contains(&c)),
+        Some(s) => {
+            !s.is_empty() && !s.contains("  ") && !s.chars().any(|c| UNSAFE_PATH_CHARS.contains(&c))
+        }
         None => false,
     }
 }
@@ -320,7 +339,7 @@ fn verdict_after_scrub(ctx: &SeatPathCtx, env: &dyn SeatEnv) -> SeatPathVerdict 
         }
     }
     if fix.is_empty() {
-        return SeatPathVerdict::NotNeeded;
+        return SeatPathVerdict::NotNeeded { unfixed };
     }
     // ⑥
     let mut safe: Vec<(&'static str, String)> = Vec::new();
@@ -592,9 +611,21 @@ fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
         if e.raw_os_error() == Some(libc::EEXIST) || e.raw_os_error() == Some(libc::ENOTEMPTY) {
             return Err(io::Error::from(io::ErrorKind::AlreadyExists));
         }
+        // 배타 rename 미지원 볼륨(man 2 renamex_np: ENOTSUP — 네트워크 홈·exFAT 등) → 실재 확인 + 일반 rename 으로 내려간다
+        // (게시 dir 은 늘 비어 있지 않아 대상이 생겨 있으면 rename 이 ENOTEMPTY/EEXIST 로 거절 · 게시 뒤 재대조는 호출부 · Fable 코드 r1 minor).
+        if e.raw_os_error() == Some(libc::ENOTSUP) {
+            return rename_if_absent(from, to);
+        }
         Err(e)
     }
     #[cfg(not(target_os = "macos"))]
+    {
+        rename_if_absent(from, to)
+    }
+}
+
+/// 원자적 배타 rename 이 없을 때의 대체 — 대상 실재를 먼저 보고, 빈 dir 이 아닌 대상은 rename 이 ENOTEMPTY/EEXIST 로 거절한다.
+fn rename_if_absent(from: &Path, to: &Path) -> io::Result<()> {
     {
         // 비-macOS(시험 호스트) — 원자적 배타 rename 이 없다. 대상 실재를 먼저 보고, 빈 dir 이 아닌 대상은
         // rename 이 ENOTEMPTY/EEXIST 로 거절한다(게시 dir 은 늘 `etc/` 를 가져 비어 있지 않다).
@@ -678,7 +709,7 @@ pub fn publish_or_reuse(base: &Path, snap: &Snapshot) -> Result<PathBuf, &'stati
         }
     }
     // 2단 — 임시 dir 에 다 쓰고 게시.
-    let tmp = base.join(format!("{TMP_PREFIX}{}", unique_suffix()));
+    let mut tmp = base.join(format!("{TMP_PREFIX}{}", unique_suffix()));
     if snap.materialize(&tmp).is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err("write");
@@ -693,7 +724,16 @@ pub fn publish_or_reuse(base: &Path, snap: &Snapshot) -> Result<PathBuf, &'stati
             continue;
         }
         match rename_excl(&tmp, &p) {
-            Ok(()) => return Ok(p),
+            // 게시 직후 재대조 1회 — 다른 실행기가 (시계 점프 등으로) 우리 임시 dir 을 낡았다고 지우던 중이었으면 그 세대는
+            // 그대로 두고(게시 dir 무접촉) 임시 dir 을 새로 써서 다음 세대로(Fable 코드 r1 minor).
+            Ok(()) if snap.matches_dir(&p) => return Ok(p),
+            Ok(()) => {
+                tmp = base.join(format!("{TMP_PREFIX}{}", unique_suffix()));
+                if snap.materialize(&tmp).is_err() {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Err("write");
+                }
+            }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 // 경합 패배 — 승자를 재대조한다.
                 if snap.matches_dir(&p) {
@@ -709,6 +749,7 @@ pub fn publish_or_reuse(base: &Path, snap: &Snapshot) -> Result<PathBuf, &'stati
     }
     let x = base.join(format!("{xprefix}{}", unique_suffix()));
     match rename_excl(&tmp, &x) {
+        Ok(()) if !snap.matches_dir(&x) => Err("write"),
         Ok(()) => {
             eprintln!(
                 "cys: path-helper-root 세대 상한 {GENERATIONS_MAX} 초과 — 고유 이름으로 게시 {}",
@@ -1065,7 +1106,7 @@ printf 'PATH="%s"; export PATH;\n' "$out"
             if let Some(m) = &marker {
                 env.insert(ENV_CYS_PATH_HELPER_ROOT.into(), m.clone());
             }
-            assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::NotNeeded), "{val:?}");
+            assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::NotNeeded { unfixed: vec![] }), "{val:?}");
             assert_eq!(g(&env, ENV_PATH_HELPER_ROOT), None, "{val:?} 우리 값이 남았다");
             assert_eq!(g(&env, ENV_CYS_PATH_HELPER_ROOT), None);
             assert_eq!(g(&env, ENV_CYS_SEAT_PATH_VERDICT).as_deref(), Some("not-needed"));
@@ -1171,7 +1212,7 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         plant_clt(&dd, "python3");
         plant_clt(&dd, "git");
         env.insert("DEVELOPER_DIR".into(), dd.into_os_string());
-        assert_eq!(seat_path_verdict(&f.ctx, &mut env), Some(SeatPathVerdict::NotNeeded));
+        assert_eq!(seat_path_verdict(&f.ctx, &mut env), Some(SeatPathVerdict::NotNeeded { unfixed: vec![] }));
 
         // 진짜 git(libexec)이 없는 손상 runtime → git 은 못 고친 도구.
         let f2 = fx("broken");
@@ -1189,12 +1230,19 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         std::fs::remove_file(f3.rt.join("python/bin/python3")).unwrap();
         std::fs::remove_file(f3.rt.join("git/cysbin/git")).unwrap();
         let mut env = seat_env(&f3.rt);
-        assert_eq!(seat_path_verdict(&f3.ctx, &mut env), Some(SeatPathVerdict::NotNeeded));
+        assert_eq!(
+            seat_path_verdict(&f3.ctx, &mut env),
+            Some(SeatPathVerdict::NotNeeded { unfixed: vec!["python3", "git"] }),
+            "동봉본이 없어 못 고친 도구가 판정에 남아야 한다"
+        );
         // runtime 없음(개발 빌드) → NotNeeded.
         let mut c4 = f3.ctx.clone();
         c4.runtime_root = None;
         let mut env = seat_env(&f3.rt);
-        assert_eq!(seat_path_verdict(&c4, &mut env), Some(SeatPathVerdict::NotNeeded));
+        assert_eq!(
+            seat_path_verdict(&c4, &mut env),
+            Some(SeatPathVerdict::NotNeeded { unfixed: vec!["python3", "git"] })
+        );
     }
 
     // ── ⑥ ──
@@ -1215,6 +1263,14 @@ printf 'PATH="%s"; export PATH;\n' "$out"
             assert_eq!(g(&env, ENV_PATH_HELPER_ROOT), None);
         }
         assert!(path_chars_safe(Path::new("/Applications/cys app (2).app/x")));
+        assert!(!path_chars_safe(Path::new("/Applications/My  Apps/cys.app/x")), "연속 공백(IFS 접기)");
+        let f = fx("dblspace");
+        let rt = f.root.join("My  Apps").join("runtime");
+        make_rt(&rt, true, true, true);
+        let mut c = f.ctx.clone();
+        c.runtime_root = Some(rt);
+        let mut env = seat_env(&f.rt);
+        assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::UnsafePath));
     }
 
     // ── paths_with_fix ──
@@ -1474,6 +1530,64 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         assert!(t0.elapsed() < Duration::from_secs(2), "자손이 쥔 stdout 을 시한 없이 기다렸다: {:?}", t0.elapsed());
     }
 
+    /// 변이 생존 보강(Fable 코드 r1): path_helper 자식 env 는 비운다 · 종료 코드 검사 · 시간 초과 때 자기 그룹(자손 포함)을 끝낸다.
+    #[test]
+    fn path_helper_child_env_exit_code_and_group_kill() {
+        let f = fx("childenv");
+        let real = std::fs::read_to_string(&f.ctx.path_helper).unwrap();
+        // ⓐ env_clear: HOME 이 보이면 실패하는 path_helper.
+        let mut c = f.ctx.clone();
+        c.path_helper = script(&f.root, "noenv_ph", &real.replacen("#!/bin/sh\n", "#!/bin/sh\n[ -n \"$HOME$USER\" ] && exit 3\n", 1));
+        let mut env = seat_env(&f.rt);
+        assert!(matches!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::Applied { .. })), "path_helper 자식에 데몬 env 가 샜다");
+        // ⓑ 종료 코드: 맞는 출력을 내도 비0 이면 exec.
+        let mut c = f.ctx.clone();
+        c.path_helper = script(&f.root, "rc1_ph", &format!("{}exit 1\n", real));
+        let mut env = seat_env(&f.rt);
+        assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::VerifyFailed("exec")));
+        // ⓒ 그룹 종료: 시간 초과 때 자손도 끝난다.
+        let pidf = f.root.join("gc.pid");
+        let mut c = f.ctx.clone();
+        c.path_helper = script(
+            &f.root,
+            "gc_ph",
+            &format!("#!/bin/sh\n/bin/sleep 30 &\necho $! > '{}'\nwait\n", pidf.display()),
+        );
+        c.verify_timeout = Duration::from_millis(200);
+        let mut env = seat_env(&f.rt);
+        assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::VerifyFailed("timeout")));
+        std::thread::sleep(Duration::from_millis(200));
+        let pid: i32 = std::fs::read_to_string(&pidf).unwrap().trim().parse().unwrap();
+        // SAFETY: 신호 0 = 존재 확인만.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        assert!(!alive, "시간 초과 뒤 자손 {pid} 이 살아 있다 — 자기 그룹 종료가 안 됐다");
+    }
+
+    /// 세대 dir 최상위 엄격 검사 — `etc` 밖에 무엇이 있으면 같은 세대로 보지 않는다.
+    #[test]
+    fn generation_top_level_must_be_only_etc() {
+        let root = scratch("top");
+        let etc = root.join("etc");
+        std::fs::create_dir_all(&etc).unwrap();
+        std::fs::write(etc.join("paths"), "/usr/bin\n").unwrap();
+        let base = root.join("base");
+        let snap = Snapshot::from_system(&etc, &["/F".to_string()]).unwrap();
+        let p1 = publish_or_reuse(&base, &snap).unwrap();
+        std::fs::write(p1.join("extra"), "x").unwrap();
+        let p2 = publish_or_reuse(&base, &snap).unwrap();
+        assert_ne!(p1, p2, "최상위에 남의 파일이 있는 세대를 재사용했다");
+    }
+
+    /// 진짜 path_helper 출력 견본(macOS 27.2 실측 꼴) — env 에서 온 성분은 날것 · 파일 성분의 `"`·`$` 는 백슬래시.
+    #[test]
+    fn parser_accepts_real_output_sample() {
+        let out = "PATH=\"/usr/local/bin:/System/Cryptexes/App/usr/bin:/fixA:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/start\"; export PATH;\nMANPATH=\"/usr/share/man:/usr/local/share/man:/x/man\"; export MANPATH;\n";
+        let o = parse_path_helper_output(out).unwrap();
+        assert_eq!(o.path.len(), 9);
+        assert_eq!(o.path[2], "/fixA");
+        assert_eq!(o.manpath.as_deref(), Some("/usr/share/man:/usr/local/share/man:/x/man"));
+    }
+
     /// 시간 초과는 그 자리에서 1회 다시 잰다(첫 호출만 매달리는 path_helper → 재시도로 Applied · 표적 변이 「재시도 끔」 을 잡는 시험).
     #[test]
     fn verify_retries_a_single_timeout() {
@@ -1487,7 +1601,8 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         );
         let mut c = f.ctx.clone();
         c.path_helper = script(&f.root, "flaky_ph", &body);
-        c.verify_timeout = Duration::from_millis(300);
+        // 부하가 큰 병렬 시험 중에도 정상 호출이 시한 안에 들게 여유를 둔다(첫 호출은 5초 잠 = 반드시 넘김).
+        c.verify_timeout = Duration::from_millis(1500);
         let mut env = seat_env(&f.rt);
         match seat_path_verdict(&c, &mut env) {
             Some(SeatPathVerdict::Applied { .. }) => {}
@@ -1552,6 +1667,8 @@ printf 'PATH="%s"; export PATH;\n' "$out"
     #[test]
     fn real_path_helper_verifies_and_login_shells_resolve_bundled() {
         let (f, mut env) = real_ctx("real");
+        // MANPATH 가 있는 좌석 — ⑧ 의 「MANPATH ⓑ == ⓐ」 가 진짜 path_helper 로 한 번은 돈다(Fable 코드 r1).
+        env.insert("MANPATH".into(), "/x/man".into());
         let v = seat_path_verdict(&f.ctx, &mut env).unwrap();
         let SeatPathVerdict::Applied { root, .. } = v else { panic!("진짜 path_helper 확인 실패: {v:?}") };
         let home = f.root.join("fakehome");

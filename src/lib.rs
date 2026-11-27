@@ -1427,7 +1427,7 @@ pub const EXIT_RECOVER_REFUSED: i32 = 79;
 /// 동봉 runtime의 bin 디렉토리들(디스크에 실재하는 것만) — OS별 레이아웃. 반환 순서 = PATH 선두 우선순위.
 /// Windows(RC-5): exe 형제 `runtime/`(python·git/cmd·git/usr/bin).
 /// macOS(RC-18·T6b): 앱 번들은 실행바이너리=Contents/MacOS·리소스(runtime/)=Contents/Resources →
-///   `exe_dir/../Resources/runtime`(python/bin·git/bin·uv·node/bin). 개발 빌드(exe 형제 runtime/)도 폴백.
+///   `exe_dir/../Resources/runtime`(python/bin·git/cysbin·git/bin·uv·node/bin · cysbin = 1.1.21 A 감싸개 · 실재분만). 개발 빌드(exe 형제 runtime/)도 폴백.
 /// runtime_prefixed_path(PATH 선두주입)와 state.rs `-lc` 재선두주입(D8 — 로그인셸 path_helper 강등 회피)이 공유.
 pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
@@ -1457,8 +1457,13 @@ pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
             if !rt.is_dir() {
                 continue;
             }
+            // ★1.1.21 A: git/cysbin(동봉 dugite git 자립 감싸개 · scripts/mac-runtime/git-wrapper.sh)을 git/bin
+            //   **앞에 더한다**(대체 아님) — 원시 bin/git 은 --exec-path 가 빌드 접두(//libexec/git-core)라 https·init
+            //   템플릿을 못 찾고, 감싸개가 GIT_EXEC_PATH 를 세워 부른다. git/bin 은 scalar 노출 때문에 뒤에 남긴다.
+            //   cysbin 이 없는 옛 트리·개발 빌드는 is_dir 거짓 = 종전 4개 그대로.
             for d in [
                 rt.join("python").join("bin"),
+                rt.join("git").join("cysbin"),
                 rt.join("git").join("bin"),
                 rt.join("uv"),
                 rt.join("node").join("bin"),
@@ -5667,6 +5672,38 @@ mod tests {
         // 부재 dir는 계상 안 함: uv 제거 후 3개.
         fs::remove_dir_all(rt.join("uv")).unwrap();
         assert_eq!(runtime_bin_dirs(&macos).len(), 3, "uv 부재 시 3개");
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn runtime_bin_dirs_macos_puts_git_wrapper_dir_before_raw_git_bin() {
+        // ★1.1.21 A 회귀 핀: git/cysbin(감싸개)이 있으면 git/bin **앞에 더한다** — 대체가 아니다(scalar 노출 유지).
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("cysrt-1121a-{}", std::process::id()));
+        let macos = base.join("Contents").join("MacOS");
+        let rt = base.join("Contents").join("Resources").join("runtime");
+        for d in ["python/bin", "git/cysbin", "git/bin", "uv", "node/bin"] {
+            fs::create_dir_all(rt.join(d)).unwrap();
+        }
+        fs::create_dir_all(&macos).unwrap();
+        let got: Vec<String> = runtime_bin_dirs(&macos)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let want = ["python/bin", "git/cysbin", "git/bin", "uv", "node/bin"];
+        assert_eq!(got.len(), want.len(), "5개: {got:?}");
+        for (g, w) in got.iter().zip(want) {
+            assert!(g.ends_with(&format!("Resources/runtime/{w}")), "순서 {w}: {got:?}");
+        }
+        // 감싸개 dir 이 없으면 종전 4개 그대로(옛 트리 = 무변화).
+        fs::remove_dir_all(rt.join("git").join("cysbin")).unwrap();
+        let old: Vec<String> = runtime_bin_dirs(&macos)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(old.len(), 4, "cysbin 부재 시 종전 4개: {old:?}");
+        assert!(old[1].ends_with("Resources/runtime/git/bin"), "git/bin 2순위 그대로: {old:?}");
         fs::remove_dir_all(&base).ok();
     }
 

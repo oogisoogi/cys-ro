@@ -34,6 +34,15 @@ const SCHEDULE_QUEUE_CAP: usize = 100;
 const SCHEDULE_FALLBACK_HEADROOM: usize = 50;
 /// ★(0.14.42 · 설계 H2) 틱의 pause 확인과 push 사이에 kill-switch 가 켜졌다 — via_queue 의 `Frozen` 과 같은 규약(ⓒ).
 const SCHEDULE_FROZEN_ERR: &str = "delivery_frozen: kill-switch paused between tick and push";
+/// ★(1.1.21 · cysr-1121-restore D5 · 단순안 — master#65e625a9) `if_absent=launch` 의 launch-agent 가 rc 95(자동 복원이 그 역할을
+/// 되살리는 중)로 띄우지 않았다. 1.1.21 은 그 회차를 **missed 로 기록하고 끝낸다**(원샷 되살리기·시각 올리기 없음 · 알려진 한계 —
+/// 복원 중 도달한 if_absent=launch 회차는 배달되지 않는다 · 1.1.20 은 그 회차에 새 대화 좌석을 띄웠다 = 이 판이 막는 겹침 사고).
+const SCHEDULE_RESTORE_DEFER_ERR: &str = "launch_deferred: auto-restore is reviving this role (launch-agent rc 95) — occurrence recorded as missed";
+
+/// ★(1.1.21 D5) `cys launch-agent` 종료 코드 → 「자동 복원 중 보류」 오류(순수 · 시험 이음매). 95 만 · 그 밖 = None(종전 판정으로).
+fn launch_restore_defer_err(code: Option<i32>) -> Option<String> {
+    (code == Some(cys::EXIT_RESTORE_IN_PROGRESS)).then(|| SCHEDULE_RESTORE_DEFER_ERR.to_string())
+}
 /// ★(0.14.42 · R3SH-1) 입증 못 한 **기계 모양** 초안(사람 바이트 0) 위에서 같은 주기 잡이 같은 입력 세대로 사람 입력
 /// 없이 이 횟수를 넘겨 연속 우회되면, 다음 회차는 종전(pre-H)처럼 직접 주입해 잔여를 병합 제출한다(푸는 주체 없는 무기한
 /// 보류 차단 · 유계). 2 = 두 회차까지는 초안을 지키고 세 번째에 푼다(5분 잡이면 10분 · 1분 잡이면 2분).
@@ -1757,6 +1766,12 @@ async fn fire(daemon: Arc<Daemon>, job: Job) {
     if matches!(&result, Err(e) if e == SCHEDULE_FROZEN_ERR) {
         requeue_oneshot_after_frozen(&daemon, &job);
     }
+    // ★(1.1.21 D5 단순안) rc 95 보류 = 그 회차 missed 로 기록(되살리지 않음 · 위 상수 주석).
+    if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {
+        daemon.bus.publish("schedule.missed", "schedule", None,
+                           json!({"job_id": job.id, "reason": "auto_restore_in_progress",
+                                  "note": "자동 복원이 대상 역할을 되살리는 중이라 launch-agent 가 띄우지 않았다(rc 95) — 이 회차는 배달되지 않는다"}));
+    }
     // ★U4-B2① 결과 원장(메모리 전용) — 이벤트 발행과 독립으로 남는다(이벤트는 흘러가 사라진다).
     let kind = classify_fire_result(&result);
     match &result {
@@ -3019,6 +3034,9 @@ async fn launch_via_cli(daemon: &Arc<Daemon>, spec: &LaunchSpec) -> Result<u64, 
     //   **곧바로 텍스트를 주입**하는데(`inject(daemon, sid, text)`), 관문 창에 주입하면 그
     //   붙여넣기의 Return 이 실측상 면책 창의 `No, exit` 을 눌러 노드를 종료시킨다.
     //   즉 여기서 Ok 를 내는 것은 '스케줄 job 한 건 성공' 이 아니라 '노드 1개 사망' 이다.
+    if let Some(e) = launch_restore_defer_err(out.status.code()) {
+        return Err(e);
+    }
     if out.status.code() == Some(cys::EXIT_GATE_PENDING) {
         return Err(format!(
             "launch-agent gate-pending: pane 은 떴고 프로세스도 살아 있으나 첫기동 관문(테마·\
@@ -6220,6 +6238,30 @@ mod h2_schedule_hold_tests {
         assert!(!root["jobs"].as_array().unwrap().iter().any(|j| j["id"] == "p"));
         let _ = std::fs::remove_dir_all(&dir);
         done(&s);
+    }
+
+    /// ★(1.1.21 D5 단순안 · master#65e625a9) rc 95 → 보류 오류 · 그 회차 missed 기록 · 되돌림 없음. 판정(순수) + 배선(운영 코드 · 주석 뺀 본문 · 함수 끝에서 자름).
+    #[test]
+    fn restore_rc95_is_recorded_as_missed_not_requeued() {
+        assert_eq!(launch_restore_defer_err(Some(95)).as_deref(), Some(SCHEDULE_RESTORE_DEFER_ERR));
+        for c in [Some(0), Some(1), Some(78), Some(94), Some(96), None] {
+            assert_eq!(launch_restore_defer_err(c), None, "{c:?}");
+        }
+        let full = include_str!("schedule.rs");
+        let prod = &full[..full.find(concat!("#[cfg(test)]\n", "mod tests {")).expect("시험 모듈 경계")];
+        let src: String = prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        let func = |head: &str| { let b = &src[src.find(head).unwrap_or_else(|| panic!("{head} 없음"))..]; b[..b.find("\n}\n").unwrap()].to_string() };
+        let lv = func("async fn launch_via_cli(");
+        assert!(lv.find("if let Some(e) = launch_restore_defer_err(out.status.code()) {\n        return Err(e);").expect("95 구분 없음")
+                < lv.find("if !out.status.success()").unwrap(), "95 를 일반 실패로 접는다");
+        let fire = func("\nasync fn fire(");
+        let at = fire.find("if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {").expect("fire 가 95 보류를 기록하지 않는다");
+        let blk = &fire[at..at + fire[at..].find("\n    }").unwrap()];
+        assert!(blk.contains("\"schedule.missed\"") && blk.contains("\"auto_restore_in_progress\""), "missed 기록이 아니다: {blk}");
+        assert!(!blk.contains("requeue_oneshot"), "단순안은 되돌리지 않는다");
+        assert_eq!(fire.matches("SCHEDULE_RESTORE_DEFER_ERR").count(), 1, "95 보류가 기록 블록 밖(되돌림 등)에서도 쓰인다");
+        assert!(fire.contains("if matches!(&result, Err(e) if e == SCHEDULE_FROZEN_ERR) {\n        requeue_oneshot_after_frozen(&daemon, &job);"),
+                "동결 되돌림 조건이 바뀌었다(단순안은 동결만 되돌린다)");
     }
 
     /// ★(T3 리뷰 3R ⑥) 동결 원샷 되돌리기(재직렬화)가 U1 필수 칸 `bulk`·`publish` 를 보존한다 → 되돌린 잡이 U1

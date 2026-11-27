@@ -720,6 +720,36 @@ jobs:
           cargo_filter_count --bin cys d5_env_injection
           CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys d5_env_injection -- --test-threads=1
 
+      # ★(1.1.21 · cysr-1121-restore D5 · codex 코드 2R) 「자동 복원 중 보통 launch-agent 거절(rc 95)」 배선의 윈도우 증거 — 끝-끝 시험
+      #   (tests/launch_restore_refusal_e2e.rs)은 unix 전용이라 윈도우에서는 플랫폼 무관 단위·주입 시험(env 두 키 · RPC 응답 칸 · 갈래 본문 ·
+      #   주석 뺀 소스 핀 · 복원 순서 정렬 핀)을 명시적으로 돌린다. 0매치 초록 차단 = 같은 cargo_filter_count 규율.
+      - name: cargo test --bin cys 복원 중 기동 거절 D5 (Windows 실기)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_filter_count() {
+            local list="${RUNNER_TEMP:-/tmp}/cargo-filter-list.txt" n rc
+            if CYS_PACK_DIR="$(mktemp -d)" cargo test "$@" -- --list > "$list" 2>&1; then rc=0; else rc=$?; fi
+            if [ "$rc" -ne 0 ]; then
+              cat "$list"
+              echo "::error::cargo test $* -- --list 실패(rc=$rc) — 필터를 셀 수 없으면 실행도 근거가 없다(fail-closed)"
+              exit 1
+            fi
+            n=$(grep -c ': test$' "$list" || true)
+            if [ "${n:-0}" -lt 1 ]; then
+              tail -20 "$list"
+              echo "::error::cargo test $* 필터에 걸리는 테스트가 0건 — 필터 이름이 바뀌었다(돌지 않는 초록 금지)"
+              exit 1
+            fi
+            echo "[filter-count] cargo test $* → ${n}건"
+          }
+          cargo_filter_count --bin cys tests::launch_re
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys tests::launch_re -- --test-threads=1
+          cargo_filter_count --bin cys tests::launch_agent_plain
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys tests::launch_agent_plain -- --test-threads=1
+          cargo_filter_count --bin cys tests::restore_sorts_saved
+          CYS_PACK_DIR="$(mktemp -d)" cargo test --bin cys tests::restore_sorts_saved -- --test-threads=1
+
       # ★(1.1.7 precut-fix2 · 10-02 윈 실기 진단) reinject 폭주 가드 기록이 **윈 파이프 소켓에서** 실제로 써지고 읽히는가.
       #   종전 경로(소켓 부모)는 윈에서 파이프 이름공간이라 쓰기가 조용히 실패했다 — 맥에선 두 경로가 같아 이 시험이
       #   못 가르므로 윈 러너가 진다. 시험 0건 매치를 초록으로 읽지 않게 「1 passed」 를 확인한다.

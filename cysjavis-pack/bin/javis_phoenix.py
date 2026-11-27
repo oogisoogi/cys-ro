@@ -1189,6 +1189,11 @@ def cys(*args, socket=None, timeout=25, owner=None):
     #   데몬은 토큰 일치 ∧ pane 무귀속일 때만 오너로 본다 — 좌석 안에서 phoenix 를 돌리면 효과 없음).
     #   주입 호출에만 싣는다 — 조회 동사에는 불필요하다. ★1.1.8 병합: owner 미지정(None) = 동사로 판정(`reinject` 만 True) —
     #   원작자 검체들이 cys() 를 고정 서명(*args, socket, timeout) 대역으로 갈아 끼우므로 호출부는 새 키워드를 넘기지 않는다.
+    # ★(1.1.21 · cysr-1121-restore D5) 자동 복원 자신의 `cys launch-agent`(fresh 강등 · spawn_fresh_production)만 표지를 싣는다 —
+    #   cys 는 자동 복원 중 대상 역할의 보통 launch-agent 를 rc 95 로 거절하는데, 복원 자신의 기동은 거절하면 안 된다.
+    #   동사로 판정(owner 와 같은 꼴) · 다른 동사(list 등 데몬을 되살릴 수 있는 호출)에는 싣지 않는다 = 데몬·좌석으로 새지 않음.
+    if bool(args) and str(args[0]) == "launch-agent":
+        env["CYS_AUTO_RESTORE_SELF"] = "1"
     if owner is None:
         owner = bool(args) and str(args[0]) == "reinject"
     if owner:
@@ -3023,6 +3028,12 @@ def agy_policy_skipped_in(out):
     return set(AGY_SKIP_LINE_RE.findall(out or ""))
 
 
+def restore_order(roles):
+    """★(1.1.21 · TICKET=cysr-1121-restore D4) 복원 기동 순서 = master 먼저(순수 · 안정 정렬 — 나머지는 받은 순서 그대로).
+    ⚠같은 규칙의 Rust 짝 = `src/lib.rs` `restore_role_rank`·`sort_saved_master_first`(cys restore · cysd persist_topology) — 한쪽만 바꾸지 않는다."""
+    return sorted(roles, key=lambda r: 0 if r == "master" else 1)
+
+
 def manual_seat_roles(live_end, policy_skipped=()):
     """★SEAT 빈 좌석 잔존 역할 — 좌석은 있으나 에이전트가 앉지 않은 역할(정직 보고 · 사람 개입 필요).
     ★agy 좌석 문(codex 1R minor): 문이 닫혀 **정책으로 건너뛴** 역할은 뺀다 — 같은 좌석을 「건너뜀(고장 아님)」과
@@ -4011,7 +4022,10 @@ def _run_restore_locked(socket, ticket="default", stub=False, no_breaker=False, 
     #    roster 를 막지 않고, 세션핀을 버리고 fresh(무 resume) 재기동으로 '강등'해 부활을 마무리한다.
     #    fresh 는 원 세션 보존이 아니라 새 세션 + 디렉티브/원장 재주입이다(정직: resumed→fresh 전환을 저널에 명시).
     #    fresh 는 최후수단 — resume 성공/재시도 회복은 이 지점에 오지 않는다.
-    need = need + [r for r in forced_fresh if r not in need and r not in session_lease_held]
+    # ★(1.1.21 D4) 역할마다 기동하는 길(fresh 강등 루프 · 아래 `for role in need`)의 순서를 여기서 정한다 = master 먼저.
+    #   force_fresh 역할은 위에서 빠졌다가 여기서 **뒤에** 붙으므로(master 가 force_fresh 면 끝으로 밀림) 합친 결과를 정렬한다.
+    #   이 뒤 거르기(_hold_profile_refused · 빈 좌석 재사용 · 사람 입력 보류)는 순서를 보존한다. resume 회차는 일괄 `cys restore`(Rust D2 가 순서).
+    need = restore_order(need + [r for r in forced_fresh if r not in need and r not in session_lease_held])
 
     def _hold_profile_refused(roles):
         """★dbg-119 ①(master#7a176ca4): Rust `cys restore` 가 계정 프로필 거부(unobserved · seat_profile 검증 실패)로
@@ -5126,10 +5140,15 @@ def _render_deploy_runbook(roster):
         '  echo "  !! plist 부재($PLIST) — cys daemon install 로 재생성 후 재시도"',
         "fi",
         'echo "데몬 소켓 응답 대기..."; for i in $(seq 1 40); do cys ping 2>/dev/null | grep -q pong && { echo "  pong OK"; break; }; sleep 0.5; done',
+        "# ★(1.1.21 · cysr-1121-restore) 데몬이 막 깨면 자동 복원이 저장 대화를 되살린다 — 끝날 때까지 기다린 뒤 아직 죽은 노드만 띄운다",
+        "#   (먼저 띄우면 저장 대화 대신 새 대화가 남는다 · 그동안 cys launch-agent 는 띄우지 않고 rc 95 = 보류로 알린다 · 실패 아님).",
+        'echo "자동 복원 끝 대기(최대 5분)..."; for i in $(seq 1 300); do cys status --json 2>/dev/null | grep -Eq \'"auto_restore": *"(running|retry_wait|held)"\' || { echo "  자동 복원 끝(또는 꺼짐)"; break; }; sleep 1; done',
+        'cys status --json 2>/dev/null | grep -Eq \'"auto_restore": *"(running|retry_wait|held)"\' && echo "  !! 5분이 지나도 자동 복원 진행 중 — 아래 줄이 rc 95 면 끝난 뒤 다시(꼭 지금이면 CYS_LAUNCH_DURING_RESTORE=1)"',
         "",
-        "# 2) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행):",
+        "# 2) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행 · master 먼저 · `cys list` 로 이미 살아 있는 노드의 줄은 치지 않는다):",
+        "#    rc 95 = 자동 복원이 그 역할을 아직 되살리는 중(보류) — 위 대기 뒤 다시 · 꼭 지금 띄워야 하면 CYS_LAUNCH_DURING_RESTORE=1 을 앞에 붙인다.",
     ]
-    for role in sorted(roster.keys()):
+    for role in restore_order(sorted(roster.keys())):
         agent = (roster.get(role) or {}).get("agent") or "claude"
         lines.append('cys launch-agent --role %s --agent %s   # 각성 확인 후: cys reinject --role %s'
                      % (role, agent, role))
@@ -5169,10 +5188,16 @@ def _render_deploy_runbook_ps1(roster):
         "cys list 2>$null | Out-Null",
         'Write-Host "데몬 named pipe 응답 대기..."',
         "for ($i = 0; $i -lt 40; $i++) { if ((cys ping 2>$null) -match 'pong') { Write-Host '  pong OK'; break }; Start-Sleep -Milliseconds 500 }",
+        "# ★(1.1.21 · cysr-1121-restore) 데몬이 막 깨면 자동 복원이 저장 대화를 되살린다 — 끝날 때까지 기다린 뒤 아직 죽은 노드만 띄운다",
+        "#   (먼저 띄우면 저장 대화 대신 새 대화가 남는다 · 그동안 cys launch-agent 는 띄우지 않고 rc 95 = 보류로 알린다 · 실패 아님).",
+        'Write-Host "자동 복원 끝 대기(최대 5분)..."',
+        "for ($i = 0; $i -lt 300; $i++) { $ar = $null; try { $ar = ((cys status --json 2>$null | Out-String) | ConvertFrom-Json).daemon.auto_restore } catch {}; if ($ar -notin @('running','retry_wait','held')) { Write-Host '  자동 복원 끝(또는 꺼짐)'; break }; Start-Sleep -Seconds 1 }",
+        "if ($ar -in @('running','retry_wait','held')) { Write-Host '  !! 5분이 지나도 자동 복원 진행 중 — 아래 줄이 rc 95 면 끝난 뒤 다시(꼭 지금이면 $env:CYS_LAUNCH_DURING_RESTORE=1)' }",
         "",
-        "# 3) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행):",
+        "# 3) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행 · master 먼저 · `cys list` 로 이미 살아 있는 노드의 줄은 치지 않는다):",
+        "#    rc 95 = 자동 복원이 그 역할을 아직 되살리는 중(보류) — 위 대기 뒤 다시 · 꼭 지금 띄워야 하면 $env:CYS_LAUNCH_DURING_RESTORE='1' 뒤 실행.",
     ]
-    for role in sorted(roster.keys()):
+    for role in restore_order(sorted(roster.keys())):
         agent = (roster.get(role) or {}).get("agent") or "claude"
         lines.append("cys launch-agent --role %s --agent %s   # 각성 확인 후: cys reinject --role %s"
                      % (role, agent, role))

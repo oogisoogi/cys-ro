@@ -1165,6 +1165,17 @@ fn scrub_mac_seat_path_env() {
     }
 }
 
+/// ★(1.1.21 · cysr-1121-restore D5 · Fable 코드 1R minor) 데몬은 「복원 중 기동 거절」 의 표지·손잡이를 물려받지 않는다 — 데몬 env 는
+/// 좌석 전체로 상속되므로 새면 그 데몬 수명 동안 거절이 조용히 꺼진다. cys 스폰 쪽 env_remove 와 두 겹(앱·셸이 직접 띄운 cysd 도 걸린다).
+fn scrub_launch_restore_env() {
+    for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+        if std::env::var_os(k).is_some() {
+            std::env::remove_var(k);
+            eprintln!("[cysd] scrubbed launch-restore env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1262,6 +1273,8 @@ fn main() {
     #[cfg(windows)]
     winlog::attach_if_discarded(&state::state_dir(&cys::socket_path()));
     cys::seal_python_bytecode_in_process();
+    // ★(1.1.21 · cysr-1121-restore D5 · codex 코드 2R minor) 런타임(워커 스레드) 생성 **전** — set_var/remove_var 는 프로세스 전역이다(위 봉인과 같은 계약).
+    scrub_launch_restore_env();
     async_main();
 }
 
@@ -4436,6 +4449,26 @@ mod env_scrub_tests {
             "무관 env까지 지우면 안 된다"
         );
         std::env::remove_var("CYS_SCRUB_TEST_KEEP");
+    }
+}
+
+/// ★(1.1.21 · cysr-1121-restore D5) 데몬 부팅 scrub — 「복원 중 기동 거절」 의 표지·손잡이를 지운다(좌석 상속 누출 차단) · main 이 부른다.
+#[cfg(test)]
+mod launch_restore_scrub_tests {
+    #[test]
+    fn boot_scrubs_both_launch_restore_keys_and_main_calls_it() {
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            std::env::set_var(k, "1");
+        }
+        super::scrub_launch_restore_env();
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            assert!(std::env::var_os(k).is_none(), "{k} 가 남았다");
+        }
+        assert_eq!(cys::LAUNCH_RESTORE_ENV_KEYS, ["CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"]);
+        let src: String = include_str!("main.rs").lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        // 위치 = 동기 main 의 async_main()(tokio 런타임 생성) 바로 앞 · 한 곳(codex 코드 2R minor)
+        assert!(src.contains("    scrub_launch_restore_env();\n    async_main();\n"), "부팅 scrub 이 런타임 생성 앞(동기 main)에 없다");
+        assert_eq!(src.matches("    scrub_launch_restore_env();\n").count(), 1, "부팅 scrub 호출은 한 곳");
     }
 }
 

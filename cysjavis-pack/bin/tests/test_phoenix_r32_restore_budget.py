@@ -354,7 +354,8 @@ def t_rust_pins():
     check("⑦ 역할당 기동 지점 = in-seat 1 + fresh 1(빈 좌석 = 2단위)",
           code.count("acquire_launch_lock()") == 1 and code.count("boot_agent_on_surface(") == 1
           and code.count("run_launch_agent_opts(") == 1)
-    filt = ['let saved = topo["saved"]', "tombstones.contains(role)", 'role == "master" && !include_master',
+    # (1.1.21 cysr-1121-restore D2: `let mut saved` + master 먼저 정렬 — 선별 규칙은 그대로라 `let` 앞 글자를 빼고 찾는다)
+    filt = ['saved = topo["saved"]', "tombstones.contains(role)", 'role == "master" && !include_master',
             "live.contains(role)", 'let Some(agent) = entry["agent"].as_str() else',
             '.filter(|e| e["seat"].as_str() != Some("empty"))']
     check("⑦ run_restore 선별 규칙 = python restore_workload_units 의 거울(묘비·master·생존·agent·빈 좌석)",

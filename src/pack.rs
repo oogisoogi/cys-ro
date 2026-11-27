@@ -889,20 +889,21 @@ pub fn windows_launcher_variant_in(
 /// 공백 든 사용자 폴더에 옛 깨진 줄이 있으면 올바른 줄을 붙이지 않을 길이 생겼다.
 /// 규칙: 따옴표 밖 공백 = 인자 경계 · `"…"`·`'…'` = 한 인자로 묶음(안의 공백·다른 따옴표 글자는 그대로) ·
 /// 역슬래시 = 글자 그대로(윈 경로 · 기존 표기 인정 범위 유지) · 닫히지 않은 따옴표 = `None`(판정 불가 = 인정 안 함).
-/// ★1.1.21 G r3(codex 3R major): 따옴표 조각이 다른 글자·다른 따옴표 조각과 **붙은** 인자(`'team''s'` · `a"b"` · `"a"b`)는
-/// 실행 셸마다 뜻이 갈린다(bash = 이어 붙임 `teams` · PowerShell `''` = 글자 `'`) → 판정 불가(`None`) = 인정 안 함(보수).
-/// 따옴표는 인자 **전체**를 감쌀 때만 쓴다(우리 두 쓰는 쪽 = `L "path"`·`"L" "path"` 꼴만 낸다).
+/// ★1.1.21 G r3·r4(codex 3R·4R): 셸마다 뜻이 갈리는 붙음만 판정 불가(`None` = 인정 안 함 · 보수) —
+/// ⓐ 따옴표 조각끼리 바로 붙음(`'team''s'` = bash `teams` · PowerShell `team's` / `"a""b"` = bash `ab` · PowerShell `a"b`)
+/// ⓑ 글자에 붙은 홑따옴표 조각(cmd 는 홑따옴표를 글자로 넘긴다). 큰따옴표 조각이 글자와 붙은 것(`C:/Users/"A B"/x.sh`)은
+/// bash·PowerShell·MSVCRT 모두 이어 붙여 한 인자로 넘기므로 인정한다(4R 반례 · G 이전에도 인정되던 표기).
 fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut in_tok = false;
     let mut quote: Option<char> = None;
-    let mut just_closed = false;
+    let mut last_close: Option<char> = None;
     for c in cmd.chars() {
         match quote {
             Some(q) if c == q => {
                 quote = None;
-                just_closed = true;
+                last_close = Some(q);
             }
             Some(_) => cur.push(c),
             None if c.is_whitespace() => {
@@ -910,19 +911,22 @@ fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
                     out.push(std::mem::take(&mut cur));
                     in_tok = false;
                 }
-                just_closed = false;
+                last_close = None;
             }
-            None if just_closed => return None, // 닫는 따옴표 바로 뒤에 글자·따옴표가 붙음
             None if c == '"' || c == '\'' => {
-                if in_tok {
-                    return None; // 글자 뒤에 따옴표가 붙음
+                if last_close.is_some() || (c == '\'' && in_tok) {
+                    return None; // ⓐ 조각끼리 붙음 · ⓑ 글자 뒤 홑따옴표
                 }
                 quote = Some(c);
                 in_tok = true;
             }
             None => {
+                if last_close == Some('\'') {
+                    return None; // ⓑ 홑따옴표 조각 뒤에 글자
+                }
                 cur.push(c);
                 in_tok = true;
+                last_close = None;
             }
         }
     }
@@ -8419,13 +8423,20 @@ mod tests {
         let teams = "C:/packs/teams/hooks/session-start.sh";
         assert!(!ok(teams, &["bash 'C:/packs/team''s/hooks/session-start.sh'"]));
         assert!(!ok(teams, &["bash \"C:/packs/team\"\"s/hooks/session-start.sh\""]));
-        assert!(!ok(teams, &["bash C:/packs/team\"s/hooks/session-start.sh\""]));
+        assert!(!ok(teams, &["bash C:/packs/team's/hooks/session-start.sh'"]));
         assert!(ok(teams, &["bash 'C:/packs/teams/hooks/session-start.sh'"]));
+        // codex 4R: 큰따옴표 조각이 글자와 붙음 = 모든 셸에서 이어 붙임 → 같은 경로면 인정(G 이전에도 인정 · 중복 append 방지)
+        assert!(ok(sp, &["bash C:/Users/\"A B\"/.cys/pack/hooks/session-start.sh"]));
+        assert!(ok(teams, &["bash C:/packs/team\"s/hooks/session-start.sh\""]));
+        assert!(!ok(sp, &["bash C:/Users/\"A\" B/.cys/pack/hooks/session-start.sh"])); // 공백이 따옴표 밖 = 인자 둘
         // 분해 단위
         assert_eq!(windows_hook_argv("a \"b c\" 'd \"e'"), Some(vec!["a".into(), "b c".into(), "d \"e".into()]));
         assert_eq!(windows_hook_argv("a 'b''c'"), None);
-        assert_eq!(windows_hook_argv("a x\"b\""), None);
-        assert_eq!(windows_hook_argv("a \"b\"x"), None);
+        assert_eq!(windows_hook_argv("a \"b\"\"c\""), None);
+        assert_eq!(windows_hook_argv("a x'b'"), None);
+        assert_eq!(windows_hook_argv("a 'b'x"), None);
+        assert_eq!(windows_hook_argv("a x\"b c\"d"), Some(vec!["a".into(), "xb cd".into()]));
+        assert_eq!(windows_hook_argv("a \"b\"x\"c\""), Some(vec!["a".into(), "bxc".into()]));
         assert_eq!(windows_hook_argv("a \"b"), None);
         assert_eq!(windows_hook_argv("  "), Some(vec![]));
     }

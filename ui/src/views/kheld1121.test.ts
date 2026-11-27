@@ -88,7 +88,7 @@ describe("K-1 글 — 사람이 해야 할 일이 단계 이름에 든다", () =
     expect(STALE_NOTE.startsWith("아직 안 보냈어요")).toBe(true);
     expect(Object.values(STEP_LABEL)).not.toContain("붙잡아 둠");
     const CHAT = strip(readFileSync(new URL("./chat/index.ts", import.meta.url), "utf8"));
-    expect(CHAT).toContain('needsClick(m) ? HELD_CLICK_LABEL : STEP_LABEL[m.step]');
+    expect(CHAT).toContain('needsClick(m) ? HELD_CLICK_LABEL : stepLabel(m)'); // (kfix ②·④) 단계 이름 = stepLabel
   });
   it("줄 선 말·답하는 중 안내 = 「그대로 두시면」·「누르실 것 없어요」", async () => {
     const CORE = readFileSync(new URL("./core.ts", import.meta.url), "utf8");
@@ -106,7 +106,7 @@ describe("K-3 바쁠 때도 넘김 — U25 실측(받아 둔다)", () => {
     expect(h.writes().map((c) => c.args?.text)).toEqual(["바쁠 때 보낸 말"]);
     expect(h.core.state.msgs[0].step).not.toBe("held");
   });
-  const base = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "U25-B 첫 줄\n둘째 줄", createdAt: 1_000, sentAt: 1_000, step: "injected", thread: [], replies: [], ...o });
+  const base = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "U25-B 첫 줄\n둘째 줄", createdAt: 1_000, sentAt: 1_000, step: "injected", thread: [], replies: [], wrote: true, ...o }); // (kfix ②) 데몬이 썼다고 답한 말
   const ts = (ms: number) => new Date(ms).toISOString();
   const enq = (text: string, at: number): Rec => ({ uuid: null, parent: null, role: "queued", text, ts: ts(at) });
   it("enqueue = 「마스터가 받아 둠」(짝 uuid 없음 · 사슬 0) → 흡수 queued_command(user 레코드) = 「전달됨」 → 그 뒤 답 = 이 말의 답", () => {
@@ -333,7 +333,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
 
 describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠」을 사실로 두지 않음", () => {
   const ts = (ms: number) => new Date(ms).toISOString();
-  const acc = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "거둔 말", createdAt: 1_000, sentAt: 1_000, step: "accepted", note: ACCEPTED_NOTE, thread: [], replies: [], ...o });
+  const acc = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "거둔 말", createdAt: 1_000, sentAt: 1_000, step: "accepted", note: ACCEPTED_NOTE, thread: [], replies: [], wrote: true, queuedSeen: true, ...o }); // (kfix ④) 대기 들어감을 본 말
   const rm = (text: string, at: number, reason: string | null): Rec => ({ uuid: null, parent: null, role: "queue_removed", text, ts: ts(at), reason });
   it("같은 글 remove(까닭 = 사람 거둠 · 모르는 꼴 · 없음) → 「확인 중」 + 확인 불가 안내 · 다시 보내기 0", () => {
     for (const reason of ["user_cancelled", "weird_reason", null]) {
@@ -348,7 +348,7 @@ describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠�
   });
   it("다른 글 · 받아 둠 아닌 말 · 보내기 전 시각 = 그대로 · 표지 붙여 보낸 말은 sentText 로 대조", () => {
     expect(applyRecords([acc()], [rm("다른 말", 30_000, "x")]).msgs[0].step).toBe("accepted");
-    expect(applyRecords([acc({ step: "injected" })], [rm("거둔 말", 30_000, "x")]).msgs[0].step).toBe("injected");
+    expect(applyRecords([acc({ step: "injected", queuedSeen: undefined })], [rm("거둔 말", 30_000, "x")]).msgs[0].step).toBe("injected"); // 대기 들어감을 못 본 말
     expect(applyRecords([acc()], [rm("거둔 말", -10_000, "x")]).msgs[0].step).toBe("accepted");
     expect(applyRecords([acc({ sentText: "(10분 전에 쓰신 말) 거둔 말" })], [rm("(10분 전에 쓰신 말) 거둔 말", 30_000, "x")]).msgs[0].step).toBe("checking");
   });
@@ -362,8 +362,8 @@ describe("K R1 ④ 대기에서 빠짐(흡수 아닌 remove) — 「받아 둠�
 
 describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u25-evidence/u25-records.txt)", () => {
   const T = (iso: string) => Date.parse(iso);
-  const mk = (id: string, text: string, sentIso: string): Msg => ({ id, text, createdAt: T(sentIso), sentAt: T(sentIso), step: "injected", thread: [], replies: [] });
-  it("U25-B: 앞 일 도구 결과 → 흡수(queued_command) → 답에 앞 일 「DONE」 = 흡수 표지 · 같이 흡수된 앞 말 없음", () => {
+  const mk = (id: string, text: string, sentIso: string): Msg => ({ id, text, createdAt: T(sentIso), sentAt: T(sentIso), step: "injected", thread: [], replies: [], wrote: true });
+  it("U25-B: 앞 일 도구 결과 → 흡수(queued_command) → 앞 일 「DONE」 = 이 말 답 아님(일반 마스터 줄 · kfix ③) · 같이 흡수된 앞 말 없음", () => {
     const m0 = mk("m0", "Run this bash command once and wait for it to finish: ping -c 30 127.0.0.1 | tail -1 .", "2026-11-27T01:28:51.000Z");
     const m1 = mk("m1", "U25-B 시험 첫 줄\n둘째 줄 끝", "2026-11-27T01:29:00.000Z");
     const recs: Rec[] = [
@@ -383,10 +383,11 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     expect(b.userUuid).toBe("9fcf96ba");
     expect(b.absorbed).toBe(true);
     expect(b.withNext).toBeUndefined();
-    expect(b.replies.map((x) => x.text)).toEqual(["DONE\n\nThe ping command finished, but its summary line"]); // 앞 일 이야기가 이 말 답에 붙음 → 화면이 흡수 표지로 알림
+    expect(b.replies).toEqual([]); // (kfix ③) 앞 일 이야기가 섞인 글 = 이 말의 답으로 붙이지 않음
+    expect(r.stray.map((x) => x.text)).toEqual(["DONE\n\nThe ping command finished, but its summary line"]);
     expect(a.replies).toEqual([]);
   });
-  it("U25-D: 두 말이 한 경계에서 흡수 → 앞 말 = 「다음 말과 함께」(withNext) · 답은 뒤 말에", () => {
+  it("U25-D: 두 말이 한 경계에서 흡수 → 앞 말 = 「다음 말과 함께」(withNext) · 한 답 = 일반 마스터 줄(kfix ③)", () => {
     const m0 = mk("m0", "Run this bash command once and wait for it to finish: ping -c 20 127.0.0.1 | tail -1 .", "2026-11-27T01:30:33.000Z");
     const m1 = mk("m1", "U25-D 말 1", "2026-11-27T01:30:39.500Z");
     const m2 = mk("m2", "U25-D 말 2", "2026-11-27T01:30:41.700Z");
@@ -411,10 +412,11 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     expect(a.replies).toEqual([]);
     expect(b.absorbed).toBe(true);
     expect(b.withNext).toBeUndefined();
-    expect(b.replies.map((x) => x.text)).toEqual(["DONE\n\nU25-D 말 1 확인\nU25-D 말 2 확인\n\nThe ping fin"]);
+    expect(b.replies).toEqual([]);
+    expect(r.stray.map((x) => x.text)).toEqual(["DONE\n\nU25-D 말 1 확인\nU25-D 말 2 확인\n\nThe ping fin"]);
     const settled = settleSteps(r.msgs, T("2026-11-27T01:31:10.000Z"), false);
     expect(settled[1].step).toBe("delivered");
-    expect(settled[2].step).toBe("replied");
+    expect(settled[2].step).toBe("delivered"); // (kfix ③) 앞 일 완료문만으로 「답함」 확정 0
   });
   it("앞 흡수 말이 이미 답을 받았으면 「함께」 아님 · 흡수 아닌 보통 user 레코드 = 표지 없음", () => {
     const m1: Msg = { id: "m1", text: "말 1", createdAt: 1_000, sentAt: 1_000, step: "replying", userUuid: "q1", thread: ["q1", "a1"], replies: [{ uuid: "a1", text: "말 1 답" }], absorbed: true };
@@ -430,8 +432,8 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     const p = mergeOutcome(m, "failed");
     expect(p.absorbed).toBeUndefined();
     expect("absorbed" in p && "withNext" in p).toBe(true);
-    expect(ABSORBED_NOTE).toBe("하던 일 중간에 받아 읽었어요 — 답에 하던 일 이야기가 섞일 수 있어요");
-    expect(WITH_NEXT_NOTE).toBe("다음 말과 함께 받아 읽었어요 — 답은 아래 말에 함께 보여요");
+    expect(ABSORBED_NOTE).toBe("하던 일 중간에 받아 읽었어요 — 그 뒤 마스터 글은 하던 일 이야기와 섞여 있어 아래 「마스터」 줄로 따로 보여요");
+    expect(WITH_NEXT_NOTE).toBe("다음 말과 함께 받아 읽었어요 — 그 뒤 마스터 글은 아래 「마스터」 줄로 따로 보여요");
     const CHAT = strip(readFileSync(new URL("./chat/index.ts", import.meta.url), "utf8"));
     expect(CHAT).toContain('if (m.withNext) li.append(el("div", "cv-note cv-absorbed", WITH_NEXT_NOTE));');
     expect(CHAT).toContain('else if (m.absorbed) li.append(el("div", "cv-note cv-absorbed", ABSORBED_NOTE));');

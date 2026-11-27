@@ -5,7 +5,7 @@
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
 import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
-import { ABSORBED_NOTE, canRetry, HELD_CLICK_LABEL, STEP_LABEL, WITH_NEXT_NOTE, type Msg } from "../judge/msgstep";
+import { ABSORBED_NOTE, canRetry, HELD_CLICK_LABEL, stepLabel, WITH_NEXT_NOTE, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
 import { jumpLabel, newKeys, placeAfterPaint, stickToBottom } from "../judge/scroll";
@@ -277,13 +277,13 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       const li = el("li", `cv-msg cv-me step-${m.step}`);
       li.dataset.msgId = m.id;
       li.append(el("div", "cv-text", m.text));
-      const meta = el("div", "cv-step", needsClick(m) ? HELD_CLICK_LABEL : STEP_LABEL[m.step]); // (K-1) 눌러야 나갈 말 = 「아직 안 보냄」
+      const meta = el("div", "cv-step", needsClick(m) ? HELD_CLICK_LABEL : stepLabel(m)); // (K-1) 눌러야 나갈 말 = 「아직 안 보냄」 · (kfix ②·④) 출처 확인 못 함 · 대기에서 빠짐
       meta.dataset.step = m.step;
       li.append(meta);
       const pg = prog(m, live);
       if (pg) li.append(pg);
       if (m.note) li.append(el("div", "cv-note", m.note));
-      // (TICKET=cysr-1121-ui K R1) 하던 일 중간에 받아 읽힌 말 — 답 귀속이 깔끔하지 않을 수 있음을 사실대로(U25-B·D 실측 · 귀속 규칙은 그대로).
+      // (TICKET=cysr-1121-ui K R1) 하던 일 중간에 받아 읽힌 말 — ★(kfix ③) 그 뒤 마스터 글은 이 말에 붙이지 않고 「마스터」 줄로(U25-B·D 실측).
       if (m.withNext) li.append(el("div", "cv-note cv-absorbed", WITH_NEXT_NOTE));
       else if (m.absorbed) li.append(el("div", "cv-note cv-absorbed", ABSORBED_NOTE));
       // (조각 3 · PRD FR-A2a) 오래 걸려요 = 마스터 상태를 함께 보인다(근거 없이 「못 보냄」으로 바꾸지 않음 · 다시 보내기 0).
@@ -390,7 +390,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       errors.textContent = ec > 0 ? `문제 ${ec}` : "문제 없음";
       errors.dataset.count = String(ec);
       const st = lastSendStep(s);
-      live.textContent = st ? `마지막 보낸 말: ${STEP_LABEL[st]}` : "아직 보낸 말 없음";
+      live.textContent = st ? `마지막 보낸 말: ${stepLabel(s.msgs[s.msgs.length - 1])}` : "아직 보낸 말 없음"; // (kfix ②) 말 이름과 같은 판정
       live.dataset.step = st ?? "";
       notice.textContent = s.notice ?? "";
       const prevTop = log.scrollTop;

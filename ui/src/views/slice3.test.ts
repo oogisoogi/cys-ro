@@ -15,6 +15,7 @@ import {
   stepFromOutcome,
   type Msg,
   type Step,
+  UNSURE_NOTE,
 } from "./judge/msgstep";
 import { applyQueueEvent, AUTO_HOLD_AFTER_HUMAN_MS, AUTO_STEP_LABEL, autoHoldRemainingMs, autoStepFor, queueEventOf, type AutoMsg, type QueueEvent } from "./judge/autostep";
 import { composeOutbound } from "./judge/outbound";
@@ -65,10 +66,15 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
     expect(settleSteps([{ ...a, step: "replying" }, b], T + 20, null).map((m) => m.step)).toEqual(["delivered", "delivered"]);
   });
   it("(검토 지적 4) 기록으로 전달됨이 되면 옛 「확인 중」 까닭·안내가 지워진다", () => {
-    const r = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내" })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
+    const r = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내", wrote: true })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
     expect(r.msgs[0].step).toBe("delivered");
     expect(r.msgs[0].code).toBeUndefined();
     expect(r.msgs[0].note).toBeUndefined();
+    // (TICKET=cysr-1121-ui-kfix ②) 데몬이 썼다고 답하지 않은 시도 = 옛 까닭은 지우되 안내는 「출처 확인 못 함」(같은 글이 다른 길로 왔을 수 있음)
+    const u = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내" })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
+    expect(u.msgs[0].code).toBeUndefined();
+    expect(u.msgs[0].note).toBe(UNSURE_NOTE);
+    expect(u.msgs[0].unsure).toBe(true);
   });
   it("답하는 중 아님: 활동 모름(null) · 쉼(false · 답 없음) · 아직 전달 전", () => {
     const d = msg({ step: "delivered", userUuid: "u1", thread: ["u1"] });

@@ -11,7 +11,7 @@
 
 import { composeOutbound } from "./judge/outbound";
 import { approvalSeatsOf, masterRowOf, noOtherHumanInputSince, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
-import { applyRecords, applyRefusedAtWrite, applyRefusedById, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
+import { applyRecords, applyRefusedAtWrite, applyRefusedById, canRetry, confirmWritten, mergeOutcome, QUEUE_REMOVED, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, TS_SKEW_MS, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
 import { ResultBook } from "./results"; // (s79 조각 7) 결과 받기 장부
@@ -90,7 +90,7 @@ const UNRESOLVED: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "acc
 
 /** (조각 3) 이 글과 같은 글의 앞 말이 아직 끝나지 않았는가(exceptId = 자기 자신 제외). 순수. */
 export function dupPending(msgs: readonly Msg[], text: string, exceptId?: string): boolean {
-  return msgs.some((m) => m.id !== exceptId && m.text === text && (UNRESOLVED.has(m.step) || autoHeld(m)));
+  return msgs.some((m) => m.id !== exceptId && m.text === text && ((UNRESOLVED.has(m.step) && m.code !== QUEUE_REMOVED) || autoHeld(m))); // (kfix ④) 대기에서 빠짐 = 종결 — 같은 글 새 말을 막지 않음
 }
 /** 문턱이 열리면 자동으로 나갈 붙잡은 말. */
 function autoHeld(m: Msg): boolean {
@@ -126,7 +126,7 @@ const READ_CHAIN_MAX = 3;
 /** (1.1.19 · TICKET=cysr-1119-s3 · CH-C) Tauri watch 사건 이름(viewcore.rs `CHAT_TRANSCRIPT_CHANGED`). */
 export const CHAT_TRANSCRIPT_CHANGED = "chat-transcript-changed";
 /** (1.1.19 · F06) 세션 기록 읽기 계기 — 읽기는 전부 `readTranscript(reason)` 한 함수(잠금 · offset 단일 소유 · from_offset 대조). */
-export type ReadReason = "attach" | "event" | "align" | "after_send" | "poll" | "rebind" | "reset" | "again";
+export type ReadReason = "attach" | "event" | "align" | "after_send" | "poll" | "rebind" | "reset" | "again" | "aged";
 /** ★1.1.16(S3-1) 응답보다 먼저 온 거부 사건 번호를 기억하는 개수(쓰기는 한 번에 1건 — 여유분) */
 const REFUSED_EARLY_MAX = 16;
 
@@ -336,6 +336,10 @@ export class ChatCore {
   /** (TICKET=cysr-1121-ui K R1) 결속 세션 기록에 나타난 남의 사람 차례(이 화면 말과 짝 안 된 글 있는 user 레코드) 가운데 가장 늦은 시각(ms · 기록 시각 · 못 읽으면 읽은 시각).
    *  RC·다른 기기 입력은 데몬 사람 입력 표지를 늘리지 않을 수 있어 표지 불변만으로는 「다른 입력 없음」이 증명되지 않는다 → 10분 넘은 말 자동의 둘째 조건. */
   private foreignHumanAt: number | null = null;
+  /** (TICKET=cysr-1121-ui-kfix ①) 파일 끝까지 다 읽고 끝난 마지막 기록 읽기의 **시작** 시각 — 10분 넘은 말 자동은 쓰기 직전에 시작한 온전한 읽기가 있어야만(readSettled). */
+  private lastFullRead: number | null = null;
+  /** (kfix ①) 지금 도는 기록 읽기가 끝나면 풀리는 약속(겹친 계기는 readAgain 으로 한 번 더 · 기다릴 수 있게). */
+  private readDone: Promise<void> | null = null;
 
   /** (cysr-1116-s6 · 조각 6) 왼쪽 메뉴바 장부 — 맡긴 일·팀·부서(대화 화면이 켜져 있을 때만 조회). */
   readonly rail: RailBook;
@@ -695,7 +699,8 @@ export class ChatCore {
 
   private patchMsg(id: string, patch: Partial<Msg>): boolean {
     // (TICKET=cysr-1121-ui K R1) 붙잡음으로 돌아가면 이번 시도의 보낸 글을 지운다 — 다음 시도는 원문에서 표지를 새로 만든다(표지 겹침 0).
-    const p = patch.step === "held" ? { ...patch, sentText: undefined } : patch;
+    //   (kfix ②·④) 이번 시도의 「썼음」·출처 불명·대기 들어감 표지도 시도와 함께 지운다.
+    const p = patch.step === "held" ? { ...patch, sentText: undefined, wrote: undefined, unsure: undefined, queuedSeen: undefined } : patch;
     return this.putMsgs(this.s.msgs.map((m) => (m.id === id ? { ...m, ...p } : m)));
   }
 
@@ -864,8 +869,23 @@ export class ChatCore {
   private agedAutoOk(m: Msg, master: MasterRow | null | undefined): boolean {
     if (!master || m.heldSeat !== master.surface_id) return false;
     // (TICKET=cysr-1121-ui K R1) 둘째 조건 — 이 말을 받아들인 뒤 결속 세션 기록에 남의 사람 차례가 나타났으면 표지가 같아도 클릭(RC·다른 기기 = 표지 안 늘 수 있음).
-    if (this.foreignHumanAt !== null && this.foreignHumanAt >= m.createdAt) return false;
+    if (this.foreignHumanAt !== null && this.foreignHumanAt >= m.createdAt - TS_SKEW_MS) return false; // (kfix ①) 기록 시각 흔들림만큼 보수 쪽으로
     return noOtherHumanInputSince(m.heldStamp, master.human_input_stamp, this.ownStamps.get(master.surface_id) ?? new Set());
+  }
+
+  /** (TICKET=cysr-1121-ui-kfix ①) 지금 시작한 기록 읽기가 파일 끝까지 닿았는가 — 겹친 읽기는 끝나길 기다렸다가 한 번 더(최대 3회).
+   *  참 = 이 시각 뒤에 시작한 온전한 읽기가 있었다(그때까지 쓰인 남의 사람 차례는 foreignHumanAt 에 들었다). 거짓 = 모름(→ 10분 넘은 말은 클릭). */
+  private async readSettled(): Promise<boolean> {
+    const since = this.d.now();
+    for (let i = 0; i < 3; i++) {
+      if (this.reading) {
+        if (this.readDone) await this.readDone; // 이 시각 앞에 시작한 읽기 — 끝나도 근거가 아니다(다음 바퀴에 새로 읽음)
+        continue;
+      }
+      await this.readTranscript("aged");
+      if (this.lastFullRead !== null && this.lastFullRead >= since) return true;
+    }
+    return false;
   }
 
   /** 붙잡은 지 10분 넘은 자동 말 → 사람 클릭 대기로(자동 제출 0) — ★(K-2 · master 10:2x) 단 받아들인 뒤 같은 좌석에 다른 길 사람 입력이 없었으면 자동 그대로(쓰기 직전에 다시 잰다). */
@@ -948,6 +968,10 @@ export class ChatCore {
     if (this.writing) return;
     this.writing = true;
     try {
+      // (TICKET=cysr-1121-ui-kfix ①) 10분 넘은 말은 자동으로 내기 전에 결속 세션 기록을 끝까지 읽는다 — 이미 쓰였지만 아직 안 읽은 남의 사람 차례(user·enqueue)를 놓치지 않게.
+      //   재조회(입력줄 관측) **앞**에서 한다(읽는 시간이 관측 나이 상한을 먹지 않게). 못 읽으면(실패·기록 없음·결속 바뀜·겹친 읽기가 안 끝남) 아래에서 클릭 대기.
+      const pre0 = this.s.msgs.find((x) => x.id === id);
+      const agedSettled = pre0 !== undefined && this.d.now() - pre0.createdAt > HELD_MAX_AGE_MS ? await this.readSettled() : false;
       let fresh = await this.freshBounded(); // ★쓰기 직전 재조회 1회(3초 목록을 믿지 않음 · 시간 상한 = 검증 지적 F)
       this.applyFresh(fresh);
       // (TICKET=cysr-chat-held-win) 결속 기록이 없다고 이미 확인된 좌석(1.1.16 윈 = 늘 none · 1.1.17 = 기록 못 연 좌석)은 보내기 길에서 시작점을 다시 묻지 않는다 —
@@ -988,7 +1012,7 @@ export class ChatCore {
         //   ★(K-2 · master 10:2x) 단 받아들인 뒤 같은 좌석에 다른 길 사람 입력이 없었으면(재조회 값으로 다시 잼) 「(N분 전에 쓰신 말)」 표지를 붙여 보낸다.
         //   ★(K R1) 표지는 매 시도 **원문**에서 한 번만 만든다(msg.text 는 바꾸지 않음 · 보낸 글 = sentText · 짝짓기만 sentText 로).
         const pre = composeOutbound(agedPrefix(age) + msg.text);
-        if (!this.agedAutoOk(msg, m) || !pre.ok) {
+        if (!agedSettled || !this.agedAutoOk(msg, m) || !pre.ok) {
           this.patchMsg(id, { step: "held", code: STALE, notBefore: undefined, note: STALE_NOTE });
           return;
         }
@@ -1040,6 +1064,11 @@ export class ChatCore {
       }
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
+      // (TICKET=cysr-1121-ui-kfix ②) 데몬이 썼다고 답함 = 응답 전에 붙인 같은 글 기록이 이 말의 것이라는 근거 → 「확인 못 함」을 푼다(그 뒤 붙는 기록은 처음부터 확정).
+      if (r.outcome === "written") {
+        const w = this.s.msgs.find((x) => x.id === id);
+        if (w) this.patchMsg(id, confirmWritten(w));
+      }
       const cur = this.s.msgs.find((x) => x.id === id);
       const merged = cur ? mergeOutcome(cur, step) : {};
       if (cur && merged.step === undefined) {
@@ -1330,6 +1359,9 @@ export class ChatCore {
     const m = this.s.master;
     if (!m) return;
     this.reading = true;
+    const startedAt = this.d.now(); // (kfix ①) 끝까지 읽은 읽기의 시작 시각 = lastFullRead
+    let doneRead: () => void = () => {};
+    this.readDone = new Promise<void>((res) => (doneRead = res));
     try {
       if (this.rebindWanted || this.resetWanted) {
         // (C-3 · reset) 결속 바뀜 = 세션째 비움 · 파일 바뀜 = 옛 레코드로 근거를 만들지 않음 — 둘 다 끝에서 다시 시작(initOffset 이 다시 건다)
@@ -1448,7 +1480,8 @@ export class ChatCore {
           const pooled = new Set(this.pendingUser.map((p) => p.r.uuid).filter((u): u is string => u !== null));
           for (const r of applied.unmatched) if (r.uuid === null || !pooled.has(r.uuid)) this.pendingUser.push({ r, seenAt: readAt });
           // (TICKET=cysr-1121-ui K R1) 이 화면 말과 짝 안 된 글 있는 user 레코드 = 남의 사람 차례(작업 화면·RC·다른 기기·중계 포함 · 뒤에 내 말로 짝지어져도 보수 쪽) — 가장 늦은 시각만 기억(agedAutoOk 둘째 조건).
-          for (const r of applied.unmatched) {
+          //   ★(kfix ①) 짝 없는 대기 들어감(enqueue)도 남의 사람 입력이다 — 흡수 전에는 user 레코드가 없어 위 unmatched 에 안 잡힌다.
+          for (const r of [...applied.unmatched, ...applied.foreignQueued]) {
             if (r.text === null) continue;
             const t = r.ts === null ? NaN : Date.parse(r.ts);
             const at = Number.isNaN(t) ? readAt : t;
@@ -1460,11 +1493,14 @@ export class ChatCore {
           const fresh = applied.stray.filter((x) => x.uuid === null || !known.has(x.uuid)).map((x) => (x.at === undefined ? { ...x, at: readAt } : x));
           this.putMsgs(settleSteps(applied.msgs, this.d.now(), null), { stray: [...this.s.stray, ...fresh].slice(-LOG_MAX) });
         }
+        if (typeof r.size === "number" && r.next_offset >= r.size) this.lastFullRead = startedAt; // (kfix ①) 이 읽기가 파일 끝(그때 크기)까지 닿았다
         if (typeof r.size !== "number" || r.next_offset >= r.size) return;
         if (tail && r.more !== true) return; // (C-4) tail = 읽기 상한에 걸렸을 때만 잇는다(끝의 미완 줄을 세 번 다시 읽지 않음 · 기존 명령 길은 1.1.18 그대로)
       }
     } finally {
       this.reading = false;
+      this.readDone = null;
+      doneRead();
       if (this.readAgain) {
         this.readAgain = false;
         void this.readTranscript("again");

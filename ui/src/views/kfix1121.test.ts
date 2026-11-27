@@ -18,7 +18,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
 /** 데몬 흉내(kheld1121 harness + 기록 읽기 실패 · 원자 제출 응답 늦추기) */
-function harness(o: { approvals?: number[]; working?: boolean; outcomes?: string[]; deferSend?: boolean } = {}) {
+function harness(o: { approvals?: number[]; working?: boolean; outcomes?: string[]; deferSend?: boolean ; agedAutoSend?: boolean } = {}) {
   const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
   const mem = new Map<string, string>();
   const outs = [...(o.outcomes ?? [])];
@@ -30,6 +30,7 @@ function harness(o: { approvals?: number[]; working?: boolean; outcomes?: string
   const stamp = () => `1795:${seq}`;
   const row = () => ({ surface_id: st.sid, role: "master", exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: st.working, human_input_stamp: stamp() });
   const deps: Deps = {
+    agedAutoSend: o.agedAutoSend, // (1.1.21 B안) 생략 = 끔
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === "org_status") return { surfaces: [row()] };
@@ -115,7 +116,7 @@ describe("① 10분 보호 — 남의 enqueue · 안 읽은 기록 · 읽기 실
     expect(h.core.state.msgs[0].code).toBe(STALE);
   });
   it("대조군 — 남의 입력 0 · 기록 끝까지 읽힘 → 10분 넘어도 자동(표지)", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send(ORIG);
     await aged(h);

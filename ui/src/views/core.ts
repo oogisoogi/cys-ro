@@ -59,6 +59,10 @@ export const STATUS_TIMEOUT = "status_timeout";
 export const RESTORED = "restored";
 /** 붙잡은 지 이만큼 지난 말은 자동으로 보내지 않는다 — 사람 클릭 1회로만(master 결정 11-17 23:2x · 10분 · VERIFY 지적 5). */
 export const HELD_MAX_AGE_MS = 600_000;
+/** (1.1.21 B안 · master#8a44f2aa · 통합 codex K 4R 남은 ①) 10분 넘은 말 「(N분 전에 쓰신 말)」 자동 보냄(K-2) — **끔**(늘 사람 클릭 = K 이전 동작).
+ *  켜면 쓰기 직전 대기 중 기록 reset 을 보고도 옛 offset·연속 시각으로 재검사를 통과해, 남의 입력을 확인 못 한 오래된 말이 저절로 갈 길이 남는다
+ *  (r4 ① · core.ts deliver aged 갈래). 길은 코드에 남김(시험이 Deps.agedAutoSend=true 로 고정) · 다시 켜기 = 다음 판에서 그 경합을 닫은 뒤. */
+export const AGED_AUTO_SEND: boolean = false;
 export const STALE = "stale";
 /** (K-1) 10분 넘어 사람 클릭을 기다리는 말의 안내 — 첫 마디 = 「아직 안 보냈어요」(11-26 윈 제보 「보냈다고 여김」). */
 export const STALE_NOTE = "아직 안 보냈어요 · 오래 기다린 말이라 보낼지 여쭤요 — 「이 말 보내기」를 누르면 지금 보내요.";
@@ -164,6 +168,8 @@ export interface Deps {
   working(row: Record<string, unknown>): boolean;
   /** (TICKET=cysr-1121-ui K-3) 마스터가 답하는 중에도 넘기는가 — 없으면 gate.U25_BUSY_PASTE_OK(실측 = 받아 둔다 · true). 되돌리기 판·시험이 false 로 종전(쉴 때만 보냄) 동작을 고른다. */
   busyPasteOk?: boolean;
+  /** (1.1.21 B안) 10분 넘은 말 자동 보냄(K-2) — 없으면 AGED_AUTO_SEND(끔). 시험이 true 로 K-2 길을 고정한다. */
+  agedAutoSend?: boolean;
   /** (TICKET=cysr-chat-held-win) 대화 화면 문턱·마스터 카드 전용 「답하는 중」(judge/gate chatWorking — 자기 신고 없으면 출력 10초 정적 = 쉼). 없으면 working. */
   chatWorking?(row: Record<string, unknown>): boolean;
   /** (조각 4) daemon-event 구독 — 대화 화면이 켜져 있을 때만(attach~detach). 없으면 사건 없이(멈춤 = org.status·5분 규칙만).
@@ -709,7 +715,8 @@ export class ChatCore {
     if (kept.length > LOG_MAX) {
       const done = new Set(["replied", "failed"]);
       let drop = kept.length - LOG_MAX;
-      kept = kept.filter((m) => !(drop > 0 && done.has(m.step) && drop-- > 0));
+      // (1.1.21 · 통합 codex K 4R ②) 끝난 말 판정 = viewStep — 「확인 못 함」(내부 단계가 답함이어도)은 지우지 않는다(같은 글 막힘 근거 유지).
+      kept = kept.filter((m) => !(drop > 0 && done.has(viewStep(m)) && drop-- > 0));
     }
     const saved = this.saveHold(kept);
     this.set({ msgs: kept, ...extra });
@@ -886,6 +893,7 @@ export class ChatCore {
   /** (K-2) 10분 넘은 말이라도 자동으로 보내도 되는가 — 받아들일 때의 좌석과 같고, 그 뒤 그 좌석에 다른 길 사람 입력이 없었다(마지막 관측 기준).
    *  master = 판정에 쓸 마스터 행(쓰기 직전 = 재조회 값 · 그 밖 = 마지막 3초 조회 값). 모르면 false(= 사람 클릭 · 종전). */
   private agedAutoOk(m: Msg, master: MasterRow | null | undefined): boolean {
+    if (!(this.d.agedAutoSend ?? AGED_AUTO_SEND)) return false; // (1.1.21 B안) 끔 = 10분 넘은 말은 늘 클릭
     if (!master || m.heldSeat !== master.surface_id) return false;
     // (TICKET=cysr-1121-ui K R1) 둘째 조건 — 이 말을 받아들인 뒤 결속 세션 기록에 남의 사람 차례가 나타났으면 표지가 같아도 클릭(RC·다른 기기 = 표지 안 늘 수 있음).
     if (this.foreignHumanAt !== null && this.foreignHumanAt >= m.createdAt - TS_SKEW_MS) return false; // (kfix ①) 기록 시각 흔들림만큼 보수 쪽으로

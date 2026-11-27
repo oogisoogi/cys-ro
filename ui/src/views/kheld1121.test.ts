@@ -6,14 +6,14 @@
 // 대조군 = fafe3eee1(v1.1.20): U25_BUSY_PASTE_OK=false(바쁘면 붙잡음) · accepted 단계·noOtherHumanInputSince·discardHeld·agedPrefix 없음 → 아래 전부 붉음.
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { agedPrefix, ChatCore, DISCARD_FAILED_NOTE, DUP, dupPending, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, STALE, STALE_NOTE, type Deps } from "./core";
+import { agedPrefix, ChatCore, DISCARD_FAILED_NOTE, DUP, dupPending, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, LOG_MAX, STALE, STALE_NOTE, type Deps } from "./core";
 import { HUMAN_GAP_MAX, noOtherHumanInputSince, sendGate, type MasterRow } from "./judge/gate";
 import { ABSORBED_NOTE, ACCEPTED_NOTE, applyRecords, canRetry, HELD_CLICK_LABEL, mergeOutcome, QUEUE_REMOVED_NOTE, rematchPending, settleSteps, SLOW_MS, STEP_LABEL, WITH_NEXT_NOTE, type Msg, type Rec } from "./judge/msgstep";
 
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 
 /** 데몬 흉내 — 사람 입력 표지 = `<세대>:<번호>` · 원자 제출이 쓰이면 번호 +1 · 다른 길 입력 = other() */
-function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolean; outcomes?: string[] } = {}) {
+function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolean; outcomes?: string[]; agedAutoSend?: boolean } = {}) {
   const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
   const mem = new Map<string, string>();
   const outs = [...(o.outcomes ?? [])]; // (K R1) 원자 제출 응답 차례 — 비면 written
@@ -33,6 +33,7 @@ function harness(o: { approvals?: number[]; working?: boolean; stampKey?: boolea
     return r;
   };
   const deps: Deps = {
+    agedAutoSend: o.agedAutoSend, // (1.1.21 B안) 생략 = 제품 기본값(끔 · 10분 넘은 말은 늘 클릭)
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === "org_status") return { surfaces: [row()] };
@@ -169,7 +170,7 @@ describe("K-2 10분 상한 좁힘 — 받아들인 뒤 같은 좌석 다른 길 
     expect(noOtherHumanInputSince("1795:3", `1795:${HUMAN_GAP_MAX + 4}`, many)).toBe(false); // 차이 상한
   });
   it("승인 대기로 10분 넘게 붙잡힘 · 그 사이 다른 길 입력 0 → 문턱이 열리면 자동 · 앞에 「(N분 전에 쓰신 말)」", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send("그 파일 지워 줘");
     expect(h.writes()).toHaveLength(0);
@@ -260,7 +261,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
   const ORIG = "그 파일 지워 줘";
   const P = "(10분 전에 쓰신 말) ";
   it("붙잡음 → 10분 넘어 자동 → 데몬 거부(붙잡음) → 다시 자동 = 표지 한 번씩 · 원문·저장본 그대로", async () => {
-    const h = harness({ approvals: [5], outcomes: ["held", "written"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["held", "written"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -279,7 +280,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(h.core.state.msgs[0].sentText).toBe(P + ORIG);
   });
   it("표지 붙여 보낸 말이 불명 → 사람이 원문을 다시 침 = 같은 말 겹침(쓰기 0) · 표지 붙은 기록이 오면 그 말이 「전달됨」", async () => {
-    const h = harness({ approvals: [5], outcomes: ["uncertain"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["uncertain"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -300,7 +301,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(rematchPending([m0], [{ r: { uuid: "u3", parent: null, role: "user", text: P + ORIG, ts: null }, seenAt: (m0.sentAt as number) + 1 }]).msgs[0].step).toBe("delivered");
   });
   it("표지 붙여 보낸 말이 확정 실패 → 다시 보내기 = 원문(새 말 · 10분 안 = 표지 없음)", async () => {
-    const h = harness({ approvals: [5], outcomes: ["failed"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["failed"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -314,7 +315,7 @@ describe("K R1 ⑤ 원문 보존 — 10분 표지는 시도마다 원문에서 �
     expect(h.writes().map((c) => c.args?.text)).toEqual([P + ORIG, ORIG]);
   });
   it("확정 실패 → 다시 보낸 말이 또 10분 넘게 붙잡힘 → 새 표지 한 번만(겹침 0)", async () => {
-    const h = harness({ approvals: [5], outcomes: ["failed"] });
+    const h = harness({ agedAutoSend: true,  approvals: [5], outcomes: ["failed"] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -456,7 +457,7 @@ describe("K R1 ① 남의 사람 차례 — 표지가 같아도 세션 기록에
     expect(h.core.state.msgs[0].note).toBe(STALE_NOTE);
   });
   it("남의 차례가 받아들이기 전 시각이면 그대로 자동(대조군)", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send("그 파일 지워 줘");
     h.st.file.push({ uuid: "f1", parent: null, role: "user", text: "앞서 친 말", ts: new Date(h.getNow() - 60_000).toISOString() });
@@ -486,7 +487,7 @@ describe("K R1 ⑥ 내 표지 = written 만", () => {
     expect(h.core.state.msgs[1].code).toBe(STALE);
   });
   it("대조군 — 앞 말이 written 이면 그 번호는 내 것 → 뒤 말 10분 넘어도 자동", async () => {
-    const h = harness({ outcomes: ["written"] });
+    const h = harness({ agedAutoSend: true,  outcomes: ["written"] });
     await h.core.poll();
     await h.core.send("앞 말");
     h.st.approvals = [5];
@@ -514,5 +515,30 @@ describe("K R1 minor 「보내지 않기」 저장 실패 = 말을 지우지 않
     h.core.discardHeld(id);
     expect(h.core.state.msgs).toHaveLength(0);
     expect(h.mem.get(HOLD_KEY)).toBeUndefined();
+  });
+});
+
+describe("K 마지막(1.1.21 B안 · master#8a44f2aa) — 10분 넘은 말 자동 보냄 끔 · 정리 판정 = viewStep", () => {
+  it("기본값: 10분 넘게 붙잡힘 · 그 사이 다른 길 입력 0 이어도 자동 0 → 클릭 대기(「아직 안 보냈어요」) · 누르면 원래 글로", async () => {
+    const h = harness({ approvals: [5] });
+    await h.core.poll();
+    await h.core.send("그 파일 지워 줘");
+    h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
+    h.st.approvals = [];
+    for (let i = 0; i < 3; i++) await h.core.poll();
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].code).toBe(STALE);
+    await h.core.confirmHeld(h.core.state.msgs[0].id);
+    expect(h.writes().map((c) => c.args?.text)).toEqual(["그 파일 지워 줘"]); // 표지 없이 원래 글
+  });
+  it("정리(LOG_MAX)는 「확인 못 함」 말을 답함으로 보고 지우지 않는다 — 같은 글 막힘 근거 유지(r4 ②)", () => {
+    const h = harness();
+    const mk = (i: number, o: Partial<Msg> = {}): Msg => ({ id: `f${i}`, text: `채움${i}`, createdAt: 1_000 + i, sentAt: 1_000 + i, step: "replied", thread: [], replies: [], ...o } as Msg);
+    const unsure = mk(-1, { id: "u", text: "같은 글", unsure: true, userUuid: "uu", thread: ["uu"] });
+    const fill = Array.from({ length: LOG_MAX }, (_, i) => mk(i));
+    (h.core as unknown as { putMsgs(m: Msg[]): boolean }).putMsgs([unsure, ...fill]);
+    expect(h.core.state.msgs.some((m) => m.id === "u")).toBe(true);
+    expect(h.core.state.msgs).toHaveLength(LOG_MAX); // 대신 답함 말 하나가 빠짐
+    expect(dupPending(h.core.state.msgs, "같은 글")).toBe(true);
   });
 });

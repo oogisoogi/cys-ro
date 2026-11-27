@@ -26,7 +26,7 @@ const ticks = async (n = 20) => {
 };
 
 /** 데몬 흉내(kfix1121 harness + 기록 없음 · 건너뜀 · 끝나지 않는 읽기 · 시각 상한 타이머) */
-function harness(o: { approvals?: number[]; outcomes?: string[]; none?: boolean } = {}) {
+function harness(o: { approvals?: number[]; outcomes?: string[]; none?: boolean ; agedAutoSend?: boolean } = {}) {
   const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
   const mem = new Map<string, string>();
   const outs = [...(o.outcomes ?? [])];
@@ -38,6 +38,7 @@ function harness(o: { approvals?: number[]; outcomes?: string[]; none?: boolean 
   const stamp = () => `1795:${seq}`;
   const row = () => ({ surface_id: st.sid, role: "master", exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: false, human_input_stamp: stamp() });
   const deps: Deps = {
+    agedAutoSend: o.agedAutoSend, // (1.1.21 B안) 생략 = 끔
     invoke: async (cmd, args) => {
       calls.push({ cmd, args });
       if (cmd === "org_status") {
@@ -151,7 +152,7 @@ describe("① 10분 넘은 말 — 건너뛴 기록 구간이 있으면 온전 �
     expect(h.core.state.msgs[0].code).toBe(STALE);
   });
   it("기록 확인(readSettled)은 통과했으나 쓰기 직전 재조회 사이에 reset → 쓰기 직전에 다시 재서 클릭", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.send(ORIG);
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -171,7 +172,7 @@ describe("① 10분 넘은 말 — 건너뛴 기록 구간이 있으면 온전 �
     expect(h.core.state.msgs[0].code).toBe(STALE);
   });
   it("대조군 — reset 이 말을 받아들이기 **전**이고 그 뒤 빠짐없이 읽힘 → 10분 넘어도 자동(표지)", async () => {
-    const h = harness({ approvals: [5] });
+    const h = harness({ agedAutoSend: true,  approvals: [5] });
     await h.core.poll();
     await h.core.readTranscript("reset");
     h.setNow(h.getNow() + 10_000);

@@ -435,8 +435,9 @@ describe("K R1 ③ 하던 일 중간 흡수 — U25-B·U25-D 실측 꼴 재생(u
     expect(ABSORBED_NOTE).toBe("하던 일 중간에 받아 읽었어요 — 그 뒤 마스터 글은 하던 일 이야기와 섞여 있어 아래 「마스터」 줄로 따로 보여요");
     expect(WITH_NEXT_NOTE).toBe("다음 말과 함께 받아 읽었어요 — 그 뒤 마스터 글은 아래 「마스터」 줄로 따로 보여요");
     const CHAT = strip(readFileSync(new URL("./chat/index.ts", import.meta.url), "utf8"));
-    expect(CHAT).toContain('if (m.withNext) li.append(el("div", "cv-note cv-absorbed", WITH_NEXT_NOTE));');
-    expect(CHAT).toContain('else if (m.absorbed) li.append(el("div", "cv-note cv-absorbed", ABSORBED_NOTE));');
+    // (kfix2 ②′) 흡수·함께 안내는 absorbedNote 한 곳(확인 못 함이면 단정 없는 문구) — 확인된 말은 위 두 문구 그대로(kfix2_1121.test.ts 가 값 검사).
+    expect(CHAT).toContain('const ab = absorbedNote(m);');
+    expect(CHAT).toContain('if (ab) li.append(el("div", "cv-note cv-absorbed", ab));');
   });
 });
 

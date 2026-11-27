@@ -140,11 +140,30 @@ export const WITH_NEXT_NOTE = "다음 말과 함께 받아 읽었어요 — 그 
 export const UNSURE_LABEL = "확인 못 함";
 export const UNSURE_NOTE = "마스터 기록에 같은 글이 보여요 — 이 화면에서 보낸 말이 전해진 것인지는 확인할 수 없어요(다른 길로 같은 글이 들어왔을 수 있어요 · 다시 보내지 않아요).";
 
+/** (TICKET=cysr-1121-ui-kfix2 ②) 화면·같은 말 겹침 판정이 보는 단계 — 쓰였는지 모르는 시도에 같은 글 기록이 붙은 말(unsure)은 내부 단계(받아 둠·전달됨·답하는 중·답함)와 무관하게 "unsure".
+ *  내부 단계(m.step)는 답 사슬·턴 끝 판정에만 쓴다 — 이름·진행 줄·말풍선 꼴·흡수 안내·겹침·같은 글 전달 안내는 모두 이 값 한 곳을 본다. */
+export type ViewStep = Step | "unsure";
+export function viewStep(m: Msg): ViewStep {
+  if (m.unsure && (m.step === "accepted" || EVIDENCED.has(m.step))) return "unsure";
+  return m.step;
+}
+
 /** (kfix ②·④) 말 한 건의 단계 이름 — 화면은 STEP_LABEL[m.step] 대신 이것을 쓴다. */
 export function stepLabel(m: Msg): string {
   if (m.step === "checking" && m.code === QUEUE_REMOVED) return QUEUE_REMOVED_LABEL;
-  if (m.unsure && (m.step === "accepted" || EVIDENCED.has(m.step))) return UNSURE_LABEL;
-  return STEP_LABEL[m.step];
+  const v = viewStep(m);
+  return v === "unsure" ? UNSURE_LABEL : STEP_LABEL[v];
+}
+
+/** (kfix2 ②′) 확인 못 함인 흡수·함께 읽힘 말의 안내 — 「받아 읽었어요」라고 단정하지 않는다(같은 글이 다른 길로 들어왔을 수 있음). */
+export const UNSURE_ABSORBED_NOTE = "같은 글이 하던 일 중간에 읽혔어요 — 이 화면에서 보낸 말인지는 확인할 수 없어요 · 그 뒤 마스터 글은 아래 「마스터」 줄로 따로 보여요";
+export const UNSURE_WITH_NEXT_NOTE = "같은 글이 다음 말과 함께 읽혔어요 — 이 화면에서 보낸 말인지는 확인할 수 없어요 · 그 뒤 마스터 글은 아래 「마스터」 줄로 따로 보여요";
+/** (kfix2 ②′) 흡수·함께 읽힘 안내(없으면 null) — 화면은 이 한 곳으로(확인 못 함이면 단정 없는 문구). */
+export function absorbedNote(m: Msg): string | null {
+  const unsure = viewStep(m) === "unsure";
+  if (m.withNext) return unsure ? UNSURE_WITH_NEXT_NOTE : WITH_NEXT_NOTE;
+  if (m.absorbed) return unsure ? UNSURE_ABSORBED_NOTE : ABSORBED_NOTE;
+  return null;
 }
 
 /** (kfix ②) 원자 제출 응답이 written 일 때 그 말에 합칠 것(순수) — 「썼음」 표지 + 출처 불명 표지 풀기(같은 글 기록이 이 말의 것이라는 근거가 왔다). */

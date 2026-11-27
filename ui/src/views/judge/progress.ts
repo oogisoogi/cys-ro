@@ -5,7 +5,7 @@
 // 생각 내용(thinking 글)은 세션 기록에 빈 칸으로 저장돼 보여 줄 수 없다(11-22 실측 10/10) → 「생각하는 중」 표지만.
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지(시각은 인자).
 
-import { STEP_LABEL, type Msg, type Rec, type Step } from "./msgstep";
+import { stepLabel, UNSURE_LABEL, viewStep, type Msg, type Rec, type Step } from "./msgstep";
 
 export interface ProgStep {
   kind: "tool" | "text" | "think";
@@ -205,8 +205,10 @@ export function progressLine(m: Msg, now: number, live: boolean, opts: { summary
   const last = steps[steps.length - 1];
   const answering = (m.step === "replying" || m.step === "delivered") && last;
   const elapsed = elapsedOrNull(now - m.sentAt);
-  if (answering && summary) return { text: [summary, elapsed, `지금: ${last.label}`].filter((x): x is string => !!x).join(" · "), live: true };
-  const head = answering ? (last.hint ? `${last.label} · ${last.hint}` : last.label) : STEP_LABEL[m.step];
+  // (TICKET=cysr-1121-ui-kfix2 ②′) 쓰였는지 모르는 말 = 진행 줄 첫 마디도 「확인 못 함」(말풍선 이름과 같은 값 · 「받아 둠」·「전달됨」 단정 0) — 과정 단계는 그 글에 대한 마스터 일이라 그대로 잇는다.
+  const unsure = viewStep(m) === "unsure" ? UNSURE_LABEL : null;
+  if (answering && summary) return { text: [unsure, summary, elapsed, `지금: ${last.label}`].filter((x): x is string => !!x).join(" · "), live: true };
+  const head = answering ? [unsure, last.label, last.hint].filter((x): x is string => !!x).join(" · ") : stepLabel(m);
   return { text: elapsed ? `${head} · ${elapsed}` : head, live: true };
 }
 

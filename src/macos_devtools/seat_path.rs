@@ -1233,10 +1233,10 @@ exit 0
     fn user_root_is_respected_and_stray_marker_dropped() {
         let f = fx("user");
         let mut env = seat_env(&f.rt);
-        env.insert(ENV_PATH_HELPER_ROOT.into(), "/Users/someone/myroot".into());
+        env.insert(ENV_PATH_HELPER_ROOT.into(), "/Users/user/myroot".into());
         env.insert(ENV_CYS_PATH_HELPER_ROOT.into(), "/other".into());
         assert_eq!(seat_path_verdict(&f.ctx, &mut env), Some(SeatPathVerdict::UserRoot));
-        assert_eq!(g(&env, ENV_PATH_HELPER_ROOT).as_deref(), Some("/Users/someone/myroot"));
+        assert_eq!(g(&env, ENV_PATH_HELPER_ROOT).as_deref(), Some("/Users/user/myroot"));
         assert_eq!(g(&env, ENV_CYS_PATH_HELPER_ROOT), None, "값이 다른 짝 표식은 지워야 한다");
         assert_eq!(g(&env, ENV_CYS_SEAT_PATH_VERDICT).as_deref(), Some("user-root"));
         // base 의 손자(바로 아래 아님)는 우리 것이 아니다.

@@ -230,6 +230,40 @@ fn is_executable_file(p: &Path) -> bool {
     super::is_executable_file(p)
 }
 
+/// 데몬 부팅 scrub(설계 §2-3) — ②와 **같은 식별**로 우리 것이면 두 root 키를 지우고, 진단 표지는 늘 지운다
+/// (판정 재료가 아닌 우리 전용 키 · 좌석 안에서 뜬 데몬의 다른 자식(스케줄 잡 등)에 옛 값이 남지 않게 · Fable r4).
+/// 돌려주는 값 = 지운 키(로그용).
+pub fn scrub_boot_env(env: &mut dyn SeatEnv, base: &Path) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    let (root, marker) = scrub_inherited_ours(env, base);
+    if root {
+        out.push(ENV_PATH_HELPER_ROOT);
+    }
+    if marker {
+        out.push(ENV_CYS_PATH_HELPER_ROOT);
+    }
+    if env.get(ENV_CYS_SEAT_PATH_VERDICT).is_some() {
+        env.remove(ENV_CYS_SEAT_PATH_VERDICT);
+        out.push(ENV_CYS_SEAT_PATH_VERDICT);
+    }
+    out
+}
+
+/// 이 프로세스 env(데몬 부팅 scrub 용).
+pub struct ProcessEnv;
+
+impl SeatEnv for ProcessEnv {
+    fn get(&self, key: &str) -> Option<OsString> {
+        std::env::var_os(key)
+    }
+    fn set(&mut self, key: &str, val: &OsStr) {
+        std::env::set_var(key, val);
+    }
+    fn remove(&mut self, key: &str) {
+        std::env::remove_var(key);
+    }
+}
+
 /// ⑥ 글자 검사 — 통과해야 path_helper 출력 문자열 = `eval` 결과(검증 문자열 비교가 곧 셸 결과).
 pub fn path_chars_safe(dir: &Path) -> bool {
     match dir.to_str() {
@@ -1050,6 +1084,29 @@ printf 'PATH="%s"; export PATH;\n' "$out"
                 other => panic!("{val:?} → {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn boot_scrub_uses_the_same_identification() {
+        let base = PathBuf::from("/h/.cys/path-helper-root");
+        let mk = |pairs: &[(&str, &str)]| -> BTreeMap<String, OsString> {
+            pairs.iter().map(|(k, v)| (k.to_string(), OsString::from(*v))).collect()
+        };
+        // 표식 같음.
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/x/r"), (ENV_CYS_PATH_HELPER_ROOT, "/x/r"), (ENV_CYS_SEAT_PATH_VERDICT, "applied:git")]);
+        assert_eq!(scrub_boot_env(&mut e, &base), vec![ENV_PATH_HELPER_ROOT, ENV_CYS_PATH_HELPER_ROOT, ENV_CYS_SEAT_PATH_VERDICT]);
+        assert!(e.is_empty());
+        // 표식만 떨어진 우리 root(경로 꼴) — codex r4 minor.
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/h/.cys/path-helper-root/0123456789abcdef.g2")]);
+        assert_eq!(scrub_boot_env(&mut e, &base), vec![ENV_PATH_HELPER_ROOT]);
+        // 사용자 값 = 무접촉(진단 표지만 지움).
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/mine"), (ENV_CYS_SEAT_PATH_VERDICT, "user-root")]);
+        assert_eq!(scrub_boot_env(&mut e, &base), vec![ENV_CYS_SEAT_PATH_VERDICT]);
+        assert_eq!(g(&e, ENV_PATH_HELPER_ROOT).as_deref(), Some("/mine"));
+        // 아무것도 없음.
+        let mut e = mk(&[("OTHER", "1")]);
+        assert!(scrub_boot_env(&mut e, &base).is_empty());
+        assert_eq!(e.len(), 1);
     }
 
     #[test]

@@ -1199,6 +1199,26 @@ exit 0
         assert_eq!(e.len(), 1);
     }
 
+    /// 홈을 모를 때(base 없음)의 ② — 짝 표식 같음·빈 값만 걷고 경로 꼴·사용자 값은 그대로(codex 코드 r3 시험 빈칸).
+    #[test]
+    fn scrub_without_home_uses_marker_and_empty_only() {
+        let mk = |pairs: &[(&str, &str)]| -> BTreeMap<String, OsString> {
+            pairs.iter().map(|(k, v)| (k.to_string(), OsString::from(*v))).collect()
+        };
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/x/r"), (ENV_CYS_PATH_HELPER_ROOT, "/x/r")]);
+        assert_eq!(scrub_inherited_ours_opt(&mut e, None), (true, true));
+        assert!(e.is_empty());
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "")]);
+        assert_eq!(scrub_inherited_ours_opt(&mut e, None), (true, false));
+        assert!(e.is_empty());
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/h/.cys/path-helper-root/abc")]);
+        assert_eq!(scrub_inherited_ours_opt(&mut e, None), (false, false), "base 를 모르면 경로 꼴로는 못 가린다");
+        assert_eq!(g(&e, ENV_PATH_HELPER_ROOT).as_deref(), Some("/h/.cys/path-helper-root/abc"));
+        let mut e = mk(&[(ENV_PATH_HELPER_ROOT, "/mine"), (ENV_CYS_PATH_HELPER_ROOT, "/other")]);
+        assert_eq!(scrub_inherited_ours_opt(&mut e, None), (false, true));
+        assert_eq!(g(&e, ENV_PATH_HELPER_ROOT).as_deref(), Some("/mine"));
+    }
+
     #[test]
     fn rollback_knobs_are_strict_zero() {
         assert!(mac_seat_path_rollback_from(Some("0"), None));

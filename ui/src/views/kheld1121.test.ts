@@ -100,11 +100,11 @@ describe("K-1 글 — 사람이 해야 할 일이 단계 이름에 든다", () =
 });
 
 describe("K-3 바쁠 때도 넘김 — U25 실측(받아 둔다)", () => {
-  it("마스터가 답하는 중이어도 기본값은 쓴다(쓰기 1 · 붙잡음 0)", async () => {
+  it("(C안 · 1.1.21 내림) 마스터가 답하는 중이면 기본값은 붙잡는다(쓰기 0) — 「바쁠 때 넘김」 끔", async () => {
     const h = harness({ working: true });
     await h.core.send("바쁠 때 보낸 말");
-    expect(h.writes().map((c) => c.args?.text)).toEqual(["바쁠 때 보낸 말"]);
-    expect(h.core.state.msgs[0].step).not.toBe("held");
+    expect(h.writes()).toHaveLength(0);
+    expect(h.core.state.msgs[0].step).toBe("held");
   });
   const base = (o: Partial<Msg> = {}): Msg => ({ id: "m1", text: "U25-B 첫 줄\n둘째 줄", createdAt: 1_000, sentAt: 1_000, step: "injected", thread: [], replies: [], wrote: true, ...o }); // (kfix ②) 데몬이 썼다고 답한 말
   const ts = (ms: number) => new Date(ms).toISOString();
@@ -144,10 +144,10 @@ describe("K-3 바쁠 때도 넘김 — U25 실측(받아 둔다)", () => {
     expect(dupPending([base({ step: "accepted" })], "U25-B 첫 줄\n둘째 줄")).toBe(true);
     expect(dupPending([base({ step: "accepted" })], "다른 글")).toBe(false);
   });
-  it("되돌리기 = gate 인자 false 면 종전(바쁨 붙잡음)", () => {
+  it("(C안) 기본값 = 바쁨 붙잡음 · gate 인자 true 면 넘김(K-3 길은 코드에 남음)", () => {
     const m: MasterRow = { surface_id: 5, exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, working: true };
-    expect(sendGate({ master: m, approvalSeats: [] })).toEqual({ ok: true });
-    expect(sendGate({ master: m, approvalSeats: [], busyPasteOk: false }).ok).toBe(false);
+    expect(sendGate({ master: m, approvalSeats: [] }).ok).toBe(false);
+    expect(sendGate({ master: m, approvalSeats: [], busyPasteOk: true })).toEqual({ ok: true });
   });
 });
 

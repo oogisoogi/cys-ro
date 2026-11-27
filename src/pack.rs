@@ -1236,6 +1236,13 @@ fn merge_desired_hooks_core(
         if hook_registered_with_timeout_in(&root, h.event, &desired, declared) {
             continue;
         }
+        // ★1.1.21 G r2(codex 2R minor): 인정 줄(정확 일치 줄 포함 · 윈 전용) 중 **하나라도** 선언 timeout 을 채우면 아무것도
+        //   고치지 않는다 — 아래 정확 일치 교정이 먼저 돌면 이미 충족한 인정 줄이 있어도 정확 일치 줄을 올려 파일을 썼다.
+        //   unix = `variant` 가 늘 빈 목록이라 종전 경로 그대로.
+        let variants = variant(&root, h.event, h.script);
+        if variants.iter().any(|e| hook_registered_with_timeout_in(&root, h.event, e, declared)) {
+            continue;
+        }
         // ★교체 경로 — 명령은 이미 있고 선언 timeout 만 미달인 경우. 여기서 append 로 가면
         //   동일 명령이 중복 등재된다(발화 2배 = 폭주 방향).
         if let Some(want) = declared {
@@ -1250,13 +1257,11 @@ fn merge_desired_hooks_core(
         //   append 하지 않는다 — 런처 글자만 다른 줄을 하나 더 붙이면 같은 훅이 두 번 발화한다(맥 재현:
         //   윈 꼴 `C:/…/bash.exe "…"` 등록 + 병합 = 같은 스크립트 줄 2개). 선언 timeout 미달이면 그 줄만 올린다.
         //   unix 는 `variant` 가 늘 `None` 이라 종전 경로 그대로.
-        //   ★1.1.21 G r1(codex 1R minor): 인정 줄이 여럿이면 **하나라도** 선언 timeout 을 채우면 그대로 두고, 전부 미달일 때만
-        //   첫 줄을 올린다(종전 = 첫 줄만 보고 채운 줄이 뒤에 있어도 첫 줄을 교정).
-        let variants = variant(&root, h.event, h.script);
+        //   ★1.1.21 G r1(codex 1R minor): 인정 줄이 여럿이면 **하나라도** 선언 timeout 을 채우면 그대로 두고(위 G r2 에서 이미
+        //   continue), 전부 미달일 때만 올린다 — 정확 일치 줄이 있으면 그 줄(위 교체 경로) · 없으면 설정 순서 첫 인정 줄.
         if let Some(first) = variants.first() {
             if let Some(want) = declared {
-                if !variants.iter().any(|e| hook_registered_with_timeout_in(&root, h.event, e, declared))
-                    && raise_hook_timeout_in(&mut root, h.event, first, want)
+                if raise_hook_timeout_in(&mut root, h.event, first, want)
                 {
                     added.push(format!("{}←{} (timeout={want}s 교정)", h.event, h.script));
                 }
@@ -8439,6 +8444,23 @@ mod tests {
             std::fs::write(&p, &body).unwrap();
             assert!(verify_desired_hooks_registered_core(&p, &one, &desired, &fixed).is_empty(), "flip={flip}");
             assert!(merge_desired_hooks_core(&p, &one, &desired, &fixed).unwrap().is_empty(), "flip={flip}");
+            assert_eq!(std::fs::read_to_string(&p).unwrap(), body, "flip={flip}: 파일 무변");
+        }
+        // G r2(codex 2R minor): 정확 일치 줄(미달) + 다른 인정 줄(충족) — 두 순서 모두 무변경(정확 일치 교정이 먼저 돌지 않음)
+        let desired_bash = |s: &str| windows_hook_command("bash", &script(s));
+        for flip in [false, true] {
+            let mut lines = vec![
+                serde_json::json!({"type": "command", "command": desired_bash(ups.script), "timeout": low}),
+                serde_json::json!({"type": "command", "command": windows_hook_command(l, &script(ups.script)), "timeout": want}),
+            ];
+            if flip {
+                lines.reverse();
+            }
+            let p = td.join(format!("exact-low-{flip}.json"));
+            let body = serde_json::to_string_pretty(&serde_json::json!({"hooks": {ups.event: [{"hooks": lines}]}})).unwrap();
+            std::fs::write(&p, &body).unwrap();
+            assert!(verify_desired_hooks_registered_core(&p, &one, &desired_bash, &fixed).is_empty(), "flip={flip}");
+            assert!(merge_desired_hooks_core(&p, &one, &desired_bash, &fixed).unwrap().is_empty(), "flip={flip}");
             assert_eq!(std::fs::read_to_string(&p).unwrap(), body, "flip={flip}: 파일 무변");
         }
         // 둘 다 미달 → 첫 줄만 교정 · 그 뒤 충족

@@ -6849,7 +6849,9 @@ fn spawn_bundled_cysd() -> Result<(), String> {
         }
     }
     // launchd::log_path 는 mac 전용 경로 규약(#![cfg(target_os = "macos")])이라 그 외 OS(windows 포함)는
-    // 기존 null() 을 유지한다 — 별도 로그 파일 규약이 정해지면 그때 동등 배선한다.
+    // 기존 null() 을 유지한다. ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) windows 는 cysd 가 기동 첫머리에 자기 표준 오류가
+    // NUL·없음이면 스스로 상태 폴더 cysd.log(%LOCALAPPDATA%\cys · 상한·회전 1겹)로 붙는다(src/bin/cysd/winlog.rs) — 작업 스케줄러·CLI
+    // 자동 기동까지 한 곳에서 덮으려고 여기서 따로 열지 않는다(앱이 파일을 넘기면 데몬은 「일부러 받는 표준 오류」로 보고 붙지도 회전하지도 않는다).
     #[cfg(not(target_os = "macos"))]
     {
         command

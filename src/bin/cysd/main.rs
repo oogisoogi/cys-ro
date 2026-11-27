@@ -1149,6 +1149,17 @@ fn scrub_update_txn_env() {
     }
 }
 
+/// ★(1.1.21 · cysr-1121-restore D5 · Fable 코드 1R minor) 데몬은 「복원 중 기동 거절」 의 표지·손잡이를 물려받지 않는다 — 데몬 env 는
+/// 좌석 전체로 상속되므로 새면 그 데몬 수명 동안 거절이 조용히 꺼진다. cys 스폰 쪽 env_remove 와 두 겹(앱·셸이 직접 띄운 cysd 도 걸린다).
+fn scrub_launch_restore_env() {
+    for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+        if std::env::var_os(k).is_some() {
+            std::env::remove_var(k);
+            eprintln!("[cysd] scrubbed launch-restore env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1258,6 +1269,7 @@ async fn async_main() {
     );
     scrub_claude_session_env();
     scrub_update_txn_env();
+    scrub_launch_restore_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
@@ -4402,6 +4414,24 @@ mod env_scrub_tests {
             "무관 env까지 지우면 안 된다"
         );
         std::env::remove_var("CYS_SCRUB_TEST_KEEP");
+    }
+}
+
+/// ★(1.1.21 · cysr-1121-restore D5) 데몬 부팅 scrub — 「복원 중 기동 거절」 의 표지·손잡이를 지운다(좌석 상속 누출 차단) · main 이 부른다.
+#[cfg(test)]
+mod launch_restore_scrub_tests {
+    #[test]
+    fn boot_scrubs_both_launch_restore_keys_and_main_calls_it() {
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            std::env::set_var(k, "1");
+        }
+        super::scrub_launch_restore_env();
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            assert!(std::env::var_os(k).is_none(), "{k} 가 남았다");
+        }
+        assert_eq!(cys::LAUNCH_RESTORE_ENV_KEYS, ["CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"]);
+        let src: String = include_str!("main.rs").lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        assert!(src.contains("    scrub_update_txn_env();\n    scrub_launch_restore_env();\n"), "main 이 부팅 scrub 을 부르지 않는다");
     }
 }
 

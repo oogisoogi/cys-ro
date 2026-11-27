@@ -5612,9 +5612,11 @@ fn spawn_detached_daemon(path: &std::path::Path) -> std::io::Result<()> {
         for k in TXN_ENV_KEYS {
             cmd.env_remove(k);
         }
-        // ★(1.1.21 · cysr-1121-restore D5) phoenix 표지도 데몬에 물려주지 않는다 — 데몬 env 는 좌석 전체로 상속되므로 새면 그 데몬
-        //   수명 동안 「복원 중 기동 거절」 이 조용히 꺼진다.
-        cmd.env_remove(ENV_AUTO_RESTORE_SELF);
+        // ★(1.1.21 · cysr-1121-restore D5) phoenix 표지·탈출 손잡이도 데몬에 물려주지 않는다 — 데몬 env 는 좌석 전체로 상속되므로 새면
+        //   그 데몬 수명 동안 「복원 중 기동 거절」 이 조용히 꺼진다(cysd 부팅 scrub 과 두 겹 · 같은 lib 배열).
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            cmd.env_remove(k);
+        }
         cmd.spawn_policy(cys::ChildLifetime::Survivor);
         if !breakaway {
             cmd.relax_job_breakaway(cys::ChildLifetime::Survivor);
@@ -7574,10 +7576,7 @@ fn run(command: Command) -> i32 {
                 // ★(1.1.21 · cysr-1121-restore D5) 보통 갈래(새 대화)만 — 자동 복원이 이 역할의 저장 대화를 아직 되살리는 중이면
                 //   띄우지 않는다(「먼저 깬 master」 가 RECOVERY.md 6번대로 띄우면 저장 대화 대신 새 대화가 남는다).
                 //   `--resume-saved`(boot·boot_node)는 대화 임대로 이미 겹침에 안전해 손대지 않는다.
-                if let Some(rc) = launch_restore_refusal(&role) {
-                    return rc;
-                }
-                run_launch_agent(&role, &agent, cwd)
+                launch_agent_plain(|| launch_restore_refusal(&role), || run_launch_agent(&role, &agent, cwd))
             };
         }
         Command::Boot { cwd, json } => return run_boot(cwd, json),
@@ -21262,11 +21261,8 @@ fn sanitize_launch_cwd(cwd: String) -> String {
     cwd
 }
 
-/// ★(1.1.21 · cysr-1121-restore D5) phoenix 가 fresh 강등의 `cys launch-agent` 호출에**만** 붙이는 표지 — 자동 복원 자신의
-/// 기동은 거절하지 않는다. 데몬 스폰은 이 키를 지운다(`spawn_detached_daemon` · 데몬 env 는 좌석 전체로 상속된다).
-const ENV_AUTO_RESTORE_SELF: &str = "CYS_AUTO_RESTORE_SELF";
-/// 탈출 손잡이 — `1` 이면 자동 복원 중에도 종전대로 띄운다(자동 복원이 멈춘 듯 오래 갈 때 사람·master 가 쓰는 길).
-const ENV_LAUNCH_DURING_RESTORE: &str = "CYS_LAUNCH_DURING_RESTORE";
+/// ★(1.1.21 · cysr-1121-restore D5) phoenix 표지 · 탈출 손잡이 — 정의 = lib(데몬 스폰·cysd 부팅 scrub 이 같은 배열을 지운다).
+use cys::{ENV_AUTO_RESTORE_SELF, ENV_LAUNCH_DURING_RESTORE};
 /// 「자동 복원이 이 역할을 되살리는 중이라 띄우지 않았다」 — 실패가 아니라 보류(새 좌석·새 대화 0). 95-99 미할당 중 첫 번호 · 정의 = lib(cysd 스케줄러도 읽음).
 use cys::EXIT_RESTORE_IN_PROGRESS;
 
@@ -21280,8 +21276,11 @@ fn restore_role_matches(requested: &str, saved_role: &str) -> bool {
     }
 }
 
-/// 자동 복원이 아직 되살릴 그 역할(계열)의 저장 항목이 있는가 — `run_restore_with` 의 선별과 같은 재료(순수):
-/// 저장 목록에 있고 · agent 가 적혀 있고(미상은 복원도 안 띄움) · 묘비가 아니고 · 점유 좌석(seat ≠ empty)이 없다.
+/// 자동 복원이 아직 되살릴 그 역할(계열)의 저장 항목이 있는가(순수) — `run_restore_with` 선별 재료 중 넷만 본다:
+/// 저장 목록에 있고 · agent 가 적혀 있고(미상은 복원도 안 띄움) · 묘비가 아니고 · 점유 좌석(seat ≠ empty · `unknown`·칸 없음 = 점유)이 없다.
+/// ⚠보지 않는 것 둘(Fable 코드 1R minor · 일부러 = 보수적 거절): agy 좌석 문(`agy_door_restore_skip`) · 계정 프로필 거부
+/// (`cys::restore_config_dir` 실패 = 그 역할 기동 중단). 그 역할은 복원이 되살리지 않는데도 거절될 수 있다 — 그래도 phase 가 끝나면
+/// 풀리고(막힘 아님) 안내가 「건너뛴 역할이면 끝난 뒤 사유 줄」 을 말한다. 두 판정을 여기 옮기면 복원 본문과 두 벌이 되어 표류한다.
 fn restore_pending_for(topo: &Value, requested: &str) -> Option<String> {
     let tombs: Vec<&str> = topo["tombstones"].as_array().map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
     let live = topo["live"].as_array().cloned().unwrap_or_default();
@@ -21308,7 +21307,8 @@ fn restore_refusal_line(role: &str, pending: &str, phase: &str) -> String {
         "[launch-agent] role={role}: 띄우지 않았다(rc {EXIT_RESTORE_IN_PROGRESS} · 새 좌석·새 대화 0) — 데몬 자동 복원이 지금 '{pending}' 의 저장 대화를 \
          되살리는 중이다(auto_restore={phase}). 지금 띄우면 그 저장 대화 대신 새 대화가 남는다. 할 일: `cys status --json` 의 \
          daemon.auto_restore 가 held·running·retry_wait 가 아니게 된 뒤(대개 done) 이 역할이 그때도 살아 있지 않을 때만 다시 실행하라 — \
-         대개 자동 복원이 되살리므로 할 일 없음. \
+         대개 자동 복원이 되살리므로 할 일 없음(복원이 이 역할을 건너뛰었으면 — agy 좌석 문·계정 프로필 거부 등 — 끝난 뒤 \
+         `cys restore` 출력·데몬 로그의 그 역할 사유 줄을 보라). \
          (자동 복원이 멈춘 듯 오래 가서 지금 꼭 띄워야 하면 {ENV_LAUNCH_DURING_RESTORE}=1 을 붙여 다시)"
     )
 }
@@ -21328,18 +21328,34 @@ fn launch_restore_refusal_with(role: &str, self_marker: bool, escape: bool, phas
     Some((EXIT_RESTORE_IN_PROGRESS, restore_refusal_line(role, &pending, ph.as_deref().unwrap_or(""))))
 }
 
-fn launch_restore_refusal(role: &str) -> Option<i32> {
-    let on = |k: &str| std::env::var(k).is_ok_and(|v| v.trim() == "1");
-    let (rc, line) = launch_restore_refusal_with(
+/// D5 운영 배선(주입형 — 시험 이음매 · codex·Fable 코드 1R major): env 두 키 읽기 · RPC 두 응답 해석 · 판정까지 한 자리.
+/// 운영 래퍼는 `std::env::var` 와 `request` 를 꽂기만 한다 — 키 이름·`"1"` 판정·응답 칸 경로가 여기서 시험된다.
+fn launch_restore_refusal_from(role: &str, env: &dyn Fn(&str) -> Option<String>,
+                               rpc: &dyn Fn(&str) -> Option<Value>) -> Option<(i32, String)> {
+    let on = |k: &str| env(k).is_some_and(|v| v.trim() == "1");
+    launch_restore_refusal_with(
         role,
         on(ENV_AUTO_RESTORE_SELF),
         on(ENV_LAUNCH_DURING_RESTORE),
-        &|| request("org.status", json!({})).ok().and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string)),
-        &|| request("system.topology", json!({})).ok(),
-    )?;
+        &|| rpc("org.status").and_then(|v| v["daemon"]["auto_restore"].as_str().map(str::to_string)),
+        &|| rpc("system.topology"),
+    )
+}
+
+/// 운영 래퍼 — 안내는 **stderr 한 곳**(앱 계약 src-tauri/src/main.rs 「진단 산문은 stderr · stdout 마지막 줄 = surface ref」 ·
+/// Fable 코드 1R minor: 2>&1 로 읽는 셸·UI 재기동 명령이 같은 줄을 두 번 보지 않게). stdout 0 = 거절 시 surface ref 없음.
+fn launch_restore_refusal(role: &str) -> Option<i32> {
+    let (rc, line) = launch_restore_refusal_from(role, &|k| std::env::var(k).ok(), &|m| request(m, json!({})).ok())?;
     eprintln!("{line}");
-    println!("{line}");
     Some(rc)
+}
+
+/// 보통 갈래(새 대화) 본문(주입형 — 시험 이음매): 거절 판정이 Some(rc) 면 **기동하지 않고** 그 rc · 아니면 기동.
+fn launch_agent_plain(refuse: impl FnOnce() -> Option<i32>, launch: impl FnOnce() -> i32) -> i32 {
+    if let Some(rc) = refuse() {
+        return rc;
+    }
+    launch()
 }
 
 fn run_launch_agent(role: &str, agent: &str, cwd: Option<String>) -> i32 {
@@ -35807,15 +35823,42 @@ mod tests {
         }
     }
 
-    /// 실제 `run_restore_with` + 가짜 데몬(저장 목록·live·묘비를 그대로 내줌) → 기동 기록. 임대 노브 끔(종전 claim 경로).
+    /// 시험 위생(Fable 코드 1R minor) — 가짜 서버·env·임시 폴더를 **Drop 에서** 되돌린다: `run_restore_with` 가 패닉해도
+    /// CYS_SESSION_LEASE · 가짜 CYS_SOCKET · HOME 이 프로세스에 남아 뒤 시험을 연쇄로 붉히지 않고 서버 스레드도 멈춘다.
     #[cfg(unix)]
-    fn restore_order_run(saved: Vec<Value>, live: Value, tombstones: Value, include_master: bool, fail_role: Option<&'static str>)
-        -> Vec<(String, &'static str, bool)> {
+    struct RestoreRunRig {
+        socket: std::path::PathBuf,
+        dir: std::path::PathBuf,
+        server: Option<std::thread::JoinHandle<()>>,
+        saved_env: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+    #[cfg(unix)]
+    impl Drop for RestoreRunRig {
+        fn drop(&mut self) {
+            use std::io::Write;
+            let _ = std::os::unix::net::UnixStream::connect(&self.socket)
+                .and_then(|mut s| writeln!(s, "{}", json!({"id": 0, "method": "__stop"})));
+            if let Some(h) = self.server.take() {
+                let _ = h.join();
+            }
+            for (k, v) in self.saved_env.drain(..) {
+                match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+            }
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// 실제 `run_restore_with` + 가짜 데몬(저장 목록·live·묘비를 그대로 내줌) → 기동 기록. `lease_on` = 임대 노브(운영 기본 = 켬 ·
+    /// HOME 을 임시 폴더로 격리 — 임대 폴더가 실제 홈에 생기지 않게) · 끔 = 종전 claim 경로.
+    #[cfg(unix)]
+    fn restore_order_run_opts(saved: Vec<Value>, live: Value, tombstones: Value, include_master: bool, fail_role: Option<&'static str>,
+                              lease_on: bool) -> Vec<(String, &'static str, bool)> {
         use std::io::{BufRead, BufReader, Write};
         let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::path::PathBuf::from(format!("/tmp/rro-{}-{}", std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() % 1_000_000_000));
         std::fs::create_dir_all(dir.join("restore-claims")).unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
         let socket = dir.join("s.sock");
         let topo = json!({"saved": saved, "tombstones": tombstones, "live": live});
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("가짜 소켓 bind");
@@ -35837,20 +35880,23 @@ mod tests {
                 let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
             }
         });
-        let saved_env: Vec<_> = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB].into_iter().map(|k| (k, std::env::var_os(k))).collect();
-        std::env::set_var(cys::session_lease::KNOB, "off");
+        let keys = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB, "HOME"];
+        let rig = RestoreRunRig { socket: socket.clone(), dir: dir.clone(), server: Some(server),
+                                  saved_env: keys.into_iter().map(|k| (k, std::env::var_os(k))).collect() };
+        std::env::set_var(cys::session_lease::KNOB, if lease_on { "on" } else { "off" });
         std::env::set_var("CYS_SOCKET", &socket);
         std::env::set_var("CYS_NO_AUTOSTART", "1");
+        std::env::set_var("HOME", dir.join("home"));
         let mut rec = RestoreOrderRec { calls: vec![], fail_role };
         let _ = run_restore_with(None, include_master, false, &mut rec);
-        let _ = std::os::unix::net::UnixStream::connect(&socket)
-            .and_then(|mut s| writeln!(s, "{}", json!({"id": 0, "method": "__stop"})));
-        let _ = server.join();
-        for (k, v) in saved_env {
-            match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
-        }
-        let _ = std::fs::remove_dir_all(&dir);
+        drop(rig);
         rec.calls
+    }
+
+    #[cfg(unix)]
+    fn restore_order_run(saved: Vec<Value>, live: Value, tombstones: Value, include_master: bool, fail_role: Option<&'static str>)
+        -> Vec<(String, &'static str, bool)> {
+        restore_order_run_opts(saved, live, tombstones, include_master, fail_role, false)
     }
 
     #[cfg(unix)]
@@ -35891,6 +35937,14 @@ mod tests {
         let dup = vec![order_entry("cso", "s-x"), order_entry("worker", "s-x"), order_entry("master", "s-m")];
         let c = restore_order_run(dup, json!([]), json!([]), true, None);
         assert_eq!(c.iter().map(|x| (x.0.as_str(), x.2)).collect::<Vec<_>>(), [("master", true), ("cso", true), ("worker", false)], "{c:?}");
+        // ⓖ 임대 노브 켬(운영 기본 · Fable 코드 1R minor) — 같은 순서: master 먼저 · 나머지 저장 순서 · 모두 resume
+        let c = restore_order_run_opts(base(), json!([]), json!([]), true, None, true);
+        assert_eq!(c.iter().map(|x| (x.0.as_str(), x.2)).collect::<Vec<_>>(), [("master", true), ("worker", true), ("cso", true)], "{c:?}");
+        // ⓗ 임대 켬 + 같은 대화 id 셋 — master 가 그 대화의 임대를 잡고, 뒤의 두 역할은 「이 회차 다른 항목이 잇는 중」 으로
+        //   거절(기동 0)되지만 그 거절이 다른 대화의 뒤 역할(reviewer-codex)을 막지 않는다
+        let dup = vec![order_entry("cso", "s-x"), order_entry("worker", "s-x"), order_entry("master", "s-x"), order_entry("reviewer-codex", "s-r")];
+        let c = restore_order_run_opts(dup, json!([]), json!([]), true, None, true);
+        assert_eq!(c.iter().map(|x| (x.0.as_str(), x.2)).collect::<Vec<_>>(), [("master", true), ("reviewer-codex", true)], "{c:?}");
     }
 
     /// ★(1.1.21 · cysr-1121-restore D5 · master#cf7ce094 A′) 「먼저 깬 master」 겹침 차단 — 보통 `cys launch-agent` 는 자동 복원이
@@ -35925,6 +35979,15 @@ mod tests {
                                           "tombstones": [], "live": [{"role": "worker", "seat": "occupied", "surface_id": 4}]});
         assert_eq!(run("worker", false, false, Some("running"), Some(only_worker_occupied)), None, "② worker 계열 대기 없음(worker-x 는 계열 아님)");
         assert_eq!(run("cso", false, false, Some("running"), None), None, "② topology 못 읽음 = fail-open");
+        // 표본 3줄(Fable 코드 1R minor) — 가장 흔한 꼴(첫 워커 대기) · `unknown`·seat 칸 없음 = 점유(설계 §8)
+        let w_only = |live: Value| Some(json!({"saved": [{"role": "worker", "agent": "claude"}], "tombstones": [], "live": live}));
+        assert_eq!(run("worker", false, false, Some("running"), w_only(json!([]))), Some(95), "saved [worker] · live [] → 95");
+        assert_eq!(run("worker", false, false, Some("running"), w_only(json!([{"role": "worker", "seat": "unknown", "surface_id": 4}]))),
+                   None, "seat=unknown = 점유");
+        assert_eq!(run("worker", false, false, Some("running"), w_only(json!([{"role": "worker", "surface_id": 4}]))),
+                   None, "seat 칸 없음 = 점유");
+        assert_eq!(run("worker", false, false, Some("running"), w_only(json!([{"role": "worker", "seat": "empty", "surface_id": 4}]))),
+                   Some(95), "seat=empty = 대상");
         // master 는 거절하지 않는다(앱 「시작」 길 불변)
         assert_eq!(run("master", false, false, Some("running"), t()), None, "master 제외");
         // ③ phoenix 표지 · ④ 탈출 손잡이 → 종전 기동
@@ -35935,28 +35998,81 @@ mod tests {
         for must in ["rc 95", "auto_restore=running", "held·running·retry_wait 가 아니게", "대개 자동 복원이 되살리므로 할 일 없음", "CYS_LAUNCH_DURING_RESTORE=1"] {
             assert!(line.contains(must), "안내에 {must:?} 없음: {line}");
         }
+        for must in ["건너뛰었으면", "사유 줄"] {
+            assert!(line.contains(must), "안내에 {must:?} 없음(건너뛴 역할 안내): {line}");
+        }
         assert_eq!(EXIT_RESTORE_IN_PROGRESS, 95);
         assert_eq!(cys::EXIT_RESTORE_IN_PROGRESS, 95);
     }
 
-    /// ★(1.1.21 D5) 연결 소스 핀(플랫폼 무관) — 보통 갈래에만 · --resume-saved·boot 무접촉 · 복원 내부 무접촉 · phoenix 표지 = launch-agent 동사 한정 ·
-    /// 데몬 스폰이 표지를 지운다(데몬 env → 좌석 상속 누출 차단).
+    /// ★(1.1.21 D5 · codex·Fable 코드 1R major) 운영 배선 = env 두 키 읽기 · RPC 두 응답 칸 해석 · 값싼 판정 먼저 — 운영 래퍼가 꽂는
+    /// `launch_restore_refusal_from` 을 실제 키 이름·실제 응답 꼴로 부른다(플랫폼 무관 · 실 바이너리 e2e 는 tests/launch_restore_refusal_e2e.rs).
+    #[test]
+    fn launch_restore_refusal_from_reads_real_env_keys_and_rpc_shapes() {
+        use std::cell::RefCell;
+        let topo = json!({"saved": [{"role": "cso", "agent": "claude"}], "tombstones": [], "live": []});
+        let calls = RefCell::new(Vec::<String>::new());
+        let go = |role: &str, env: &[(&str, &str)], status: Value| {
+            calls.borrow_mut().clear();
+            let envf = |k: &str| env.iter().find(|(n, _)| *n == k).map(|(_, v)| v.to_string());
+            let rpc = |m: &str| {
+                calls.borrow_mut().push(m.to_string());
+                match m { "org.status" => Some(status.clone()), "system.topology" => Some(topo.clone()), _ => None }
+            };
+            launch_restore_refusal_from(role, &envf, &rpc).map(|(rc, _)| rc)
+        };
+        let running = json!({"daemon": {"auto_restore": "running"}});
+        assert_eq!(go("cso", &[], running.clone()), Some(95), "실제 응답 꼴(daemon.auto_restore)");
+        assert_eq!(*calls.borrow(), ["org.status", "system.topology"]);
+        // 표지·손잡이 = 실제 키 이름 · 값 "1"(앞뒤 공백 허용)만 켬
+        for (k, v, want) in [("CYS_AUTO_RESTORE_SELF", "1", None), ("CYS_AUTO_RESTORE_SELF", " 1 ", None), ("CYS_AUTO_RESTORE_SELF", "0", Some(95)),
+                             ("CYS_AUTO_RESTORE_SELF", "", Some(95)), ("CYS_LAUNCH_DURING_RESTORE", "1", None),
+                             ("CYS_LAUNCH_DURING_RESTORE", "true", Some(95)), ("CYS_AUTO_RESTORE", "1", Some(95))] {
+            assert_eq!(go("cso", &[(k, v)], running.clone()), want, "{k}={v:?}");
+        }
+        // 켜진 표지·손잡이·master = RPC 0(값싼 판정 먼저 — 데몬이 멈춘 듯할 때 쓰는 손잡이가 응답 상한을 기다리지 않는다)
+        for (role, env) in [("cso", vec![("CYS_AUTO_RESTORE_SELF", "1")]), ("cso", vec![("CYS_LAUNCH_DURING_RESTORE", "1")]), ("master", vec![])] {
+            assert_eq!(go(role, &env, running.clone()), None);
+            assert!(calls.borrow().is_empty(), "{role} {env:?} 가 RPC 를 불렀다: {:?}", calls.borrow());
+        }
+        // 진행 아님 · 칸 경로 다름 · org.status 실패 = topology 를 읽지 않고 종전 기동
+        for st in [json!({"daemon": {"auto_restore": "done"}}), json!({"auto_restore": "running"}), json!({"daemon": {"auto_restore": 1}}), Value::Null] {
+            assert_eq!(go("cso", &[], st.clone()), None, "{st}");
+            assert_eq!(*calls.borrow(), ["org.status"], "{st}");
+        }
+    }
+
+    /// ★(1.1.21 D5) 보통 갈래 본문 — 거절이면 기동 함수를 **부르지 않고** 그 rc · 아니면 기동 rc 그대로.
+    #[test]
+    fn launch_agent_plain_does_not_launch_when_refused() {
+        let launched = std::cell::Cell::new(0);
+        assert_eq!(launch_agent_plain(|| Some(95), || { launched.set(launched.get() + 1); 0 }), 95);
+        assert_eq!(launched.get(), 0, "거절인데 기동했다");
+        assert_eq!(launch_agent_plain(|| None, || { launched.set(launched.get() + 1); 7 }), 7);
+        assert_eq!(launched.get(), 1);
+    }
+
+    /// 소스 핀 재료 — `//` 주석 줄을 뺀 본문(Fable 코드 1R: 주석으로 막은 호출 줄을 핀이 찾아 초록이 되던 구멍).
+    fn code_only(src: &str) -> String {
+        src.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n")
+    }
+
+    /// ★(1.1.21 D5) 연결 소스 핀(플랫폼 무관 · 주석 뺀 본문) — 보통 갈래에만 · --resume-saved·boot 무접촉 · 복원 내부 무접촉 ·
+    /// phoenix 표지 = launch-agent 동사 한정 · 데몬 스폰이 두 키를 지운다 · 안내 = stderr 만. 행동은 위 두 시험 + e2e 가 잠근다.
     #[test]
     fn launch_restore_refusal_wiring_source_pin() {
-        let src = include_str!("cys.rs");
+        let src = code_only(include_str!("cys.rs"));
         let disp = &src[src.find("Command::LaunchAgent { role, agent, cwd, resume_saved } => {").expect("갈래")..];
         let disp = &disp[..disp.find("Command::Boot {").unwrap()];
-        let (res_at, ref_at, plain_at) = (disp.find("run_launch_agent_resume_saved(&role").unwrap(),
-                                          disp.find("launch_restore_refusal(&role)").expect("보통 갈래에 없다"),
-                                          disp.find("run_launch_agent(&role, &agent, cwd)").unwrap());
-        assert!(res_at < ref_at && ref_at < plain_at, "거절 판정이 보통 갈래(새 대화) 기동 바로 앞이 아니다");
-        assert!(disp.contains("if let Some(rc) = launch_restore_refusal(&role) {\n                    return rc;"), "거절 rc 를 돌려주지 않는다");
+        let (res_at, plain_at) = (disp.find("run_launch_agent_resume_saved(&role").unwrap(),
+                                  disp.find("launch_agent_plain(|| launch_restore_refusal(&role), || run_launch_agent(&role, &agent, cwd))")
+                                      .expect("보통 갈래가 거절 판정을 거치지 않는다"));
+        assert!(res_at < plain_at);
         let w = &src[src.find("\nfn launch_restore_refusal(role: &str)").expect("운영 래퍼")..];
-        let w = &w[..w.find("\n}\n").unwrap()];
-        for must in ["on(ENV_AUTO_RESTORE_SELF)", "on(ENV_LAUNCH_DURING_RESTORE)", "request(\"org.status\"", "[\"daemon\"][\"auto_restore\"]",
-                     "request(\"system.topology\"", "Some(rc)"] {
-            assert!(w.contains(must), "운영 래퍼 배선에 {must:?} 없음");
-        }
+        let w = &w[..w.find("\n}").unwrap()];
+        assert!(w.contains("launch_restore_refusal_from(role, &|k| std::env::var(k).ok(), &|m| request(m, json!({})).ok())?;"), "운영 래퍼 배선: {w}");
+        assert!(w.contains("eprintln!(\"{line}\");") && w.matches("println!").count() == 1, // eprintln 1 = println 계열 그것뿐
+                "안내는 stderr 한 곳: {w}");
         let boot = &src[src.find("\nfn run_boot(").expect("boot")..];
         let boot = &boot[..boot.find("\n}\n").unwrap()];
         assert!(!boot.contains("launch_restore_refusal"), "boot 은 --resume-saved(대화 임대)라 손대지 않는다");
@@ -35965,9 +36081,11 @@ mod tests {
         assert!(!restore.contains("launch_restore_refusal"), "복원 내부가 자기 복원을 거절한다");
         let spawn = &src[src.find("for k in TXN_ENV_KEYS {").expect("데몬 스폰 지우기 목록")..];
         let spawn = &spawn[..spawn.find("cmd.spawn_policy(").expect("스폰 정책 줄")];
-        assert!(spawn.contains("cmd.env_remove(ENV_AUTO_RESTORE_SELF);"), "데몬 스폰이 표지를 지우지 않는다");
-        let ph = include_str!("../../cysjavis-pack/bin/javis_phoenix.py");
-        assert!(ph.contains("    if bool(args) and str(args[0]) == \"launch-agent\":\n        env[\"CYS_AUTO_RESTORE_SELF\"] = \"1\"\n"),
+        assert!(spawn.contains("for k in cys::LAUNCH_RESTORE_ENV_KEYS {\n            cmd.env_remove(k);"), "데몬 스폰이 D5 두 키를 지우지 않는다");
+        assert_eq!(cys::LAUNCH_RESTORE_ENV_KEYS, ["CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"]);
+        let ph = code_only(include_str!("../../cysjavis-pack/bin/javis_phoenix.py").lines()
+            .filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n").as_str());
+        assert!(ph.contains("    if bool(args) and str(args[0]) == \"launch-agent\":\n        env[\"CYS_AUTO_RESTORE_SELF\"] = \"1\""),
                 "phoenix 표지가 launch-agent 동사 한정이 아니다");
         assert_eq!(ph.matches("CYS_AUTO_RESTORE_SELF").count(), 1, "phoenix 다른 자리에서도 표지를 싣는다");
         assert_eq!((ENV_AUTO_RESTORE_SELF, ENV_LAUNCH_DURING_RESTORE), ("CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"));
@@ -35976,9 +36094,9 @@ mod tests {
     /// ★(1.1.21 D2) 플랫폼 무관 소스 핀 — 위 시험은 unix 전용(가짜 소켓)이라 윈도우 빌드에서도 정렬 호출이 순회 **앞**에 있음을 잠근다.
     #[test]
     fn restore_sorts_saved_before_the_launch_loop_source_pin() {
-        let src = include_str!("cys.rs");
+        let src = code_only(include_str!("cys.rs"));
         let body = &src[src.find("\nfn run_restore_with(").expect("restore")..];
-        let sort_at = body.find("cys::sort_saved_master_first(&mut saved);").expect("D2 정렬 호출 없음");
+        let sort_at = body.find("cys::sort_saved_master_first(&mut saved);").expect("D2 정렬 호출 없음(주석 뺀 본문)");
         let loop_at = body.find("for entry in saved {").expect("순회");
         assert!(sort_at < loop_at, "정렬이 순회 뒤에 있다");
     }

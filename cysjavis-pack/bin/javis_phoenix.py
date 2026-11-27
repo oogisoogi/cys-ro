@@ -5140,10 +5140,14 @@ def _render_deploy_runbook(roster):
         '  echo "  !! plist 부재($PLIST) — cys daemon install 로 재생성 후 재시도"',
         "fi",
         'echo "데몬 소켓 응답 대기..."; for i in $(seq 1 40); do cys ping 2>/dev/null | grep -q pong && { echo "  pong OK"; break; }; sleep 0.5; done',
+        "# ★(1.1.21 · cysr-1121-restore) 데몬이 막 깨면 자동 복원이 저장 대화를 되살린다 — 끝날 때까지 기다린 뒤 아직 죽은 노드만 띄운다",
+        "#   (먼저 띄우면 저장 대화 대신 새 대화가 남는다 · 그동안 cys launch-agent 는 띄우지 않고 rc 95 = 보류로 알린다 · 실패 아님).",
+        'echo "자동 복원 끝 대기(최대 5분)..."; for i in $(seq 1 300); do cys status --json 2>/dev/null | grep -Eq \'"auto_restore": *"(running|retry_wait|held)"\' || { echo "  자동 복원 끝(또는 꺼짐)"; break; }; sleep 1; done',
         "",
-        "# 2) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행):",
+        "# 2) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행 · master 먼저 · `cys list` 로 이미 살아 있는 노드의 줄은 치지 않는다):",
+        "#    rc 95 = 자동 복원이 그 역할을 아직 되살리는 중(보류) — 위 대기 뒤 다시 · 꼭 지금 띄워야 하면 CYS_LAUNCH_DURING_RESTORE=1 을 앞에 붙인다.",
     ]
-    for role in sorted(roster.keys()):
+    for role in restore_order(sorted(roster.keys())):
         agent = (roster.get(role) or {}).get("agent") or "claude"
         lines.append('cys launch-agent --role %s --agent %s   # 각성 확인 후: cys reinject --role %s'
                      % (role, agent, role))
@@ -5183,10 +5187,15 @@ def _render_deploy_runbook_ps1(roster):
         "cys list 2>$null | Out-Null",
         'Write-Host "데몬 named pipe 응답 대기..."',
         "for ($i = 0; $i -lt 40; $i++) { if ((cys ping 2>$null) -match 'pong') { Write-Host '  pong OK'; break }; Start-Sleep -Milliseconds 500 }",
+        "# ★(1.1.21 · cysr-1121-restore) 데몬이 막 깨면 자동 복원이 저장 대화를 되살린다 — 끝날 때까지 기다린 뒤 아직 죽은 노드만 띄운다",
+        "#   (먼저 띄우면 저장 대화 대신 새 대화가 남는다 · 그동안 cys launch-agent 는 띄우지 않고 rc 95 = 보류로 알린다 · 실패 아님).",
+        'Write-Host "자동 복원 끝 대기(최대 5분)..."',
+        "for ($i = 0; $i -lt 300; $i++) { $ar = $null; try { $ar = ((cys status --json 2>$null | Out-String) | ConvertFrom-Json).daemon.auto_restore } catch {}; if ($ar -notin @('running','retry_wait','held')) { Write-Host '  자동 복원 끝(또는 꺼짐)'; break }; Start-Sleep -Seconds 1 }",
         "",
-        "# 3) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행):",
+        "# 3) 역할별 노드 순차 재기동(동시 resume 폭주 방지 §10.4 — 한 줄씩 확인 후 실행 · master 먼저 · `cys list` 로 이미 살아 있는 노드의 줄은 치지 않는다):",
+        "#    rc 95 = 자동 복원이 그 역할을 아직 되살리는 중(보류) — 위 대기 뒤 다시 · 꼭 지금 띄워야 하면 $env:CYS_LAUNCH_DURING_RESTORE='1' 뒤 실행.",
     ]
-    for role in sorted(roster.keys()):
+    for role in restore_order(sorted(roster.keys())):
         agent = (roster.get(role) or {}).get("agent") or "claude"
         lines.append("cys launch-agent --role %s --agent %s   # 각성 확인 후: cys reinject --role %s"
                      % (role, agent, role))

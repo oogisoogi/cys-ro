@@ -1411,6 +1411,14 @@ pub const EXIT_GATE_PENDING: i32 = 78;
 /// ★(1.1.21 · cysr-1121-restore D5) `cys launch-agent`(보통 갈래)가 「데몬 자동 복원이 그 역할의 저장 대화를 되살리는 중」이라
 /// 띄우지 않았다 — 실패가 아니라 보류(새 좌석·새 대화 0). cys(CLI)가 내고 cysd 스케줄러가 읽는다(원샷 되돌림).
 pub const EXIT_RESTORE_IN_PROGRESS: i32 = 95;
+/// ★(1.1.21 · cysr-1121-restore D5) phoenix 가 fresh 강등의 `cys launch-agent` 호출에**만** 붙이는 표지 — 자동 복원 자신의 기동은 거절하지 않는다.
+pub const ENV_AUTO_RESTORE_SELF: &str = "CYS_AUTO_RESTORE_SELF";
+/// ★(1.1.21 D5) 탈출 손잡이 — `1` 이면 자동 복원 중에도 종전대로 띄운다(자동 복원이 멈춘 듯 오래 갈 때 사람·master 가 쓰는 길).
+pub const ENV_LAUNCH_DURING_RESTORE: &str = "CYS_LAUNCH_DURING_RESTORE";
+/// ★(1.1.21 D5 · Fable 코드 1R minor) 데몬이 물려받으면 안 되는 D5 두 키 — 데몬 env 는 좌석 전체로 상속되므로 새면 그 데몬 수명 동안
+/// 「복원 중 기동 거절」 이 조용히 꺼진다. 두 겹으로 지운다: cys 의 데몬 스폰(`spawn_detached_daemon`) + cysd 부팅(`scrub_launch_restore_env`
+/// · 앱·셸에서 직접 띄운 cysd 도 걸린다). 한 배열 = 한쪽에만 키를 더하는 표류 차단.
+pub const LAUNCH_RESTORE_ENV_KEYS: [&str; 2] = [ENV_AUTO_RESTORE_SELF, ENV_LAUNCH_DURING_RESTORE];
 
 /// ★⑯(1.1.7) `refuse_on_approval` 이 켜진 직접 입력이 **승인·질문 창 화면**에서 거부될 때의 오류 코드.
 /// 순환의 무확인 `C-u`→`/clear`→Return 이 그 창의 선택지를 사람 대신 누르지 않게 한다(쓰기 0).

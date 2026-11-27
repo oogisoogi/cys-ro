@@ -7,7 +7,9 @@
      S1 master 가 force_fresh(앞 사이클 ps 축) · worker 는 보통 resume 실패 → fresh 루프 직전 재결합(:need + forced_fresh)
         뒤에도 첫 기동 = master
      S2 대조: force_fresh 없이 명부 순서 [worker, cso, master] 전원 resume 실패 → fresh 순서 첫째 = master · 나머지 명부 순서
-  M. 뮤턴트 — 재결합 지점 restore_order 제거 → S1 적색 · restore_order 가 정렬을 안 함 → U·S2 적색
+  R. 수동 복원 runbook(MANUAL_RESTORE.sh · .ps1 · Fable 코드 1R minor) — launch-agent 줄 순서 = master 먼저 · 자동 복원 끝 대기 줄이
+     launch-agent 줄보다 앞 · rc 95 뜻 안내 · sh 문법(bash -n)
+  M. 뮤턴트 — 재결합 지점 restore_order 제거 → S1 적색 · restore_order 가 정렬을 안 함 → U·S2·R 적색 · runbook 순서 정렬 제거 → R 적색
 
 실행: python3 cysjavis-pack/bin/tests/test_phoenix_restore_order_1121.py → 종료 토큰 PHOENIX-RESTORE-ORDER-1121-OK
 """
@@ -126,6 +128,27 @@ def scenario_axes(m, root, sink=None):
           calls3, sink)
 
 
+def runbook_axes(m, root, sink=None):
+    import subprocess
+    roster = {"cso": {"agent": "claude"}, "worker": {"agent": "codex"}, "master": {"agent": "claude"}}
+    for name, render, wait_mark in [("sh", m._render_deploy_runbook, '"auto_restore": *"(running|retry_wait|held)"'),
+                                    ("ps1", m._render_deploy_runbook_ps1, "@('running','retry_wait','held')")]:
+        text = render(roster)
+        lines = text.splitlines()
+        la = [l.split()[3] for l in lines if l.startswith("cys launch-agent --role ")]
+        check("R %s launch-agent 순서 = master 먼저 · 나머지 이름순" % name, la == ["master", "cso", "worker"], la, sink)
+        wait_at = next((i for i, l in enumerate(lines) if wait_mark in l), None)
+        first_la = next((i for i, l in enumerate(lines) if l.startswith("cys launch-agent ")), None)
+        check("R %s 자동 복원 끝 대기 줄이 launch-agent 앞" % name,
+              wait_at is not None and first_la is not None and wait_at < first_la, (wait_at, first_la), sink)
+        check("R %s rc 95 뜻 안내" % name, "rc 95" in text and "CYS_LAUNCH_DURING_RESTORE" in text, None, sink)
+    p = os.path.join(root, "MR-%d.sh" % os.getpid())
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(m._render_deploy_runbook(roster))
+    rc = subprocess.run(["bash", "-n", p], capture_output=True).returncode
+    check("R sh bash -n 문법", rc == 0, rc, sink)
+
+
 def mutants(root):
     src = open(PH, encoding="utf-8").read()
     remerge = "    need = restore_order(need + [r for r in forced_fresh if r not in need and r not in session_lease_held])\n"
@@ -133,7 +156,9 @@ def mutants(root):
     muts = [
         ("M1 재결합 지점 restore_order 제거", remerge,
          "    need = need + [r for r in forced_fresh if r not in need and r not in session_lease_held]\n", ["S1"]),
-        ("M2 restore_order 가 정렬 안 함", sorter, "    return list(roles)\n", ["U", "S2"]),
+        ("M2 restore_order 가 정렬 안 함", sorter, "    return list(roles)\n", ["U", "S2", "R"]),
+        ("M3 runbook sh 순서 정렬 제거", "    for role in restore_order(sorted(roster.keys())):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys",
+         "    for role in sorted(roster.keys()):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys", ["R"]),
     ]
     for name, old, new, want_red in muts:
         assert src.count(old) == 1, "변이 자리 소실: %s" % name  # 선-assert: 변이가 실제로 적용된다
@@ -146,6 +171,7 @@ def mutants(root):
         r = tempfile.mkdtemp(prefix="ph1121m-")
         try:
             scenario_axes(mm, r, sink)
+            runbook_axes(mm, r, sink)
         finally:
             shutil.rmtree(r, ignore_errors=True)
         red = [w for w in want_red if any(s.startswith(w) for s in sink)]
@@ -158,6 +184,7 @@ def main():
         m = load(PH, "ph_1121")
         unit_axes(m)
         scenario_axes(m, root)
+        runbook_axes(m, root)
         mutants(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)

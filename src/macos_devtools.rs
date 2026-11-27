@@ -32,6 +32,10 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+// 1.1.21 A ③ 맥 좌석 셸 재선두(PATH_HELPER_ROOT) — 판정·생성·확인(설계 DESIGN-A r7.2 §2-3).
+mod seat_path;
+pub use seat_path::*;
+
 /// libxcselect 가 가장 먼저 보는 env — 설정됐고 디렉터리면 그것이 **선택된** 개발자 디렉터리다.
 pub const ENV_DEVELOPER_DIR: &str = "DEVELOPER_DIR";
 

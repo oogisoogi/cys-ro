@@ -75,6 +75,13 @@ MUTATE_SUBVERBS = frozenset({
 })
 OBSERVE_SUBVERBS = frozenset({
     ("queue", "list"),
+    # ★(1.1.21 · TICKET=cysr-1121-pack · 윈 C53 거짓 FAIL ㉡) `daemon` 은 verb 단위로 mutate(install·start·
+    # uninstall 등 등록 관리)지만 `daemon boot-fleet` 은 읽기 전용이다 — cys.rs run_daemon_cmd 의 BootFleet 갈래 =
+    # boot_fleet_rpc()(RPC `system.boot_fleet` 1왕복 · 자동 기동 없음) → println 뿐 · 데몬 쪽 handlers.rs
+    # "system.boot_fleet" = knobs::boot_fleet() 값 반환뿐. 윈에서만 cmd_check→boot_fleet()→_boot_fleet_query_daemon
+    # (javis_orchestra.py:266)이 이것을 subprocess 로 부른다(unix = 소켓 직접 · 하위 프로세스 0).
+    # SUBVERB_REQUIRED 에 넣지 않는다 — daemon 의 다른 서브동사는 전부 verb 분류(mutate) 그대로 간다(이 쌍만 예외).
+    ("daemon", "boot-fleet"),
 })
 # 서브동사를 갖는 verb 집합 — 이 verb 는 서브동사 없이는 분류하지 않는다(clap 도 서브커맨드 필수).
 SUBVERB_REQUIRED = frozenset({"queue"})
@@ -107,6 +114,8 @@ def classify_cys_verb(argv):
         if (verb, sub) in OBSERVE_SUBVERBS:
             return "observe"
         return "unknown"                     # 미지 서브동사 — 관찰 경로 거부(default-deny)
+    if (verb, _extract_subverb(argv)) in OBSERVE_SUBVERBS:
+        return "observe"                     # verb 는 mutate 이되 이 서브동사만 관찰(예: daemon boot-fleet)
     if verb in OBSERVE_VERBS:
         return "observe"
     if verb in MUTATE_VERBS:
@@ -242,10 +251,23 @@ def _spy_which(real_which):
     return _which
 
 
-def _spy_cmd_check():
+class _OsNtShape:
+    """javis_orchestra 모듈의 `os` 만 윈 꼴(`os.name == "nt"`)로 보이게 하는 대역 — 나머지 속성은 진짜 os 로 넘긴다.
+
+    전역 `os.name` 을 바꾸지 않는다(os.path·subprocess·shutil 등 다른 모듈이 윈 갈래로 빠지지 않게) — orchestra 의
+    `os.name` 분기(_boot_fleet_query_daemon · javis_orchestra.py:237)만 윈 길을 탄다."""
+    name = "nt"
+
+    def __getattr__(self, k):
+        return getattr(os, k)
+
+
+def _spy_cmd_check(win_shape=False):
     """orchestra.cmd_check 를 spy 로 감싸 calls ∩ MUTATE == ∅ 박제(회귀 잠금).
 
-    누군가 cmd_check 에 launch-agent/boot/send/set-status 를 끼우면 즉시 RED."""
+    누군가 cmd_check 에 launch-agent/boot/send/set-status 를 끼우면 즉시 RED.
+    ★(1.1.21 · 윈 C53 ㉡) win_shape=True = orchestra 의 os.name 만 "nt" 로 — 윈에서만 타는 `cys daemon boot-fleet`
+    subprocess 길(javis_orchestra.py:266)을 맥·리눅스 CI 에서도 잰다. 이 길이 실제로 spy 에 찍혔는지도 단언한다(공허 방지)."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import javis_orchestra as orch
     spy = _SubprocessSpy()
@@ -254,9 +276,16 @@ def _spy_cmd_check():
         pass
     import contextlib
     import io
-    with mock.patch.object(orch.subprocess, "run", side_effect=spy.run), \
-            mock.patch.object(orch.shutil, "which", side_effect=_spy_which(orch.shutil.which)), \
-            contextlib.redirect_stdout(io.StringIO()):   # cmd_check 진단 출력 흡수
+    with contextlib.ExitStack() as st:
+        st.enter_context(mock.patch.object(orch.subprocess, "run", side_effect=spy.run))
+        st.enter_context(mock.patch.object(orch.shutil, "which", side_effect=_spy_which(orch.shutil.which)))
+        # boot_fleet 캐시·시험 주입점을 비워 이번 호출이 실제 질의 길(_boot_fleet_query_daemon)을 타게 한다 — 앞선 호출의
+        # 캐시가 남아 있으면 윈 꼴에서도 subprocess 가 안 불려 공허하게 통과한다. 끝나면 mock 이 원래 값으로 되돌린다.
+        st.enter_context(mock.patch.object(orch, "_BOOT_FLEET_CACHE", []))
+        st.enter_context(mock.patch.object(orch, "_BOOT_FLEET_QUERY", None))
+        if win_shape:
+            st.enter_context(mock.patch.object(orch, "os", _OsNtShape()))
+        st.enter_context(contextlib.redirect_stdout(io.StringIO()))   # cmd_check 진단 출력 흡수
         orch.cmd_check(_Args())
     ok, violations = assert_observe_phase(spy.calls)
     if not ok:
@@ -270,7 +299,10 @@ def _spy_cmd_check():
     #     자료원**이어야 주소성 게이트가 공허해지지 않기 때문이다 — 같은 집합을 두 번 보면
     #     불일치가 구조적으로 발생할 수 없다. `list` 는 순수 관찰 verb 라 이 화이트리스트의
     #     목적(관찰 단계에서 mutate 금지)과 충돌하지 않는다.
-    _EXPECTED_CHECK_VERBS = frozenset({"status", "agent-detect", "list"})
+    #   ★`daemon` 추가(1.1.21 · 윈 C53 ㉡): 윈에서만 boot_fleet() 이 `cys daemon boot-fleet` 을 subprocess 로 부른다.
+    #     verb 는 화이트리스트에 들되 서브동사는 위 assert_observe_phase 가 OBSERVE_SUBVERBS 의 ("daemon","boot-fleet")
+    #     하나로 묶는다(`daemon install` 등은 mutate 로 이미 붉음) — 아래에서 서브동사까지 한 번 더 핀한다.
+    _EXPECTED_CHECK_VERBS = frozenset({"status", "agent-detect", "list", "daemon"})
     cys_calls = [c for c in spy.calls if _extract_verb(c) is not None]
     assert cys_calls, "cmd_check 가 cys status 조차 호출하지 않음(spy 미작동 의심)"
     assert all(_extract_verb(c) in _EXPECTED_CHECK_VERBS for c in cys_calls), \
@@ -278,6 +310,13 @@ def _spy_cmd_check():
             sorted(_EXPECTED_CHECK_VERBS), cys_calls)
     assert any(_extract_verb(c) == "status" for c in cys_calls), \
         "cmd_check 가 관제 스냅샷(cys status)을 호출하지 않음(핀 약화 방지)"
+    daemon_calls = [c for c in cys_calls if _extract_verb(c) == "daemon"]
+    assert all(_extract_subverb(c) == "boot-fleet" for c in daemon_calls), \
+        "cmd_check 의 cys daemon 호출이 boot-fleet 외 서브동사: %s" % daemon_calls
+    if win_shape:
+        assert daemon_calls, ("윈 꼴(os.name=nt)인데 cmd_check 가 `cys daemon boot-fleet` 을 부르지 않음 — "
+                              "윈 길을 안 탔다(대역이 공허): %s" % cys_calls)
+    return len(daemon_calls)
 
 
 def _spy_negative_assertion_self_attack():
@@ -522,14 +561,15 @@ def _invariants():
 def self_test():
     _invariants_msg = _invariants()
     _spy_cmd_check()
+    _win_daemon_calls = _spy_cmd_check(win_shape=True)   # ★(1.1.21 · 윈 C53 ㉡) 윈 boot-fleet 길을 모든 OS 에서
     _spy_negative_assertion_self_attack()
     _spy_preflight_daemon_observe_phase()
     _ast_self_attack()
     _ast_msg = _ast_coverage_battery()
     print("javis_idempotency self-test OK "
-          "(불변식·표면커버리지[%s] · cmd_check 관찰멱등 negative assertion · "
+          "(불변식·표면커버리지[%s] · cmd_check 관찰멱등 negative assertion[윈 꼴 daemon boot-fleet %d회 관찰] · "
           "자기공격 변이검증 RED · C12.daemon fix=False Popen 0 · "
-          "coverage_battery AST 관찰전용[%s])" % (_invariants_msg, _ast_msg))
+          "coverage_battery AST 관찰전용[%s])" % (_invariants_msg, _win_daemon_calls, _ast_msg))
     return 0
 
 

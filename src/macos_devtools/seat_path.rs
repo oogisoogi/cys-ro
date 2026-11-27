@@ -710,7 +710,9 @@ pub fn publish_or_reuse(base: &Path, snap: &Snapshot) -> Result<PathBuf, &'stati
     }
     // 2단 — 임시 dir 에 다 쓰고 게시.
     let mut tmp = base.join(format!("{TMP_PREFIX}{}", unique_suffix()));
-    if snap.materialize(&tmp).is_err() {
+    // 방금 쓴 것이 같게 읽히는지 자기 대조 — 늘 다르게 읽히는 볼륨(예: exFAT 의 AppleDouble `._*` 짝)에서 세대 dir 이
+    // 좌석마다 쌓이지 않게 게시 전에 멈춘다(Fable 코드 r2 minor).
+    if snap.materialize(&tmp).is_err() || !snap.matches_dir(&tmp) {
         let _ = std::fs::remove_dir_all(&tmp);
         return Err("write");
     }
@@ -1283,7 +1285,12 @@ exit 0
     // ── ⑥ ──
     #[test]
     fn unsafe_path_chars_are_excluded() {
-        for ch in UNSAFE_PATH_CHARS {
+        // 기대 글자를 시험에 직접 적는다(상수 표에서 글자를 빼면 잡히게 · Fable 코드 r2).
+        let want = ['`', '\\', '"', '$', ':', '\n', '\r', '\'', '\t', '*', '?', '['];
+        for ch in want {
+            assert!(UNSAFE_PATH_CHARS.contains(&ch), "글자 {ch:?} 가 표에서 빠졌다");
+        }
+        for ch in want {
             let f = fx("chars");
             let rt = f.root.join(format!("ap{ch}p")).join("runtime");
             make_rt(&rt, true, true, true);

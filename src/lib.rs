@@ -1409,7 +1409,7 @@ pub fn gate_pending_close_from(env_val: Option<&str>) -> bool {
 /// (0/1 만) 이 분기는 신 바이너리에서만 발동한다 — 스큐 안전.
 pub const EXIT_GATE_PENDING: i32 = 78;
 /// ★(1.1.21 · cysr-1121-restore D5) `cys launch-agent`(보통 갈래)가 「데몬 자동 복원이 그 역할의 저장 대화를 되살리는 중」이라
-/// 띄우지 않았다 — 실패가 아니라 보류(새 좌석·새 대화 0). cys(CLI)가 내고 cysd 스케줄러가 읽는다(원샷 되돌림).
+/// 띄우지 않았다 — 실패가 아니라 보류(새 좌석·새 대화 0). cys(CLI)가 내고 cysd 스케줄러가 읽는다(그 회차 schedule.missed 기록 · 되돌림 없음 · 1.1.21 단순안).
 pub const EXIT_RESTORE_IN_PROGRESS: i32 = 95;
 /// ★(1.1.21 · cysr-1121-restore D5) phoenix 가 fresh 강등의 `cys launch-agent` 호출에**만** 붙이는 표지 — 자동 복원 자신의 기동은 거절하지 않는다.
 pub const ENV_AUTO_RESTORE_SELF: &str = "CYS_AUTO_RESTORE_SELF";

@@ -3064,13 +3064,77 @@ sys.exit(0)
 """
 
 
+def _rust_strip_comments_strings(src):
+    """Rust 소스에서 주석(`//`·`/* */` 중첩)과 문자열·문자 리터럴(`"…"`·`r#"…"#`·`b"…"`·`'x'`)의 **내용**을 지운다(따옴표 자리는 남긴다 ·
+    수명 `'a` 는 코드로 남긴다). 소스 핀이 「부른다」 를 판정할 때 주석·문자열 속 이름을 호출로 세지 않게 하는 결정론 전처리."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith("/*", i):
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if src.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif src.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+            out.append(" ")
+            continue
+        m = re.match(r'b?r(#*)"', src[i:i + 300])
+        if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+            close = '"' + m.group(1)
+            j = src.find(close, i + m.end())
+            i = n if j < 0 else j + len(close)
+            out.append('""')
+            continue
+        if c == '"' or (c == "b" and src.startswith('b"', i) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_"))):
+            i += 2 if c == "b" else 1
+            while i < n and src[i] != '"':
+                i += 2 if src[i] == "\\" else 1
+            i += 1
+            out.append('""')
+            continue
+        if c == "'":
+            m = re.match(r"'(?:\\.|\\u\{[0-9a-fA-F]+\}|\\x[0-9a-fA-F]{2}|[^\\'])'", src[i:i + 16])
+            if m:
+                i += m.end()
+                out.append("''")
+                continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+# ★1.1.21 F1(codex 통합 1R major): 위임 감싸개에 있으면 안 되는 쓰기 꼴 — 감싸개는 「가드 + core 호출」 만 허용한다.
+_RUST_WRAPPER_WRITE_TOKENS = re.compile(
+    r"\b(?:write\w*|File|OpenOptions|rename|set_len|copy|remove_file|create\w*|persist|sync_all|tmp_path_for)\b")
+
+
 def _rust_fn_body_following_core(src, start, core, need):
     """★1.1.21(TICKET=cysr-1121-integ · win-doctor-hook 630 이 본체를 `<이름>_core` 로 옮김): 공개 함수 본문(start 부터 첫 `\n}\n`)이
     `<core>(` 를 부르면 그 core 함수 본문을 이어 붙여 돌려준다 — 소스 핀이 **위임을 따라가되 약해지지 않게**: 감싸개가 core 를 부른다는
-    사실과 core 본문 실재를 둘 다 요구한다(감싸개 밖으로 성질이 빠져나가면 여전히 적색). core 호출이 없으면 종전 본문 그대로."""
+    사실과 core 본문 실재를 둘 다 요구한다(감싸개 밖으로 성질이 빠져나가면 여전히 적색). core 호출이 없으면 종전 본문 그대로.
+    ★F1 강화(codex 통합 1R major · 옛 핀 적색 → 새 핀 초록이던 위반 5꼴을 다시 적색으로):
+      ① 호출 판정 = 주석·문자열을 지운 코드에서 **경로 없는** `core(` 만(주석·문자열 속 이름 · `other::core(` 는 위임 아님)
+      ② 위임할 때 감싸개 코드에 쓰기 꼴(_RUST_WRAPPER_WRITE_TOKENS)이 있으면 적색(위임 앞·뒤 비원자 쓰기)
+      ③ core 정의(`fn core(`)가 이 파일 코드에 **정확히 하나**(cfg 로 갈린 두 정의·다른 파일 동명 core = 모호 = 적색)."""
     body = src[start:src.find("\n}\n", start)]
-    if (core + "(") not in body:
+    code = _rust_strip_comments_strings(body)
+    call = re.compile(r"(?<![\w:.])" + re.escape(core) + r"\s*\(")
+    if not call.search(code):
+        need(not re.search(r"\b" + re.escape(core) + r"\s*\(", code),
+             "%s 를 경로 붙여 부른다(다른 모듈 동명 core = 이 파일 본문으로 판정 불가)" % core)
         return body
+    hit = _RUST_WRAPPER_WRITE_TOKENS.search(code)
+    need(hit is None, "%s 로 위임하는 감싸개가 스스로 쓴다(%r) — 감싸개는 가드+위임만" % (core, hit and hit.group(0)))
+    scode = _rust_strip_comments_strings(src)
+    defs = re.findall(r"\bfn\s+" + re.escape(core) + r"\s*[<(]", scode)
+    need(len(defs) == 1, "%s 정의가 %d개다(정확히 하나여야 위임을 따라갈 수 있다)" % (core, len(defs)))
     ci = src.find("fn " + core + "(")
     need(ci > 0, "%s 를 부르는데 그 정의를 못 찾았다" % core)
     return body + src[ci:src.find("\n}\n", ci)]

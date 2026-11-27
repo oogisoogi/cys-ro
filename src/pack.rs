@@ -883,63 +883,63 @@ pub fn windows_launcher_variant_in(
     windows_launcher_variants_in(root, event, script_path, candidates, is_file).into_iter().next()
 }
 
-/// ★1.1.21 G r1(codex 1R major · TICKET=cysr-1121-integ): 윈 훅 command 를 **인자 경계를 지켜** 나눈다(순수).
-/// 전에는 명령 전체에서 따옴표를 지우고 공백을 합쳐 비교했다 — `bash "C:/Users/A B/x.sh"` 와
-/// `bash "C:/Users/A" "B/x.sh"`(다른 스크립트 + 꼬리 인자)가 같아졌고, G 가 이 비교를 병합·검증(집행)까지 넓혀
-/// 공백 든 사용자 폴더에 옛 깨진 줄이 있으면 올바른 줄을 붙이지 않을 길이 생겼다.
-/// 규칙: 따옴표 밖 공백 = 인자 경계 · `"…"`·`'…'` = 한 인자로 묶음(안의 공백·다른 따옴표 글자는 그대로) ·
-/// 역슬래시 = 글자 그대로(윈 경로 · 기존 표기 인정 범위 유지) · 닫히지 않은 따옴표 = `None`(판정 불가 = 인정 안 함).
-/// ★1.1.21 G r3·r4(codex 3R·4R): 셸마다 뜻이 갈리는 붙음만 판정 불가(`None` = 인정 안 함 · 보수) —
-/// ⓐ 따옴표 조각끼리 바로 붙음(`'team''s'` = bash `teams` · PowerShell `team's` / `"a""b"` = bash `ab` · PowerShell `a"b`)
-/// ⓑ 글자에 붙은 홑따옴표 조각(cmd 는 홑따옴표를 글자로 넘긴다) ⓒ 따옴표로 **시작한** 인자의 닫는 따옴표 뒤에 글자가 붙음
-/// (`"C:/packs/team"s/x.sh` = bash 는 이어 붙이고 PowerShell 은 인자 둘로 가름 · codex 5R 실측). 글자로 시작한 인자 속의
-/// 큰따옴표 조각(`C:/Users/"A B"/x.sh` · `C:/packs/team"s/x.sh"`)은 bash·PowerShell·MSVCRT 모두 이어 붙여 한 인자로 넘기므로
-/// 인정한다(4R 반례 · G 이전에도 인정되던 표기).
+/// ★1.1.21 G(codex 1R~6R · TICKET=cysr-1121-integ): 윈 훅 command 를 **인자 경계를 지켜** 나눈다(순수).
+/// 전에는 명령 전체에서 따옴표를 지우고 공백을 합쳐 비교했다 — `bash "C:/Users/A B/x.sh"` 와 `bash "C:/Users/A" "B/x.sh"`
+/// (다른 스크립트 + 꼬리 인자)가 같아졌고, G 가 이 비교를 병합·검증(집행)까지 넓혀 올바른 줄을 붙이지 않을 길이 생겼다.
+/// 훅을 실제로 돌리는 셸을 여기서는 모른다(bash · PowerShell · cmd→MSVCRT argv) → **세 셸이 같은 인자 목록을 내는 공통
+/// 부분집합만** 나누고, 그 밖은 `None`(판정 불가 = 인정 안 함 · 틀려도 결과는 G 이전과 같은 중복 append 쪽):
+///  · 따옴표 밖 공백 = 인자 경계 · 큰따옴표 `"…"` = 묶음(안의 공백·홑따옴표 글자 보존) · 글자로 시작한 인자 속 큰따옴표 조각은
+///    이어 붙임(`C:/Users/"A B"/x.sh` · 4R)
+///  · None: 따옴표 밖 홑따옴표(cmd 는 글자로 넘김 · 6R) · 따옴표 밖 역슬래시(bash 는 escape 로 먹음 · 6R) · 큰따옴표 안
+///    `\"`·`\\`·끝의 `\`(bash·MSVCRT 뜻이 갈림) · `$`·백틱·`%`(bash·PowerShell·cmd 확장) · 따옴표 밖 셸 연산·glob 글자
+///    (`&|<>();{}*?[]^!#~`) · 큰따옴표 조각끼리 붙음(`"a""b"` · 3R) · 따옴표로 시작한 인자가 닫힌 뒤 글자(5R) · 닫히지 않은 따옴표.
 fn windows_hook_argv(cmd: &str) -> Option<Vec<String>> {
+    const EXPAND: &[char] = &['$', '`', '%'];
+    const BARE_BAD: &[char] = &['\'', '\\', '&', '|', '<', '>', '(', ')', ';', '{', '}', '*', '?', '[', ']', '^', '!', '#', '~'];
+    let chars: Vec<char> = cmd.chars().collect();
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut in_tok = false;
-    let mut quote: Option<char> = None;
-    let mut last_close: Option<char> = None;
-    let mut tok_quote_start = false;
-    for c in cmd.chars() {
-        match quote {
-            Some(q) if c == q => {
-                quote = None;
-                last_close = Some(q);
+    let (mut in_tok, mut in_q, mut last_close, mut tok_quote_start) = (false, false, false, false);
+    for (i, &c) in chars.iter().enumerate() {
+        if EXPAND.contains(&c) {
+            return None;
+        }
+        if in_q {
+            match c {
+                '"' => {
+                    in_q = false;
+                    last_close = true;
+                }
+                '\\' if matches!(chars.get(i + 1), Some('"') | Some('\\') | None) => return None,
+                _ => cur.push(c),
             }
-            Some(_) => cur.push(c),
-            None if c.is_whitespace() => {
-                if in_tok {
-                    out.push(std::mem::take(&mut cur));
-                    in_tok = false;
-                }
-                last_close = None;
+        } else if c.is_whitespace() {
+            if in_tok {
+                out.push(std::mem::take(&mut cur));
+                in_tok = false;
             }
-            None if c == '"' || c == '\'' => {
-                if last_close.is_some() || (c == '\'' && in_tok) {
-                    return None; // ⓐ 조각끼리 붙음 · ⓑ 글자 뒤 홑따옴표
-                }
-                if !in_tok {
-                    tok_quote_start = true;
-                }
-                quote = Some(c);
-                in_tok = true;
+            last_close = false;
+        } else if c == '"' {
+            if last_close {
+                return None; // 조각끼리 붙음
             }
-            None => {
-                if last_close == Some('\'') || (last_close.is_some() && tok_quote_start) {
-                    return None; // ⓑ 홑따옴표 조각 뒤에 글자 · ⓒ 따옴표로 시작한 인자가 닫힌 뒤 글자
-                }
-                if !in_tok {
-                    tok_quote_start = false;
-                }
-                cur.push(c);
-                in_tok = true;
-                last_close = None;
+            if !in_tok {
+                tok_quote_start = true;
             }
+            in_q = true;
+            in_tok = true;
+        } else if BARE_BAD.contains(&c) || (last_close && tok_quote_start) {
+            return None;
+        } else {
+            if !in_tok {
+                tok_quote_start = false;
+            }
+            cur.push(c);
+            in_tok = true;
+            last_close = false;
         }
     }
-    if quote.is_some() {
+    if in_q {
         return None;
     }
     if in_tok {
@@ -8352,12 +8352,15 @@ mod tests {
         ));
         // ② 좌석 셸 꼴(`bash "…"`) — 런처 = bash
         assert!(ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
-        // ③ 표기 변형: 역슬래시·소문자 드라이브·따옴표 런처·MSYS /c/ 스크립트
+        // ③ 표기 변형: 역슬래시(큰따옴표 안)·소문자 드라이브·따옴표 런처·MSYS /c/ 스크립트
         assert!(ok(
-            &["\"c:\\users\\admin\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh"],
+            &["\"c:\\users\\admin\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" \"C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh\""],
             &only_bundled
         ));
-        assert!(ok(&["BASH '/c/Users/admin/.cys/pack/hooks/session-start.sh'"], &only_bundled));
+        assert!(ok(&["BASH \"/c/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        // ③′ G 6R: 셸마다 인자가 갈리는 표기 = 인정 안 함(따옴표 밖 역슬래시 = bash 가 먹음 · 홑따옴표 = cmd 가 글자로 넘김)
+        assert!(!ok(&["bash C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh"], &only_bundled));
+        assert!(!ok(&["BASH '/c/Users/admin/.cys/pack/hooks/session-start.sh'"], &only_bundled));
         // ④ 공백 후보(Program Files) — 실재할 때만 인정
         let pf_cmd = "\"C:/Program Files/Git/bin/bash.exe\" \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"";
         assert!(ok(&[pf_cmd], &|p: &str| p.starts_with("C:\\Program Files")));
@@ -8414,7 +8417,8 @@ mod tests {
         };
         let sp = "C:/Users/A B/.cys/pack/hooks/session-start.sh";
         assert!(ok(sp, &["bash \"C:/Users/A B/.cys/pack/hooks/session-start.sh\""]));
-        assert!(ok(sp, &["bash 'C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh'"]));
+        assert!(ok(sp, &["bash \"C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh\""]));
+        assert!(!ok(sp, &["bash 'C:\\Users\\a b\\.cys\\pack\\hooks\\session-start.sh'"])); // 6R: 홑따옴표
         // 반례 ① 경로를 두 인자로 쪼갬(= C:/Users/A 실행 + 꼬리 인자)
         assert!(!ok(sp, &["bash \"C:/Users/A\" \"B/.cys/pack/hooks/session-start.sh\""]));
         // 반례 ② 따옴표 없는 공백 경로(= 인자 둘로 갈림)
@@ -8433,13 +8437,27 @@ mod tests {
         assert!(!ok(teams, &["bash 'C:/packs/team''s/hooks/session-start.sh'"]));
         assert!(!ok(teams, &["bash \"C:/packs/team\"\"s/hooks/session-start.sh\""]));
         assert!(!ok(teams, &["bash C:/packs/team's/hooks/session-start.sh'"]));
-        assert!(ok(teams, &["bash 'C:/packs/teams/hooks/session-start.sh'"]));
+        assert!(!ok(teams, &["bash 'C:/packs/teams/hooks/session-start.sh'"])); // 6R: cmd 는 홑따옴표를 글자로
+        // 6R: 역슬래시가 셸마다 갈리는 꼴 = 인정 안 함
+        assert!(!ok(teams, &["bash C:\\packs\\teams\\hooks\\session-start.sh"]));
+        assert!(!ok(teams, &["bash C:/packs\\\"teams/hooks/session-start.sh\""]));
+        assert!(!ok(teams, &["bash \"C:/packs/teams/hooks/session-start.sh\\\""]));
+        // 확장 글자 · 셸 연산 글자 = 인정 안 함
+        assert!(!ok(teams, &["bash \"C:/packs/$teams/hooks/session-start.sh\""]));
+        assert!(!ok(teams, &["bash C:/packs/teams/hooks/session-start.sh;"]));
         // codex 4R: 큰따옴표 조각이 글자와 붙음 = 모든 셸에서 이어 붙임 → 같은 경로면 인정(G 이전에도 인정 · 중복 append 방지)
         assert!(ok(sp, &["bash C:/Users/\"A B\"/.cys/pack/hooks/session-start.sh"]));
         assert!(ok(teams, &["bash C:/packs/team\"s/hooks/session-start.sh\""]));
         assert!(!ok(sp, &["bash C:/Users/\"A\" B/.cys/pack/hooks/session-start.sh"])); // 공백이 따옴표 밖 = 인자 둘
         // 분해 단위
-        assert_eq!(windows_hook_argv("a \"b c\" 'd \"e'"), Some(vec!["a".into(), "b c".into(), "d \"e".into()]));
+        assert_eq!(windows_hook_argv("a \"b c\" \"d 'e\""), Some(vec!["a".into(), "b c".into(), "d 'e".into()]));
+        assert_eq!(windows_hook_argv("a 'b c'"), None);
+        assert_eq!(windows_hook_argv("a \"x\\y\""), Some(vec!["a".into(), "x\\y".into()]));
+        assert_eq!(windows_hook_argv("a \"x\\\\y\""), None);
+        // 확장 글자(bash·PowerShell $ · 백틱 · cmd %)는 따옴표 안에서도 셸이 바꿀 수 있어 판정 불가
+        assert_eq!(windows_hook_argv("a \"x$y\""), None);
+        assert_eq!(windows_hook_argv("a x%y%"), None);
+        assert_eq!(windows_hook_argv("a \"x`y\""), None);
         assert_eq!(windows_hook_argv("a 'b''c'"), None);
         assert_eq!(windows_hook_argv("a \"b\"\"c\""), None);
         assert_eq!(windows_hook_argv("a x'b'"), None);

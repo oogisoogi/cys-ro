@@ -24,7 +24,7 @@ description: 스타일 11종 중 하나를 골라 발표 자료 .pptx 를 바로
    `{ "style": "<id>", "title": "<파일 제목>", "footer": "…", "slides": [ {"kind":"title",…}, {"kind":"cards",…}, {"kind":"question",…} ] }`
    - `kind` 는 title · cards · question 세 가지. 같은 kind 를 여러 번 써도 된다(카드 장 여러 장 등).
    - 원문 용어·숫자는 사용자가 준 그대로. 견본 글을 남겨 두지 않는다(빈 칸은 빈 글로 나간다).
-3. **만들기 + 점검**: `bash "$SK/run.sh" deck <내용.json> <결과.pptx>` — make_deck.js → `check_pptx.py`(LibreOffice 가 있으면 PDF 쪽 수 대조까지).
+3. **만들기 + 점검**: `bash "$SK/run.sh" deck <내용.json> <결과.pptx>` — make_deck.js → `check_pptx.py`(LibreOffice 가 있으면 PDF 쪽 수 대조까지 · pdftotext(poppler)도 있고 덱 글꼴이 다 깔려 있으면 그 PDF 로 글끼리 겹침·쪽 밖 잘림 경고까지 — 없으면 1줄 안내 후 건너뜀).
    - bash 가 없으면(윈도): `node "$SK/tools/make_deck.js" 내용.json 결과.pptx` 다음 `python "$SK/tools/check_pptx.py" 결과.pptx --slides <N> [--pdf]`.
 4. **세 장 모양으로 모자랄 때**(표·타임라인 등): 새 build 스크립트에서 `styles/NN-<id>.js` 의 `THEME`·`layouts()`·세 함수와 `lib/kit.js`(tx·box·runs·icon)를 불러 장을 코드로 더하고, 끝에 `lib/theme.js` 의 `applyTheme(파일, THEME)` · 의존은 `require("$SK/lib/deps").setup()` 을 맨 앞에.
 5. 결과 `.pptx` 경로와 점검 결과 줄(PASS/FAIL · 경고)을 사용자에게 그대로 보인다.

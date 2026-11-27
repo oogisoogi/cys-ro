@@ -34,51 +34,14 @@ const SCHEDULE_QUEUE_CAP: usize = 100;
 const SCHEDULE_FALLBACK_HEADROOM: usize = 50;
 /// ★(0.14.42 · 설계 H2) 틱의 pause 확인과 push 사이에 kill-switch 가 켜졌다 — via_queue 의 `Frozen` 과 같은 규약(ⓒ).
 const SCHEDULE_FROZEN_ERR: &str = "delivery_frozen: kill-switch paused between tick and push";
-/// ★(1.1.21 · cysr-1121-restore D5) `if_absent=launch` 의 launch-agent 가 rc 95(자동 복원이 그 역할을 되살리는 중)로 보류됐다 —
-/// 원샷은 틱이 이미 파일에서 지웠으므로 동결과 같은 길로 되돌린다(복원이 끝나면 역할이 살아 있어 그대로 배달된다).
-/// 평시 길은 틱의 복원 건너뛰기(`restore_defers_job`)라 여기 오는 것은 틱 판정과 CLI 사이에 복원이 시작되는 드문 틈뿐이다.
-const SCHEDULE_RESTORE_DEFER_ERR: &str = "launch_deferred: auto-restore is reviving this role (launch-agent rc 95)";
-/// ★(1.1.21 D5 · Fable 2R major · codex 3R·4R major) 자동 복원이 진행 중(held·running·retry_wait)이고 `if_absent=launch` 잡의 대상 역할이
-/// 아직 없으면 **틱이 그 잡을 건너뛴다**(회차를 소비하지 않음 — last_fired 기록 0 · 원샷 파일 제거 0 · 발화 태스크 0 · 본문 명령 0).
-/// kill-switch 중 틱이 아무것도 하지 않는 것과 같은 꼴이라, 복원이 끝난 첫 틱이 그 잡을 평소대로 판정한다(역할이 되살아났으면 그 좌석에
-/// 배달 · 아니면 종전대로 띄움). 메모리에서 기다리는 태스크가 없어 데몬 재시작·동결·같은 잡 겹침·조회 경합이 생기지 않는다.
-/// 놓침 창: 건너뛰기는 kill-switch 와 같은 꼴이다 — 시각 잡은 복원이 끝난 뒤 예정보다 600초 넘게 늦었으면 종전 규칙대로 missed
-/// (pause 해제 뒤와 같다 · 메모리 기록을 두지 않는다 — codex 5R: 회차별·재시작·같은 id 새 잡에서 기록이 틀어졌다).
-/// 원샷만은 파일에 내구 기록이 있으니 놓치지 않게 한다: 건너뛰는 원샷이 예정보다 `RESTORE_DEFER_BUMP_SECS` 넘게 지나면 파일의 그 항목
-/// (같은 id ∧ 같은 at — 사람이 고쳤으면 at 이 다르다)의 at 만 그 자리에서 지금으로 올린다(5분에 쓰기 1번 · 실패해도 항목은 남아
-/// 다음 틱이 다시 시도 · 데몬 재시작에도 그대로).
-/// CLI rc 95 되돌림(`launch_restore_defer_err` · 원샷)은 틱 판정과 CLI 사이에 복원이 시작되는 드문 틈의 뒷받침으로 남는다.
-const RESTORE_DEFER_BUMP_SECS: i64 = MISS_WINDOW_SECS / 2;
+/// ★(1.1.21 · cysr-1121-restore D5 · 단순안 — master#65e625a9) `if_absent=launch` 의 launch-agent 가 rc 95(자동 복원이 그 역할을
+/// 되살리는 중)로 띄우지 않았다. 1.1.21 은 그 회차를 **missed 로 기록하고 끝낸다**(원샷 되살리기·시각 올리기 없음 · 알려진 한계 —
+/// 복원 중 도달한 if_absent=launch 회차는 배달되지 않는다 · 1.1.20 은 그 회차에 새 대화 좌석을 띄웠다 = 이 판이 막는 겹침 사고).
+const SCHEDULE_RESTORE_DEFER_ERR: &str = "launch_deferred: auto-restore is reviving this role (launch-agent rc 95) — occurrence recorded as missed";
 
-/// 파일의 원샷 항목(같은 id ∧ 같은 at)의 at 을 그 자리에서 바꾼다 — 내용·모르는 키는 파일 것 그대로(사람 편집 보존).
-/// 판독 불가 파일은 덮지 않는다 · 항목이 없거나 at 이 다르면 쓰지 않고 false.
-fn set_oneshot_at_in_place(path: &std::path::Path, job_id: &str, at: i64, new_at: i64) -> bool {
-    (|| {
-        let _lock = ScheduleFileLock::acquire(path)?;
-        let _settings_guard = cys::pack::acquire_settings_lock(path);
-        let mut root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-        let arr = root.get_mut("jobs")?.as_array_mut()?;
-        let e = arr.iter_mut().find(|j| j["id"].as_str() == Some(job_id) && j["at"].as_i64() == Some(at))?;
-        e["at"] = json!(new_at);
-        write_schedule_atomic(path, &root).then_some(true)
-    })()
-    .unwrap_or(false)
-}
-
-/// 이 틱에 그 잡을 건너뛸까(순수 판정표) — 복원 진행 중 ∧ fresh 아님(fresh 는 새 이름 좌석이라 복원 대상이 아님) ∧ push 계열 ∧
-/// `if_absent=launch` ∧ 대상 역할이 살아 있는 에이전트 좌석이 아님.
-fn restore_defer_decision(in_progress: bool, fresh: bool, is_push: bool, if_absent_launch: bool, role_live: bool) -> bool {
-    in_progress && !fresh && is_push && if_absent_launch && !role_live
-}
-
-fn restore_defers_job(daemon: &Arc<Daemon>, job: &Job) -> bool {
-    if !auto_restore_in_progress_u8(daemon.auto_restore_phase.load(std::sync::atomic::Ordering::Relaxed)) {
-        return false; // 값싼 판정 먼저 — 평시엔 역할 맵을 보지 않는다
-    }
-    let is_push = matches!(job.action.as_str(), "push" | ACTION_PUSH_QUEUED);
-    let launch = job.if_absent.as_deref().is_some_and(|v| v.trim().eq_ignore_ascii_case("launch"));
-    let live = job.to.as_deref().is_some_and(|to| live_agent_seat(daemon, to).is_some());
-    restore_defer_decision(true, job.fresh, is_push, launch, live)
+/// ★(1.1.21 D5) `cys launch-agent` 종료 코드 → 「자동 복원 중 보류」 오류(순수 · 시험 이음매). 95 만 · 그 밖 = None(종전 판정으로).
+fn launch_restore_defer_err(code: Option<i32>) -> Option<String> {
+    (code == Some(cys::EXIT_RESTORE_IN_PROGRESS)).then(|| SCHEDULE_RESTORE_DEFER_ERR.to_string())
 }
 /// ★(0.14.42 · R3SH-1) 입증 못 한 **기계 모양** 초안(사람 바이트 0) 위에서 같은 주기 잡이 같은 입력 세대로 사람 입력
 /// 없이 이 횟수를 넘겨 연속 우회되면, 다음 회차는 종전(pre-H)처럼 직접 주입해 잔여를 병합 제출한다(푸는 주체 없는 무기한
@@ -1551,16 +1514,6 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
     }
     let today = now.date_naive();
     for job in jobs {
-        // ★(1.1.21 D5) 자동 복원이 부재 대상 역할을 되살리는 중 — 이 틱은 건너뛴다(회차 소비 0 · 원샷은 늦으면 at 을 지금으로 · 위 주석).
-        if restore_defers_job(daemon, &job) {
-            if let Some(at) = job.at.filter(|at| now_ts - *at > RESTORE_DEFER_BUMP_SECS) {
-                let ok = set_oneshot_at_in_place(&schedule_path(), &job.id, at, now_ts);
-                daemon.bus.publish("schedule.oneshot_deferred", "schedule", None,
-                                   json!({"job_id": job.id, "at": at, "new_at": now_ts, "ok": ok,
-                                          "note": "자동 복원이 대상 역할을 되살리는 중이라 원샷을 미뤘다(예정 시각을 지금으로 · 끝나면 다음 틱이 발화)"}));
-            }
-            continue;
-        }
         // 주기(every_minutes) job: 마지막 발화 후 N분 경과 시 반복 발화 (master 5분 보고 하트비트).
         // at·time보다 먼저 평가하고, 처리 후 다음 job으로 (배타).
         // 재시작 안전성: last_fired는 발화 직후 기록되고 dirty 시 save_state로 영속된다.
@@ -1588,10 +1541,6 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
             }
             state.last_fired.insert(job.id.clone(), at);
             dirty = true;
-            // ★(1.1.21 · cysr-1121-restore · codex 코드 2R major) 파일에서 **먼저** 지우고 발화한다 — 종전(발화 spawn 뒤 제거)은
-            //   발화 태스크의 되돌림(동결·rc 95 보류 `requeue_oneshot_to_at`)이 제거보다 먼저 끝나면 「같은 id 가 이미 있음 → 무동작」
-            //   뒤 이 제거가 그 원샷을 지워 본문이 사라졌다. 제거는 동기라 이 순서면 되돌림은 늘 제거 뒤다.
-            remove_job_from_file(&job.id);
             if now_ts - at > MISS_WINDOW_SECS {
                 daemon.bus.publish(
                     "schedule.missed",
@@ -1604,6 +1553,7 @@ fn scheduler_tick(daemon: &Arc<Daemon>) {
                 let j = job.clone();
                 tokio::spawn(async move { fire(d, j).await });
             }
+            remove_job_from_file(&job.id);
             continue;
         }
         // 어제 인스턴스도 평가 — 자정 경계에서 전날 미처리분이
@@ -1697,59 +1647,18 @@ fn remove_job_from_file_at(path: &std::path::Path, job_id: &str) {
 
 /// ★(0.14.42 · R3SH-5 ②) 동결로 끝난 원샷 잡을 파일에 되돌린다(`at + 1`). 같은 id 가 이미 있으면(사람이 다시 넣음) 손대지
 /// 않는다. 원샷이 아니면 무동작. 실패는 이벤트로 드러낸다(침묵 금지).
-#[cfg(test)]
+fn requeue_oneshot_after_frozen(daemon: &Arc<Daemon>, job: &Job) {
+    requeue_oneshot_after_frozen_at(daemon, &schedule_path(), job)
+}
+
 fn requeue_oneshot_after_frozen_at(daemon: &Arc<Daemon>, path: &std::path::Path, job: &Job) {
-    requeue_oneshot_to_at(daemon, path, job, None)
-}
-
-/// 역할 맵의 좌석이 살아 있는 에이전트 좌석이면 그 sid(아니면 None — 부재로 본다).
-/// agent_meta=None인 surface(new-surface로 만든 빈 zsh 셸)에 자연어 프롬프트를 push하면
-/// 셸이 명령으로 해석해 깨진다(예: '[heartbeat]…' → zsh no matches). launch-agent로 등록된
-/// 에이전트 pane만 유효 대상 → 빈 셸은 if_absent 규칙으로 처리(owner 보고는 skip).
-/// ★(0.14.31 · 리뷰 R2) 판정은 `alert_route::seat_is_agent_backed` **한 곳**이다.
-///   종전에는 같은 규칙을 여기 인라인으로 복제했고, 경보 라우팅이 그 사본과 갈라져
-///   빈 셸을 목적지로 골랐다. 술어가 하나면 갈라질 수 없다(그 술어는 등록 이력만이
-///   아니라 이미 관측된 부재 증거까지 본다 — Unknown 은 종전대로 통과).
-/// (1.1.21 D5 · 틱의 복원 건너뛰기 판정이 같은 좌석 판정을 쓰도록 fire_push 본문에서 뺐다 · 동작 무변경.)
-fn live_agent_seat(daemon: &Arc<Daemon>, role: &str) -> Option<u64> {
-    let s = daemon.roles.lock().unwrap().get(role).copied()?;
-    daemon
-        .get_surface(s)
-        .map(|surf| crate::alert_route::seat_is_agent_backed(&surf))
-        .unwrap_or(false)
-        .then_some(s)
-}
-
-/// 자동 복원 진행 중(held·running·retry_wait) — `cys` 의 `auto_restore_in_progress` 와 같은 세 값(데몬 쪽 원자값).
-fn auto_restore_in_progress_u8(ph: u8) -> bool {
-    matches!(ph, crate::AUTO_RESTORE_RUNNING | crate::AUTO_RESTORE_RETRY_WAIT | crate::AUTO_RESTORE_HELD)
-}
-
-
-/// ★(1.1.21 D5) `cys launch-agent` 종료 코드 → 「자동 복원 중 보류」 오류(순수 · 시험 이음매). 95 만 · 그 밖 = None(종전 판정으로).
-fn launch_restore_defer_err(code: Option<i32>) -> Option<String> {
-    (code == Some(cys::EXIT_RESTORE_IN_PROGRESS)).then(|| SCHEDULE_RESTORE_DEFER_ERR.to_string())
-}
-
-/// 발화 결과 → 원샷 되돌림 하한(순수 · 시험 이음매). `None` = 되돌리지 않음 · `Some(None)` = 동결(종전 at+1) ·
-/// `Some(Some(now))` = rc 95 보류(max(at+1, now)).
-fn oneshot_requeue_floor(result: &Result<String, String>, now: i64) -> Option<Option<i64>> {
-    match result {
-        Err(e) if e == SCHEDULE_FROZEN_ERR => Some(None),
-        Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR => Some(Some(now)),
-        _ => None,
-    }
-}
-
-/// 원샷을 파일에 되돌린다 — 새 at = max(at+1, `not_before`)(없으면 at+1 · 동결 종전 동작). 주기 잡은 대상 아님.
-fn requeue_oneshot_to_at(daemon: &Arc<Daemon>, path: &std::path::Path, job: &Job, not_before: Option<i64>) {
     let Some(at) = job.at else { return };
     if job.every_minutes.is_some_and(|m| m > 0) {
         return;
     }
     let mut back = job.clone();
-    back.at = Some(at.saturating_add(1).max(not_before.unwrap_or(i64::MIN)));
-    let outcome: Option<bool> = (|| {
+    back.at = Some(at.saturating_add(1));
+    let ok = (|| {
         let _lock = ScheduleFileLock::acquire(path)?;
         // ★⑰(1.1.8 합성) 디렉터리 잠금 뒤 우리 공유 락(`ensure_builtin_jobs_at` 과 같은 순서).
         let _settings_guard = cys::pack::acquire_settings_lock(path);
@@ -1763,35 +1672,21 @@ fn requeue_oneshot_to_at(daemon: &Arc<Daemon>, path: &std::path::Path, job: &Job
         // 최상위가 object 가 아니거나 `jobs` 가 배열이 아닌 문서도 덮지 않는다(부재 키만 새로 둔다).
         let obj = root.as_object_mut()?;
         let arr = obj.entry("jobs").or_insert_with(|| json!([])).as_array_mut()?;
-        // 같은 id 가 이미 있으면 — ⓐ 같은 at(틱의 제거가 실패해 남음 · 그 사이 사람이 내용만 고쳤을 수도) = 그 자리에서 **at 만** 새 값으로
-        //   (그대로 두면 last_fired ≥ at 이라 다시 발화하지 않는다 · codex 2R major · 내용·모르는 키는 파일 것 그대로 = 사람 편집 보존 ·
-        //   Fable 4R minor 3) ⓑ at 이 다른 것(사람이 다시 넣음) = 손대지 않는다(종전).
-        if let Some(pos) = arr.iter().position(|j| j["id"].as_str() == Some(back.id.as_str())) {
-            if arr[pos]["at"].as_i64() == Some(at) {
-                arr[pos]["at"] = json!(back.at);
-                return write_schedule_atomic(path, &root).then_some(true);
-            }
-            return Some(false); // at 다른 같은 id = 사람이 다시 넣음 — 쓰지 않음(아래 이벤트 superseded)
+        if arr.iter().any(|j| j["id"].as_str() == Some(back.id.as_str())) {
+            return Some(true);
         }
         arr.push(serde_json::to_value(&back).ok()?);
         canonicalize_stored_queue_actions(arr);
         write_schedule_atomic(path, &root).then_some(true)
-    })();
-    // Some(true) = 되돌림 · Some(false) = 사람이 같은 id 를 다른 at 으로 다시 넣어 손대지 않음(superseded · 성공으로 보고하지 않는다 · Fable 4R·5R) · None = 실패
-    let superseded = outcome == Some(false);
-    let ok = outcome.is_some();
+    })()
+    .unwrap_or(false);
     daemon.bus.publish(
         "schedule.oneshot_requeued",
         "schedule",
         None,
-        json!({"job_id": job.id, "at": back.at, "ok": ok, "requeued": outcome == Some(true),
-               "reason": if superseded { "superseded" } else if not_before.is_some() { "auto_restore" } else { "frozen" },
-               "note": match (ok, not_before.is_some()) {
-                   _ if superseded => "같은 id 원샷이 이미 다른 시각으로 다시 들어 있어(사람이 다시 넣음) 되돌리지 않았다 — 그 항목이 제 시각에 발화한다",
-                   (true, false) => "kill-switch 경합으로 동결된 원샷을 파일에 되돌렸다 — 해제 뒤 다음 틱이 다시 발화한다",
-                   (true, true) => "자동 복원이 대상 역할을 되살리는 중(launch-agent rc 95)이라 보류한 원샷을 파일에 되돌렸다 — 다음 틱이 다시 발화한다",
-                   (false, _) => "보류한 원샷을 파일에 되돌리지 못했다(잠금·판독·쓰기 실패 — 판독 불가 파일은 덮지 않는다) — 이 wake 는 다시 오지 않는다 · 수동 재등록 필요",
-               }}),
+        json!({"job_id": job.id, "at": back.at, "ok": ok,
+               "note": if ok { "kill-switch 경합으로 동결된 원샷을 파일에 되돌렸다 — 해제 뒤 다음 틱이 다시 발화한다" }
+                       else { "동결된 원샷을 파일에 되돌리지 못했다(잠금·판독·쓰기 실패 — 판독 불가 파일은 덮지 않는다) — 이 wake 는 다시 오지 않는다 · 수동 재등록 필요" }}),
     );
 }
 
@@ -1811,10 +1706,6 @@ pub fn run_now(daemon: &Arc<Daemon>, job_id: &str) -> Result<(), String> {
         .into_iter()
         .find(|j| j.id == job_id)
         .ok_or_else(|| format!("no job '{job_id}' in {}", schedule_path().display()))?;
-    // ★(1.1.21 D5 · Fable 5R minor) 틱과 같은 복원 건너뛰기 — 즉발도 자동 복원이 부재 대상 역할을 되살리는 동안은 띄우지 않는다.
-    if restore_defers_job(daemon, &job) {
-        return Err("restore_in_progress: 자동 복원이 대상 역할을 되살리는 중 — 끝난 뒤 다시 실행(`cys status --json` 의 daemon.auto_restore)".to_string());
-    }
     let d = Arc::clone(daemon);
     tokio::spawn(async move { fire(d, job).await });
     Ok(())
@@ -1872,9 +1763,14 @@ async fn fire(daemon: Arc<Daemon>, job: Job) {
     //   이미 파일에서 지웠으므로 여기서 끝내면 pause 를 풀어도 되살아나지 않는다(자기 예약 wake 유실). 파일에 되돌려
     //   해제 뒤 다음 틱이 다시 발화하게 한다(at+1 — 틱의 메모리 기록 `last_fired ≥ at` 을 넘기기 위한 1초).
     //   pause 로 덮인 원샷의 종전 규약(해제 뒤 발화 · MISS_WINDOW 넘으면 missed)과 같아진다.
-    // ★(1.1.21 D5) 자동 복원 중 보류도 같은 길 — 되돌린 시각 = max(at+1, 지금): 복원이 길어도 놓침 창(MISS_WINDOW_SECS)이 원래 at 기준으로 닫히지 않게.
-    if let Some(floor) = oneshot_requeue_floor(&result, now_epoch() as i64) {
-        requeue_oneshot_to_at(&daemon, &schedule_path(), &job, floor);
+    if matches!(&result, Err(e) if e == SCHEDULE_FROZEN_ERR) {
+        requeue_oneshot_after_frozen(&daemon, &job);
+    }
+    // ★(1.1.21 D5 단순안) rc 95 보류 = 그 회차 missed 로 기록(되살리지 않음 · 위 상수 주석).
+    if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {
+        daemon.bus.publish("schedule.missed", "schedule", None,
+                           json!({"job_id": job.id, "reason": "auto_restore_in_progress",
+                                  "note": "자동 복원이 대상 역할을 되살리는 중이라 launch-agent 가 띄우지 않았다(rc 95) — 이 회차는 배달되지 않는다"}));
     }
     // ★U4-B2① 결과 원장(메모리 전용) — 이벤트 발행과 독립으로 남는다(이벤트는 흘러가 사라진다).
     let kind = classify_fire_result(&result);
@@ -2225,11 +2121,28 @@ async fn fire_push(daemon: &Arc<Daemon>, job: &Job) -> Result<String, String> {
         let how = delivered?;
         return Ok(format!("fresh-launched and {how} (surface:{sid})"));
     }
+    let mut sid = daemon.roles.lock().unwrap().get(to).copied();
     // 이 sid 가 **역할 맵에서** 나왔는가(=적재 시점 재검증 대상인가). `if_absent:launch` 로
     // 새로 만든 좌석은 sid 자체가 대상이라 가드를 걸지 않는다.
-    // 대상 surface가 죽어 있거나 agent-backed가 아니면(빈 셸) 부재로 간주(판정 = `live_agent_seat`).
-    let mut sid = live_agent_seat(daemon, to);
-    let from_role_map = sid.is_some();
+    let mut from_role_map = sid.is_some();
+    // 대상 surface가 죽어 있거나 agent-backed가 아니면(빈 셸) 부재로 간주.
+    // agent_meta=None인 surface(new-surface로 만든 빈 zsh 셸)에 자연어 프롬프트를 push하면
+    // 셸이 명령으로 해석해 깨진다(예: '[heartbeat]…' → zsh no matches). launch-agent로 등록된
+    // 에이전트 pane만 유효 대상 → 빈 셸은 if_absent 규칙으로 처리(owner 보고는 skip).
+    if let Some(s) = sid {
+        // ★(0.14.31 · 리뷰 R2) 판정은 `alert_route::seat_is_agent_backed` **한 곳**이다.
+        //   종전에는 같은 규칙을 여기 인라인으로 복제했고, 경보 라우팅이 그 사본과 갈라져
+        //   빈 셸을 목적지로 골랐다. 술어가 하나면 갈라질 수 없다(그 술어는 등록 이력만이
+        //   아니라 이미 관측된 부재 증거까지 본다 — Unknown 은 종전대로 통과).
+        let valid = daemon
+            .get_surface(s)
+            .map(|surf| crate::alert_route::seat_is_agent_backed(&surf))
+            .unwrap_or(false);
+        if !valid {
+            sid = None;
+            from_role_map = false;
+        }
+    }
 
     if sid.is_none() {
         // 값 정규화(trim+소문자) — JSON 직접 편집의 "Skip"·" launch "도 의도대로 처리.
@@ -2243,7 +2156,6 @@ async fn fire_push(daemon: &Arc<Daemon>, job: &Job) -> Result<String, String> {
                     .launch
                     .as_ref()
                     .ok_or("if_absent=launch but no 'launch' spec")?;
-                // (1.1.21 D5) 자동 복원이 이 역할을 되살리는 중이면 틱이 이 잡을 이미 건너뛰었다(`restore_defers_job`) — 여기 오면 종전대로 띄운다.
                 sid = Some(launch_via_cli(daemon, spec).await?);
             }
             // skip: 대상 역할 부재 시 조용히 건너뛴다(Ok) — 에러로 기록하지 않는다.
@@ -6328,60 +6240,13 @@ mod h2_schedule_hold_tests {
         done(&s);
     }
 
-    /// ★(1.1.21 · cysr-1121-restore D5 · codex 코드 1R major) 자동 복원 중 launch-agent rc 95 로 보류된 원샷은 파일에 되돌려지고
-    /// 새 at = max(at+1, 지금) — 원래 at 기준 놓침 창(600초)이 복원 시간에 먹히지 않는다. 배선 = launch_via_cli 가 95 를 구분 · fire 가 되돌림.
+    /// ★(1.1.21 D5 단순안 · master#65e625a9) rc 95 → 보류 오류 · 그 회차 missed 기록 · 되돌림 없음. 판정(순수) + 배선(운영 코드 · 주석 뺀 본문 · 함수 끝에서 자름).
     #[test]
-    fn restore_deferred_oneshot_is_requeued_not_before_now() {
-        let (d, s) = rig("d5-oneshot-defer");
-        let dir = std::env::temp_dir().join(format!("cys-oneshot-defer-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("schedule.json");
-        std::fs::write(&path, r#"{"jobs": []}"#).unwrap();
-        let wake = job(json!({"id": "wake-d5", "at": 1_900_000_000i64, "action": "push", "to": "cso", "text": "[wakeup] x"}));
-        requeue_oneshot_to_at(&d, &path, &wake, Some(1_900_000_500));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let back = root["jobs"].as_array().unwrap().iter().find(|j| j["id"] == "wake-d5").cloned().expect("되돌린 원샷");
-        assert_eq!(back["at"], json!(1_900_000_500i64), "지금보다 앞 시각으로 되돌리면 놓침 창이 닫힌다");
-        std::fs::write(&path, r#"{"jobs": []}"#).unwrap();
-        requeue_oneshot_to_at(&d, &path, &wake, Some(10));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["jobs"][0]["at"], json!(1_900_000_001i64), "하한이 과거면 종전 at+1");
-        // 틱의 제거가 실패해 **발화한 그 원샷(같은 at)** 이 남아 있으면 = 새 at 으로 바꿔 쓴다(그대로 두면 last_fired ≥ at 이라 영영 안 옴 ·
-        //   codex 코드 2R major) · at 이 다른 같은 id(사람이 다시 넣음) = 손대지 않는다
-        std::fs::write(&path, r#"{"jobs": [{"id": "wake-d5", "at": 1900000000, "action": "push", "to": "cso", "text": "[wakeup] x"}]}"#).unwrap();
-        requeue_oneshot_to_at(&d, &path, &wake, Some(1_900_000_500));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let ids: Vec<_> = root["jobs"].as_array().unwrap().iter().filter(|j| j["id"] == "wake-d5").map(|j| j["at"].clone()).collect();
-        assert_eq!(ids, [json!(1_900_000_500i64)], "제거 실패로 남은 원샷을 새 at 으로 바꾸지 않았다(또는 둘이 됐다)");
-        std::fs::write(&path, r#"{"jobs": [{"id": "wake-d5", "at": 1950000000, "action": "push", "to": "cso", "text": "사람"}]}"#).unwrap();
-        requeue_oneshot_to_at(&d, &path, &wake, Some(1_900_000_500));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["jobs"].as_array().unwrap().len(), 1);
-        assert_eq!((root["jobs"][0]["at"].clone(), root["jobs"][0]["text"].clone()), (json!(1_950_000_000i64), json!("사람")), "사람이 다시 넣은 원샷을 덮었다");
-        // 같은 at · 다른 본문·모르는 키(사람이 at 은 두고 내용을 고침) = at 만 올리고 내용은 사람 것 그대로(Fable 4R minor 3 · codex 3R major 4)
-        std::fs::write(&path, r#"{"jobs": [{"id": "wake-d5", "at": 1900000000, "action": "push", "to": "master", "text": "사람이 고친 본문", "once": true}]}"#).unwrap();
-        requeue_oneshot_to_at(&d, &path, &wake, Some(1_900_000_500));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(root["jobs"].as_array().unwrap().len(), 1);
-        let j0 = &root["jobs"][0];
-        assert_eq!((j0["at"].clone(), j0["text"].clone(), j0["to"].clone(), j0["once"].clone()),
-                   (json!(1_900_000_500i64), json!("사람이 고친 본문"), json!("master"), json!(true)),
-                   "같은 at 의 사람 편집을 발화 당시 내용으로 덮었거나 at 을 올리지 않았다");
-        let _ = std::fs::remove_dir_all(&dir);
-        done(&s);
-        // 판정(순수): rc → 보류 오류 · 결과 → 되돌림 하한
+    fn restore_rc95_is_recorded_as_missed_not_requeued() {
         assert_eq!(launch_restore_defer_err(Some(95)).as_deref(), Some(SCHEDULE_RESTORE_DEFER_ERR));
         for c in [Some(0), Some(1), Some(78), Some(94), Some(96), None] {
             assert_eq!(launch_restore_defer_err(c), None, "{c:?}");
         }
-        assert_eq!(oneshot_requeue_floor(&Err(SCHEDULE_RESTORE_DEFER_ERR.into()), 77), Some(Some(77)));
-        assert_eq!(oneshot_requeue_floor(&Err(SCHEDULE_FROZEN_ERR.into()), 77), Some(None));
-        assert_eq!(oneshot_requeue_floor(&Err("launch-agent failed: x".into()), 77), None);
-        assert_eq!(oneshot_requeue_floor(&Ok("ok".into()), 77), None);
-        // 배선(주석 뺀 본문): launch_via_cli 가 성공 판정 **앞**에서 95 를 가르고 · fire 가 하한 판정으로 되돌리고 ·
-        //   틱이 원샷을 **발화 spawn 전에** 파일에서 지운다(되돌림이 늘 제거 뒤 — codex 코드 2R major)
-        // 핀 재료 = 시험 모듈 **앞**(운영 코드)만 · 주석 줄 뺌 · 함수마다 끝(`\n}\n`)에서 자름 — 찾는 글자가 시험 자신의 리터럴에 걸려
-        //   운영 줄을 지워도 초록이 되던 구멍(Fable 코드 2R major)을 막는다.
         let full = include_str!("schedule.rs");
         let prod = &full[..full.find(concat!("#[cfg(test)]\n", "mod tests {")).expect("시험 모듈 경계")];
         let src: String = prod.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
@@ -6390,87 +6255,10 @@ mod h2_schedule_hold_tests {
         assert!(lv.find("if let Some(e) = launch_restore_defer_err(out.status.code()) {\n        return Err(e);").expect("95 구분 없음")
                 < lv.find("if !out.status.success()").unwrap(), "95 를 일반 실패로 접는다");
         let fire = func("\nasync fn fire(");
-        assert!(fire.contains("if let Some(floor) = oneshot_requeue_floor(&result, now_epoch() as i64) {\n        requeue_oneshot_to_at(&daemon, &schedule_path(), &job, floor);"),
-                "fire 가 되돌림 하한 판정을 쓰지 않는다");
-        let tick = &src[src.find("        if let Some(at) = job.at {").expect("틱 원샷 갈래")..];
-        let tick = &tick[..tick.find("            continue;\n        }").expect("원샷 갈래 끝")];
-        let (rm, sp) = (tick.find("remove_job_from_file(&job.id);").expect("제거"), tick.find("tokio::spawn(async move { fire(d, j).await });").expect("발화"));
-        assert!(rm < sp, "원샷을 발화 spawn 뒤에 지운다 — 되돌림과 경합");
-        // 틱: 잡 판정 맨 앞에서 복원 건너뛰기(회차 소비 전 — last_fired·제거·발화 앞) · 원샷·시각 잡의 놓침은 건너뛴 시각을 덜어 잰다
-        let tk = func("\nfn scheduler_tick(");
-        let (dz, pe) = (tk.find("        if restore_defers_job(daemon, &job) {\n            if let Some(at) = job.at.filter(|at| now_ts - *at > RESTORE_DEFER_BUMP_SECS) {\n                let ok = set_oneshot_at_in_place(&schedule_path(), &job.id, at, now_ts);")
-                            .expect("틱 복원 건너뛰기(+원샷 at 올리기) 없음"),
-                        tk.find("        if job.every_minutes.is_some() {").expect("주기 갈래"));
-        assert!(dz < pe, "복원 건너뛰기가 주기·원샷·시각 판정보다 뒤다");
-        assert!(tk[dz..pe].contains("            continue;\n        }"), "건너뛰기 뒤 continue 없음");
-        assert!(tk.contains("if now_ts - at > MISS_WINDOW_SECS {") && tk.contains("if now_ts - sched_ts > MISS_WINDOW_SECS {"), "놓침 규칙이 종전과 다르다");
-        let fp = func("\nasync fn fire_push(");
-        assert!(!fp.contains("auto_restore_phase"), "fire_push 가 다시 복원을 기다린다(틱이 맡는다)");
-    }
-
-    /// ★(1.1.21 D5 · codex 4R) 틱 복원 건너뛰기 판정(순수) — 다섯 조건이 모두일 때만.
-    #[test]
-    fn restore_defer_decision_table() {
-        assert!(restore_defer_decision(true, false, true, true, false));
-        for (ip, fr, push, la, live) in [(false, false, true, true, false), (true, true, true, true, false), (true, false, false, true, false),
-                                         (true, false, true, false, false), (true, false, true, true, true)] {
-            assert!(!restore_defer_decision(ip, fr, push, la, live), "{:?}", (ip, fr, push, la, live));
-        }
-    }
-
-    /// ★(1.1.21 D5 · codex 5R) 건너뛰는 원샷의 at 올리기 — 같은 id ∧ 같은 at 만 그 자리에서(내용·모르는 키 보존) · at 이 다르면(사람이 고침)·
-    /// 항목 없음·판독 불가 = 쓰지 않음 · 데몬 메모리에 기록 0(재시작에도 파일이 정본).
-    #[test]
-    fn set_oneshot_at_in_place_only_touches_the_same_id_and_at() {
-        let dir = std::env::temp_dir().join(format!("cys-oneshot-bump-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("schedule.json");
-        let body = r#"{"jobs": [{"id": "w", "at": 1000, "action": "push", "to": "cso", "text": "사람", "once": true},
-                               {"id": "p", "every_minutes": 5, "action": "push", "to": "master", "text": "x"}]}"#;
-        std::fs::write(&path, body).unwrap();
-        assert!(set_oneshot_at_in_place(&path, "w", 1000, 2000));
-        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let w = root["jobs"].as_array().unwrap().iter().find(|j| j["id"] == "w").unwrap();
-        assert_eq!((w["at"].clone(), w["text"].clone(), w["once"].clone()), (json!(2000), json!("사람"), json!(true)));
-        assert_eq!(root["jobs"].as_array().unwrap().len(), 2, "다른 잡을 잃었다");
-        assert!(!set_oneshot_at_in_place(&path, "w", 1000, 3000), "at 이 이미 바뀐(사람이 고친) 항목을 덮었다");
-        assert!(!set_oneshot_at_in_place(&path, "nope", 1000, 3000));
-        std::fs::write(&path, "\u{feff}{bad").unwrap();
-        assert!(!set_oneshot_at_in_place(&path, "w", 2000, 3000), "판독 불가 파일을 덮었다");
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "\u{feff}{bad");
-        let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(RESTORE_DEFER_BUMP_SECS, 300);
-    }
-
-    /// ★(1.1.21 D5) 실제 데몬 재료로 건너뛰기 판정 — 복원 진행 중 · if_absent=launch push · 대상 부재일 때만(세 진행 값 각각) ·
-    /// 대상이 살아 있음 · 진행 아님 · fresh · skip · command 는 건너뛰지 않는다.
-    #[test]
-    fn restore_defers_job_only_absent_launch_push_while_restore_runs() {
-        use std::sync::atomic::Ordering as O;
-        let (d, s) = rig("d5-defer-job");
-        let j = |v: serde_json::Value| job(v);
-        let base = json!({"id": "dj", "every_minutes": 5, "action": "push", "to": "cso", "text": "x",
-                          "if_absent": "launch", "launch": {"role": "cso", "agent": "claude"}});
-        for ph in [crate::AUTO_RESTORE_RUNNING, crate::AUTO_RESTORE_RETRY_WAIT, crate::AUTO_RESTORE_HELD] {
-            d.auto_restore_phase.store(ph, O::SeqCst);
-            assert!(restore_defers_job(&d, &j(base.clone())), "{ph}");
-        }
-        let mut v = base.clone(); v["if_absent"] = json!(" Launch "); assert!(restore_defers_job(&d, &j(v)), "값 정규화");
-        let mut v = base.clone(); v["action"] = json!(ACTION_PUSH_QUEUED); assert!(restore_defers_job(&d, &j(v)), "push_queued");
-        let mut v = base.clone(); v["fresh"] = json!(true); assert!(!restore_defers_job(&d, &j(v)), "fresh");
-        let mut v = base.clone(); v["if_absent"] = json!("skip"); assert!(!restore_defers_job(&d, &j(v)), "skip");
-        let mut v = base.clone(); v["to"] = json!("master"); assert!(!restore_defers_job(&d, &j(v)), "대상 살아 있음(rig master)");
-        let mut v = base.clone(); v["action"] = json!("command"); v["command"] = json!("true"); assert!(!restore_defers_job(&d, &j(v)), "command 잡");
-        // run-now 도 같은 판정으로 거절(틱을 거치지 않는 즉발 길 · Fable 5R minor)
-        let src_rn: String = { let f = include_str!("schedule.rs"); f[..f.find(concat!("#[cfg(test)]\n", "mod tests {")).unwrap()].to_string() };
-        let rn = &src_rn[src_rn.find("\npub fn run_now(").unwrap()..];
-        let rn = &rn[..rn.find("\n}\n").unwrap()];
-        assert!(rn.find("if restore_defers_job(daemon, &job) {").expect("run_now 거절 없음") < rn.find("tokio::spawn(async move { fire(d, job).await });").unwrap());
-        for ph in [crate::AUTO_RESTORE_DONE, crate::AUTO_RESTORE_OFF] {
-            d.auto_restore_phase.store(ph, O::SeqCst);
-            assert!(!restore_defers_job(&d, &j(base.clone())), "진행 아님 {ph}");
-        }
-        done(&s);
+        let at = fire.find("if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {").expect("fire 가 95 보류를 기록하지 않는다");
+        let blk = &fire[at..at + fire[at..].find("\n    }").unwrap()];
+        assert!(blk.contains("\"schedule.missed\"") && blk.contains("\"auto_restore_in_progress\""), "missed 기록이 아니다: {blk}");
+        assert!(!blk.contains("requeue_oneshot"), "단순안은 되돌리지 않는다");
     }
 
     /// ★(T3 리뷰 3R ⑥) 동결 원샷 되돌리기(재직렬화)가 U1 필수 칸 `bulk`·`publish` 를 보존한다 → 되돌린 잡이 U1

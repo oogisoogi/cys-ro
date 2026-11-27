@@ -6259,6 +6259,9 @@ mod h2_schedule_hold_tests {
         let blk = &fire[at..at + fire[at..].find("\n    }").unwrap()];
         assert!(blk.contains("\"schedule.missed\"") && blk.contains("\"auto_restore_in_progress\""), "missed 기록이 아니다: {blk}");
         assert!(!blk.contains("requeue_oneshot"), "단순안은 되돌리지 않는다");
+        assert_eq!(fire.matches("SCHEDULE_RESTORE_DEFER_ERR").count(), 1, "95 보류가 기록 블록 밖(되돌림 등)에서도 쓰인다");
+        assert!(fire.contains("if matches!(&result, Err(e) if e == SCHEDULE_FROZEN_ERR) {\n        requeue_oneshot_after_frozen(&daemon, &job);"),
+                "동결 되돌림 조건이 바뀌었다(단순안은 동결만 되돌린다)");
     }
 
     /// ★(T3 리뷰 3R ⑥) 동결 원샷 되돌리기(재직렬화)가 U1 필수 칸 `bulk`·`publish` 를 보존한다 → 되돌린 잡이 U1

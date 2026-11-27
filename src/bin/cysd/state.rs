@@ -6539,6 +6539,15 @@ impl cys::macos_devtools::SeatEnv for BuilderSeatEnv<'_> {
     }
 }
 
+/// 배선 자식 앞 걷기 — 좌석 판정 ②와 같은 식별(`scrub_inherited_ours`) · 판정 본체(spawn 직전)가 다시 돌아도 멱등.
+#[cfg(target_os = "macos")]
+fn scrub_mac_seat_path_before_wire(builder: &mut CommandBuilder) {
+    if let Some(home) = dirs::home_dir() {
+        let base = cys::macos_devtools::path_helper_root_base(&home);
+        cys::macos_devtools::scrub_inherited_ours(&mut BuilderSeatEnv(builder), &base);
+    }
+}
+
 /// ★1.1.21 A ③ 좌석 셸 재선두 주입(맥 좌석 · 설계 DESIGN-A r7.2 §2-3) — 판정 결과에 따라 builder env 를 고치고 데몬 로그 1줄
 /// (NotNeeded 제외). exe 위치·홈은 pane PATH 선두 주입(`spawn_env_pairs_from_process`)과 같은 출처다.
 #[cfg(target_os = "macos")]
@@ -8378,6 +8387,12 @@ impl Daemon {
         //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
         //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
+        // ★1.1.21 A ③: 배선 자식은 builder env 를 복사해 받는다 — 호출자 오버레이로 들어온 **우리** root 키(옛 좌석 값)를 배선 전에 걷는다
+        //   (좌석 판정 ②와 같은 식별 함수 · 새 root 는 아래 spawn 직전에만 실린다 · codex 코드 r1 minor).
+        #[cfg(target_os = "macos")]
+        if adopt_rec.is_none() {
+            scrub_mac_seat_path_before_wire(&mut builder);
+        }
         if adopt_rec.is_none() {
             wire_seat_profile_before_exec(self, &builder, id, env);
         }
@@ -10489,6 +10504,8 @@ mod tests {
         let src = include_str!("state.rs");
         let body = &src[src.find("pub(crate) fn create_surface_core(").expect("합류점")..];
         let wire = body.find("wire_seat_profile_before_exec(self, &builder, id, env);").expect("배선 호출");
+        let early = body.find("scrub_mac_seat_path_before_wire(&mut builder);").expect("배선 앞 걷기 소실");
+        assert!(early < wire, "배선 앞 걷기가 배선 호출 뒤에 있다 — 호출자 오버레이의 우리 root 가 배선 자식에 샌다");
         let token = body.find("builder.env(cys::ENV_SEAT_TOKEN, &tok);").expect("좌석 토큰 주입");
         let inject = body.find("apply_mac_seat_path(&mut builder, id);").expect("재선두 주입 소실");
         let spawn = body.find("(None, Some(o)) => o.spawn(builder)?,").expect("spawn");

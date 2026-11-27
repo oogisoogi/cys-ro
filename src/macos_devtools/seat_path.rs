@@ -835,10 +835,13 @@ fn run_path_helper(
     }
     let mut child = cmd.spawn().map_err(|_| "exec")?;
     let mut stdout = child.stdout.take().ok_or("exec")?;
+    // 읽기는 따로 — 결과는 통로로 받고, 부모가 끝난 뒤에도 **같은 시한**까지만 기다린다(부모가 먼저 끝나고 자손이 stdout 을
+    // 쥐고 남으면 EOF 가 늦다 · codex 코드 r1 minor).
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = stdout.read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     });
     let start = Instant::now();
     let status = loop {
@@ -858,7 +861,15 @@ fn run_path_helper(
             }
         }
     };
-    let buf = reader.join().map_err(|_| "exec")?;
+    let left = timeout.saturating_sub(start.elapsed());
+    let buf = match rx.recv_timeout(left) {
+        Ok(b) => b,
+        Err(_) => {
+            kill_group(&mut child);
+            drop(reader);
+            return Err("timeout");
+        }
+    };
     if !status.success() {
         return Err("exec");
     }
@@ -1448,6 +1459,41 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         c.path_helper = script(&f.root, "junk_ph", "#!/bin/sh\necho 'setenv PATH /x;'\n");
         let mut env = seat_env(&f.rt);
         assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::VerifyFailed("exec")));
+    }
+
+    /// 부모가 먼저 끝나고 자손이 stdout 을 쥐고 남아도 같은 시한에서 끊는다(codex 코드 r1 minor).
+    #[test]
+    fn verify_deadline_covers_stdout_held_by_a_grandchild() {
+        let f = fx("grandchild");
+        let mut c = f.ctx.clone();
+        c.path_helper = script(&f.root, "fork_ph", "#!/bin/sh\n/bin/sleep 5 &\nexit 0\n");
+        c.verify_timeout = Duration::from_millis(200);
+        let t0 = Instant::now();
+        let mut env = seat_env(&f.rt);
+        assert_eq!(seat_path_verdict(&c, &mut env), Some(SeatPathVerdict::VerifyFailed("timeout")));
+        assert!(t0.elapsed() < Duration::from_secs(2), "자손이 쥔 stdout 을 시한 없이 기다렸다: {:?}", t0.elapsed());
+    }
+
+    /// 시간 초과는 그 자리에서 1회 다시 잰다(첫 호출만 매달리는 path_helper → 재시도로 Applied · 표적 변이 「재시도 끔」 을 잡는 시험).
+    #[test]
+    fn verify_retries_a_single_timeout() {
+        let f = fx("retry");
+        let real = std::fs::read_to_string(&f.ctx.path_helper).unwrap();
+        let mark = f.root.join("first-call-done");
+        let body = real.replacen(
+            "#!/bin/sh\n",
+            &format!("#!/bin/sh\nif [ ! -e '{m}' ]; then : > '{m}'; sleep 5; fi\n", m = mark.display()),
+            1,
+        );
+        let mut c = f.ctx.clone();
+        c.path_helper = script(&f.root, "flaky_ph", &body);
+        c.verify_timeout = Duration::from_millis(300);
+        let mut env = seat_env(&f.rt);
+        match seat_path_verdict(&c, &mut env) {
+            Some(SeatPathVerdict::Applied { .. }) => {}
+            o => panic!("한 번 매달린 path_helper 를 다시 재지 않았다: {o:?}"),
+        }
+        assert!(mark.exists());
     }
 
     #[test]

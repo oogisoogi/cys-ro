@@ -27,7 +27,7 @@ case $_cys_dir in
   /*) ;;
   *) _cys_dir=$(pwd)/$_cys_dir ;;
 esac
-_cys_root=$(cd "$_cys_dir/.." 2>/dev/null && pwd -P) || _cys_root=$_cys_dir/..
+_cys_root=$(cd -P "$_cys_dir/.." 2>/dev/null && pwd -P) || _cys_root=$_cys_dir/..
 GIT_EXEC_PATH=$_cys_root/libexec/git-core
 export GIT_EXEC_PATH
 # 템플릿 기본값은 init·clone 에만, 사용자가 고르지 않았을 때만 준다(git 우선순위 --template > env >

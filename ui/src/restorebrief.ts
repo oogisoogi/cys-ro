@@ -330,7 +330,9 @@ export function buildBriefCard(input: {
     lines.push({ head: "하던 일", items: s.doing.length ? s.doing : [none] });
     lines.push({ head: "정하셔야 할 일", items: s.decide.length ? s.decide : [none] });
   }
-  const foot = !input.sections
+  // (1.1.21 R · 윈 1.1.20 현장 「두 줄 중복」) 낡은 요약 알림(「알려 드려요」 · 요약 바로 앞 · 눈에 띄게 말하려고 만든 자리)이
+  //   섰으면 같은 뜻의 맨 아래 기준 시각 줄은 싣지 않는다 — 한 카드에 한 번만. 알림이 없을 때는 종전대로 맨 아래 줄.
+  const foot = !input.sections || (input.newerElsewhere && input.recordedAt)
     ? ""
     : input.recordedAt
       ? `이 기록은 ${input.recordedAt} 기준입니다. 그 뒤에 한 일은 빠져 있을 수 있습니다.`

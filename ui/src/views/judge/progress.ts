@@ -159,7 +159,7 @@ export function appendStepsTo(owner: { steps?: ProgStep[]; stepsDropped?: ProgDr
 }
 
 /** 진행 줄을 다는 단계(아직 답을 기다리는 말). */
-const LIVE: ReadonlySet<Step> = new Set<Step>(["injected", "checking", "slow", "delivered", "replying"]);
+const LIVE: ReadonlySet<Step> = new Set<Step>(["injected", "accepted", "checking", "slow", "delivered", "replying"]);
 
 /** 진행 줄을 달 말 = **보낸 시각이 가장 늦은 말**이 아직 답을 기다리면 그 말 · 아니면 없음(앞 말들은 뒤 말이 덮음).
  *  ★codex 1R major: 기다리는 말만 먼저 걸러 고르면, 새 말이 「답함」이 된 뒤 옛 미응답 말이 다시 살아나 옛 단계·시계가 재개됐다 — 최신성 경계를 먼저 잡는다. */

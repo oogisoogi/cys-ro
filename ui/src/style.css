@@ -444,6 +444,10 @@ body.no-depts #ws-dept-row:has(> #ws-expert[hidden]) { display: none; } /* 안�
 .ws-board-acct-name { flex: 0 1 auto; min-width: 2em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ws-board-acct-row.warn .ws-board-limit-text { color: #f59e0b; }
 .ws-board-acct-row.crit .ws-board-limit-text { color: #ef4444; }
+/* (TICKET=cysr-1121-ui J) 오래된 값(관측 30분 넘음 · 스냅샷 · 죽은 창) = 경고색 없이 흐리게 · 글에 「오래됨」 */
+.ws-board-acct-row.stale .ws-board-limit-text, .ws-board-limit.stale .ws-board-limit-text { opacity: .6; }
+.ws-board-limit.stale .cc-tbar-track { opacity: .5; }
+.ws-board-limit.stale .cc-tbar-fill { background: #8b949e; } /* (J · 화면 실측) 오래된 값 막대 = 회색(기본 초록이 「안전」으로 읽히지 않게) */
 .ws-board-more[hidden] { display: none; }
 .ws-board-more #ws-usage { border-top: none; padding: 4px 0 0; max-height: none; }
 [data-seat-host="board"].bottom { flex: none; margin: 0; border-radius: 0; border-top: 1px solid var(--hairline); }

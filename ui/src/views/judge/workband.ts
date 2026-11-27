@@ -7,7 +7,7 @@
 // 모름(확인 대기를 다 못 훑음)이고 항목 0 이면 띠 0 — 작업 화면에는 이미 승인 요청 표지(#cc-pending-badge)가 있다(모름을 「없음」으로도, 「살펴보는 중」 띠로도 칠하지 않음).
 // 규칙: document·window·localStorage·__TAURI__·Date.now·setTimeout 금지.
 
-import type { Band, BandItem } from "./confirms";
+import { bandLabel, type Band, type BandItem } from "./confirms";
 
 export type WorkBand =
   | { kind: "confirm"; item: BandItem; count: number; known: boolean; seat: number | null; text: string; action: string }
@@ -24,8 +24,7 @@ export function pickWorkBand(band: Band | null, draft: string, masterSid: number
   if (band && items.length > 0) {
     const it = items[0];
     const count = items.length;
-    const more = band.known ? "" : " · 더 살펴보는 중";
-    const head = `확인이 필요해요 ${count}${more}`;
+    const head = bandLabel(band) ?? ""; // (TICKET=cysr-1121-ui L ㉢) 대화 화면 띠와 같은 머리 글(갈래별 수)
     if (it.kind === "ask") return { kind: "confirm", item: it, count, known: band.known, seat: masterSid, text: `${head} — 마스터가 물어요: ${it.q.text}`, action: WORK_ANSWER_MASTER };
     if (it.kind === "master_screen") return { kind: "confirm", item: it, count, known: band.known, seat: it.a.surface_id, text: `${head} — 마스터 창에 확인할 것이 떠 있어요.`, action: WORK_ANSWER_MASTER };
     return { kind: "confirm", item: it, count, known: band.known, seat: it.a.surface_id, text: `${head} — 도우미가 허락을 기다려요.`, action: WORK_ANSWER_HELPER };

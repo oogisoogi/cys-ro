@@ -32,7 +32,7 @@ async function ready(sim: Sim, loop: Loop): Promise<void> {
 
 /** 마스터가 답하는 중에 보낸 말 → 붙잡힘 → openAfter 뒤 쉼 → 첫 chat_send 까지 지연(ms). */
 async function heldLatency(loop: Loop, openAfter: number): Promise<{ lat: number; sends: number; step: string }> {
-  const sim = new Sim();
+  const sim = new Sim({ busyPasteOk: false }) /* (K-3) 「답하는 중」 붙잡음 장치 = 되돌리기 판 동작 */;
   await ready(sim, loop);
   sim.seat.working = true;
   sim.core.submit("둘");
@@ -77,7 +77,7 @@ describe("② 붙잡은 말 = 문턱이 열린 뒤 1초 안에 나감", () => {
 
 describe("② 조회 수 — 붙잡은 말이 없으면 종전과 같다 · 있을 때만 1초", () => {
   async function orgCalls(loop: Loop, held: boolean, ms: number): Promise<{ org: number; other: Record<string, number> }> {
-    const sim = new Sim();
+    const sim = new Sim({ busyPasteOk: false }) /* (K-3) 「답하는 중」 붙잡음 장치 = 되돌리기 판 동작 */;
     await ready(sim, loop);
     if (held) {
       sim.seat.working = true;
@@ -104,7 +104,7 @@ describe("② 조회 수 — 붙잡은 말이 없으면 종전과 같다 · 있�
     expect(b.other).toEqual(a.other); // 가벼운 조회 = 상태 조회만
   });
   it("상태 확인 늦음 계열(status_timeout)로 붙잡힌 말 = 1초 재조회 안 함(느린 연결에 조회를 쌓지 않음)", async () => {
-    const sim = new Sim();
+    const sim = new Sim({ busyPasteOk: false }) /* (K-3) 「답하는 중」 붙잡음 장치 = 되돌리기 판 동작 */;
     await ready(sim, "tick1s");
     const inv = sim.deps.invoke;
     let org = 0;
@@ -126,7 +126,7 @@ describe("② 조회 수 — 붙잡은 말이 없으면 종전과 같다 · 있�
 
 describe("② codex 1R major — 문턱(답하는 중)에 붙잡힌 뒤 연결이 멈추면 조회를 매초 쌓지 않는다", () => {
   async function hungAfterBusy(loop: Loop): Promise<number> {
-    const sim = new Sim();
+    const sim = new Sim({ busyPasteOk: false }) /* (K-3) 「답하는 중」 붙잡음 장치 = 되돌리기 판 동작 */;
     await ready(sim, loop);
     sim.seat.working = true;
     sim.core.submit("둘");
@@ -149,7 +149,7 @@ describe("② codex 1R major — 문턱(답하는 중)에 붙잡힌 뒤 연결�
     expect(old + 1).toBeGreaterThanOrEqual(now); // 첫 가벼운 조회 1건(멈춤을 알아채는 몫)까지만
   });
   it("연결이 다시 제때 답하면 1초 재조회가 돌아온다(문턱 열림 → ≤1초 안 쓰기)", async () => {
-    const sim = new Sim();
+    const sim = new Sim({ busyPasteOk: false }) /* (K-3) 「답하는 중」 붙잡음 장치 = 되돌리기 판 동작 */;
     await ready(sim, "tick1s");
     sim.seat.working = true;
     sim.core.submit("둘");

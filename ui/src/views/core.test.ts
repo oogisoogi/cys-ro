@@ -1,7 +1,7 @@
 // (cysr-ui-slice1) 공통층 보내기 길 시험 — 대역 데몬(invoke 기록기) · 가짜 시계·타이머.
 // 판정 단위 = 「PTY 쓰기 = chat_send 호출 수」(원자 제출 1요청 = 쓰기 1 · 데몬 거부는 바이트 0).
 import { describe, it, expect } from "bun:test";
-import { CHAT_TRANSCRIPT_CHANGED, ChatCore, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, STALE, type Deps } from "./core";
+import { CHAT_TRANSCRIPT_CHANGED, ChatCore, HELD_MAX_AGE_MS, HELD_REFUSED_BACKOFF_MS, HOLD_KEY, HOLD_MAX, healthOf, LOG_MAX, OBS_MAX_MS, RESTORED, STALE, STALE_NOTE, type Deps } from "./core";
 import { READ_AFTER_MS } from "./judge/msgstep";
 import { masterRowOf } from "./judge/gate";
 import { readFileSync } from "node:fs";
@@ -11,7 +11,7 @@ interface Call {
   args?: Record<string, unknown>;
 }
 
-function harness(o: { master?: Record<string, unknown> | null; approvals?: number[]; sendOutcome?: Record<string, unknown> | (() => Record<string, unknown>); orgFail?: boolean; feedFail?: boolean; transcript?: Array<Record<string, unknown>> } = {}) {
+function harness(o: { master?: Record<string, unknown> | null; approvals?: number[]; sendOutcome?: Record<string, unknown> | (() => Record<string, unknown>); orgFail?: boolean; feedFail?: boolean; transcript?: Array<Record<string, unknown>>; busyPasteOk?: boolean } = {}) {
   const calls: Call[] = [];
   const mem = new Map<string, string>();
   let now = 1_000_000;
@@ -58,6 +58,7 @@ function harness(o: { master?: Record<string, unknown> | null; approvals?: numbe
     },
     store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v), remove: (k) => void mem.delete(k) },
     working: (r) => r.working === true,
+    busyPasteOk: o.busyPasteOk,
   };
   const flush = async () => {
     for (let i = 0; i < 20; i++) await Promise.resolve();
@@ -140,7 +141,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     ["관문", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: { k: 1 }, human_idle_secs: null } }],
     ["입력줄 칸 모름(human_idle_secs 칸 없음)", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null } }],
     ["다른 길 사람 입력 3초 전", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: 3 } }],
-    ["바쁨(U25 측정 대기)", { master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: null, working: true } }],
+    ["바쁨(되돌리기 판 · busyPasteOk false)", { busyPasteOk: false, master: { surface_id: 5, role: "master", agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, human_idle_secs: null, working: true } }],
   ];
   const expectCode: Record<string, string> = {
     "★수용 1 사람 초안 12바이트": "draft",
@@ -152,7 +153,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     "관문": "gate_pending",
     "입력줄 칸 모름(human_idle_secs 칸 없음)": "input_unknown",
     "다른 길 사람 입력 3초 전": "human_recent",
-    "바쁨(U25 측정 대기)": "busy",
+    "바쁨(되돌리기 판 · busyPasteOk false)": "busy",
   };
   for (const [name, o] of cases)
     it(name, async () => {
@@ -193,7 +194,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     await h.core.poll();
     expect(h.writes().map((c) => c.args?.text)).toEqual(["A", "A", "B"]);
   });
-  it("★master 결정 — 붙잡은 지 10분 넘은 말은 자동 제출 0 · 「오래 기다린 말이에요 · 보낼까요?」 · 클릭 1회로만", async () => {
+  it("★master 결정 — 붙잡은 지 10분 넘은 말은 자동 제출 0 · 「아직 안 보냈어요 · 오래 기다린 말이라…」 · 클릭 1회로만(표지 칸 없는 옛 데몬 = 모름 = 종전 · K-2)", async () => {
     const h = harness({ approvals: [5] });
     await h.core.send("그 파일 지워 줘");
     h.setNow(h.getNow() + HELD_MAX_AGE_MS + 1);
@@ -201,7 +202,7 @@ describe("문턱 실패 → 쓰기 0 · 붙잡음(조건 하나씩)", () => {
     for (let i = 0; i < 5; i++) await h.core.poll();
     expect(h.writes()).toHaveLength(0);
     expect(h.core.state.msgs[0].code).toBe(STALE);
-    expect(h.core.state.msgs[0].note).toMatch(/오래 기다린 말이에요 · 보낼까요\?/);
+    expect(h.core.state.msgs[0].note).toBe(STALE_NOTE);
     await h.core.confirmHeld(h.core.state.msgs[0].id);
     expect(h.writes().map((c) => c.args?.text)).toEqual(["그 파일 지워 줘"]);
   });
@@ -513,7 +514,7 @@ describe("상태 표시", () => {
 describe("K19 — hold_cap_notice_text(붙잡은 말 상한 안내 글)", () => {
   const CAP_TEXT = `붙잡아 둔 말이 ${HOLD_MAX}개 이상이라 이 말은 받지 않았어요 — 위의 말이 보내지면 다시 보낼 수 있어요(『이 말 보내기』가 붙은 말은 눌러야 보내져요). 입력칸 글은 그대로 있어요.`;
   it("hold_cap_notice_text — 붙잡음 20(복원 15 + 바쁠 때 5) + 새 말 → 글자 그대로 · 입력칸 유지 · 셈·저장 꼴 = 1.1.18", async () => {
-    const h = harness();
+    const h = harness({ busyPasteOk: false }); // (K-3) 「바쁠 때 붙잡힘 5」 = 되돌리기 판 동작으로 상한 셈을 만든다
     h.mem.set(HOLD_KEY, JSON.stringify({ v: 1, items: Array.from({ length: 15 }, (_, i) => ({ id: "x", text: `옛말${i}`, at: i })) }));
     h.st.master = { ...(h.st.master as Record<string, unknown>), working: true };
     const c = new ChatCore(h.deps);
@@ -546,7 +547,7 @@ describe("K19 — hold_cap_notice_text(붙잡은 말 상한 안내 글)", () => 
 
 // ---------- (1.1.19 · TICKET=cysr-1119-s3 · CH-C) 기록 바뀌면 곧 보이기 — F06 읽기 길 하나 · C-1~C-4 · F29 · 되돌리기 C 끄기 지점 ----------
 // 대역 파일 = 레코드 배열 · 오프셋 = 레코드 번호(위 harness 와 같은 뜻) · tail 은 대역 시계로 늦게 답할 수 있다(겹침 계수).
-function chHarness(o: { compat?: boolean | (() => boolean); tailDelay?: number; regSid?: string | null } = {}) {
+function chHarness(o: { compat?: boolean | (() => boolean); tailDelay?: number; regSid?: string | null; busyPasteOk?: boolean } = {}) {
   const calls: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
   let now = 2_000_000;
   const timers: Array<{ at: number; fn: () => void; h: number }> = [];
@@ -629,6 +630,7 @@ function chHarness(o: { compat?: boolean | (() => boolean); tailDelay?: number; 
     },
     store: { get: () => null, set: () => {}, remove: () => {} },
     working: (r) => r.working === true,
+    busyPasteOk: o.busyPasteOk,
   };
   if (o.compat !== undefined) (deps as Deps & { compat1118?: () => boolean }).compat1118 = typeof o.compat === "function" ? o.compat : () => o.compat as boolean;
   const flush = async () => {
@@ -792,7 +794,7 @@ describe("CH-C 기록 바뀌면 곧 보이기(1.1.19 · S3)", () => {
   });
 
   it("c4_align_after_held_poll — 1초 틱 안 순서 = 붙잡은 말 문턱(상태 조회) 먼저, 맞춤 다음", async () => {
-    const h = chHarness();
+    const h = chHarness({ busyPasteOk: false }); // (K-3) 「답하는 중」 붙잡음 = 되돌리기 판 동작
     await watched(h);
     h.st.master.working = true;
     await h.core.poll();

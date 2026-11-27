@@ -3452,6 +3452,30 @@ fn gui_onboarded_path() -> std::path::PathBuf {
     cys::home_dir().join(".cys/.gui-onboarded")
 }
 
+/// ★(1.1.21 O) 창 최대화 기억 — 윈 1.1.20 현장: 최대화해 두고 앱을 다시 켜면 기본 크기(1280×820 · 125% 배율에서
+/// 1600×1025)로 돌아왔다. 창 상태를 어디에도 남기지 않았기 때문이다(tauri.conf 기본 크기만). 크기·위치는 건드리지
+/// 않고 **최대화 여부 한 비트만** 남긴다 — 내용 "1" = 최대화 · 그 밖(없음·"0"·깨짐) = 종전 그대로 기본 크기.
+fn window_maximized_path() -> std::path::PathBuf {
+    cys::home_dir().join(".cys/.gui-window-maximized")
+}
+
+/// 기동 때 최대화로 되살릴지 — 기록이 정확히 "1" 일 때만(없음·읽기 실패 = 종전 거동).
+fn window_maximized_restore(saved: Option<&str>) -> bool {
+    saved.map(str::trim) == Some("1")
+}
+
+/// 창 크기 바뀜 때 남길 값. 최소화 중에는 남기지 않는다(None) — 윈도우는 최대화 창을 내려도 「최대화 아님」으로
+/// 답해, 내려 둔 채 끄면 최대화를 잊는다. 직전에 남긴 값과 같아도 None(끌기 크기 조절 중 매번 쓰지 않게).
+fn window_maximized_record(maximized: bool, minimized: bool, last: Option<bool>) -> Option<&'static str> {
+    if minimized || last == Some(maximized) {
+        return None;
+    }
+    Some(if maximized { "1" } else { "0" })
+}
+
+/// 직전에 남긴 최대화 값(0 = 모름 · 1 = 아님 · 2 = 최대화).
+static WINDOW_MAXIMIZED_LAST: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// GUI 온보딩 실행 여부 — 부작용 없는 순수 판정(단위테스트 대상). 마커 내용이 현재 바이너리 버전과 정확히
 /// 일치하고 **온보딩의 결과(각성 훅)가 실제로 있을 때만** 스킵. 부재·불일치·읽기 실패·훅 부재·판정 불가 = 실행
 /// 대상(fail-open — 치유 방향). 판정 불가(W-4-a)를 실제로 몇 번 돌릴지는 `plan_gui_onboard` 가 정한다(W-4-b).
@@ -8978,6 +9002,26 @@ fn main() {
         }))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        // ★(1.1.21 O) 주 창 최대화 여부를 바뀔 때마다 한 비트 남긴다(되살리기 = setup 첫머리).
+        .on_window_event(|window, event| {
+            if window.label() != "main" || !matches!(event, tauri::WindowEvent::Resized(_)) {
+                return;
+            }
+            use std::sync::atomic::Ordering;
+            let last = match WINDOW_MAXIMIZED_LAST.load(Ordering::SeqCst) {
+                1 => Some(false),
+                2 => Some(true),
+                _ => None,
+            };
+            let maximized = window.is_maximized().unwrap_or(false);
+            let minimized = window.is_minimized().unwrap_or(false);
+            if let Some(v) = window_maximized_record(maximized, minimized, last) {
+                WINDOW_MAXIMIZED_LAST.store(if maximized { 2 } else { 1 }, Ordering::SeqCst);
+                if let Err(e) = std::fs::write(window_maximized_path(), v) {
+                    eprintln!("[cys-app] 창 최대화 기록 실패(다음 기동은 기본 크기): {e}");
+                }
+            }
+        })
         .manage(Attachments(Mutex::new(HashMap::new())))
         .manage(viewcore::StreamGens::default()) // (cysr-1116-s2 · codex 4R) 좌석 스트림 세대
         .invoke_handler(tauri::generate_handler![
@@ -9115,6 +9159,13 @@ fn main() {
             request_folder_access,
         ])
         .setup(|app| {
+            // ★(1.1.21 O) 지난번에 최대화로 두고 껐으면 최대화로 되살린다(창은 setup 전에 tauri.conf 로 이미 생겼다).
+            if window_maximized_restore(std::fs::read_to_string(window_maximized_path()).ok().as_deref()) {
+                WINDOW_MAXIMIZED_LAST.store(2, std::sync::atomic::Ordering::SeqCst);
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.maximize();
+                }
+            }
             let handle = app.handle().clone();
             // ★W-2 결정 A: 부팅 태스크 수명 동안 초기화 관문(BOOT_WORK_IN_FLIGHT)을 닫는다. spawn **전에**
             // 무장해 프런트가 커맨드를 부를 수 있게 되기 전부터 닫혀 있게 한다 — 조기 return(안전모드·데몬
@@ -9351,6 +9402,43 @@ mod close_surface_tests;
 
 #[cfg(test)]
 mod tests {
+    /// ★(1.1.21 O) 창 최대화 기억 — 최대화로 두고 끄면 다음 기동에 최대화로 돌아온다(윈 1.1.20 현장 1600×1025 회귀).
+    /// 판정 함수 + 배선(창 이벤트에서 기록 · setup 첫머리에서 되살리기) 소스 핀.
+    #[test]
+    fn window_maximized_survives_restart() {
+        // 되살리기: 정확히 "1" 만 최대화 · 없음·"0"·깨짐 = 종전 기본 크기.
+        assert!(window_maximized_restore(Some("1")));
+        assert!(window_maximized_restore(Some("1\n")));
+        assert!(!window_maximized_restore(None));
+        assert!(!window_maximized_restore(Some("0")));
+        assert!(!window_maximized_restore(Some("")));
+        assert!(!window_maximized_restore(Some("true")));
+        // 기록: 바뀔 때만 · 최소화 중엔 남기지 않는다(내려 둔 채 꺼도 최대화를 잊지 않게).
+        assert_eq!(window_maximized_record(true, false, None), Some("1"));
+        assert_eq!(window_maximized_record(false, false, None), Some("0"));
+        assert_eq!(window_maximized_record(true, false, Some(false)), Some("1"));
+        assert_eq!(window_maximized_record(false, false, Some(true)), Some("0"));
+        assert_eq!(window_maximized_record(true, false, Some(true)), None);
+        assert_eq!(window_maximized_record(false, true, Some(true)), None);
+        assert_eq!(window_maximized_record(false, true, None), None);
+        // 왕복: 기록한 값이 그대로 되살리기 입력이 된다.
+        assert!(window_maximized_restore(window_maximized_record(true, false, None)));
+        assert!(!window_maximized_restore(window_maximized_record(false, false, None)));
+        // 배선 핀.
+        let src = include_str!("main.rs");
+        let main_fn = &src[src.find("fn main() {").expect("main")..];
+        let ev = main_fn.find(".on_window_event(|window, event| {").expect("창 이벤트 기록 배선");
+        let ev_body = &main_fn[ev..ev + main_fn[ev..].find(".manage(").expect("이벤트 끝")];
+        assert!(ev_body.contains("tauri::WindowEvent::Resized(_)") && ev_body.contains("window.label() != \"main\""));
+        assert!(ev_body.contains("window_maximized_record(maximized, minimized, last)"));
+        assert!(ev_body.contains("std::fs::write(window_maximized_path(), v)"));
+        let setup = main_fn.find(".setup(|app| {").expect("setup");
+        let restore = main_fn.find("window_maximized_restore(std::fs::read_to_string(window_maximized_path())").expect("되살리기 배선");
+        let boot = main_fn.find("BootWorkGuard::enter()").expect("부팅 관문");
+        assert!(setup < restore && restore < boot, "되살리기는 setup 첫머리(부팅 태스크 전)");
+        assert!(main_fn[restore..boot].contains("w.maximize()"));
+    }
+
     /// ★④(1.1.7) `send_input` 은 데몬 오류 코드를 버리지 않는다 — 초안 게이트 거부가 UI 에서 갈려야
     /// 재기동이 기계 잔여 좌석에서 clear_first 로 재시도할 수 있다(원작자 C-06: 코드 유실 = 검체가 조작된
     /// 전제로 초록이었고 실제로는 한 번도 발화하지 않았다).

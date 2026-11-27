@@ -134,4 +134,13 @@ describe("main.ts 원천 검사 — 배출구·문의 자리(K-2 · K-3)", () =>
     expect(a > 0 && b > a).toBe(true);
     expect({ fontSet: /options\.fontSize\s*=/.test(peekCode), resize: peekCode.includes('invoke("resize_surface"'), fit: peekCode.includes("fit.fit(") }).toEqual({ fontSet: false, resize: false, fit: false });
   });
+  // (1.1.21 Q) 윈 「Flow 입력 뒤 보기 칸이 닫힌다」 — 닫힐 때마다 까닭 1줄을 기존 UI 로그 통로(log_cc_open)로. 실제로 닫힐 때만(열린 칸 없음 = 줄 0).
+  // 대조군 = v1.1.20: closePeek 에 로그 호출 없음 → 붉음.
+  it("closePeek = 닫힐 때마다 까닭 1줄을 앱 로그로(열린 칸이 있을 때만 · 실패는 삼킴)", () => {
+    const body = SRC.slice(SRC.indexOf("function closePeek(reason: PeekCloseReason | string): void {"), SRC.indexOf("function peekTickLoop(): void {"));
+    const log = 'void invoke("log_cc_open", { line: `${new Date().toISOString()} peek-close reason=${reason} sid=${st.sid}` }).catch(() => {});';
+    expect(body.split(log).length - 1).toBe(1);
+    expect(body.indexOf("  if (!st) return;")).toBeLessThan(body.indexOf(log));
+    expect(body.indexOf(log)).toBeLessThan(body.indexOf("st.box.remove();"));
+  });
 });

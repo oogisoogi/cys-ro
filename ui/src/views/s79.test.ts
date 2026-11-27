@@ -428,7 +428,7 @@ describe("조각 9 — 작업 화면 띠(FR-C7 · 띠 하나)", () => {
   it("확인 띠가 먼저 · 마스터 물음 = 「마스터 창에서 답하기」 → 마스터 좌석", () => {
     const b = pickWorkBand(bandOf(q, [], stall()), "쓰던 말", 1);
     expect(b?.kind).toBe("confirm");
-    expect(b?.kind === "confirm" && [b.text, b.action, b.seat]).toEqual(["확인이 필요해요 1 — 마스터가 물어요: 금요일 배포 미룰까요?", WORK_ANSWER_MASTER, 1]);
+    expect(b?.kind === "confirm" && [b.text, b.action, b.seat]).toEqual(["마스터 물음 1 — 마스터가 물어요: 금요일 배포 미룰까요?", WORK_ANSWER_MASTER, 1]);
   });
   it("마스터 창 승인 = 마스터 좌석 · 도우미 허락 = 그 도우미 좌석(「도우미 창에서 답하기」)", () => {
     const m = pickWorkBand(bandOf([], [appr({ surface_id: 1 })], stall()), "", 1);
@@ -446,7 +446,7 @@ describe("조각 9 — 작업 화면 띠(FR-C7 · 띠 하나)", () => {
   });
   it("모름이어도 항목이 있으면 「더 살펴보는 중」 덧붙여 보임", () => {
     const b = pickWorkBand(bandOf(null, [appr({ surface_id: 7 })], stall()), "", 1);
-    expect(b?.kind === "confirm" && b.text).toBe("확인이 필요해요 1 · 더 살펴보는 중 — 도우미가 허락을 기다려요.");
+    expect(b?.kind === "confirm" && b.text).toBe("마스터가 확인하는 중 1 · 더 살펴보는 중 — 도우미가 허락을 기다려요."); // (TICKET=cysr-1121-ui L ㉢) 대화 띠와 같은 갈래별 머리
   });
 });
 

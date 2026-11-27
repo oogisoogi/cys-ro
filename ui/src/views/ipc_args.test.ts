@@ -200,7 +200,16 @@ describe("K18 — 사람 쓰기 길 바이트 동일(838f24421)", () => {
     expect(send.startsWith("pub async fn chat_send(socket: Option<String>, surface_id: u64, text: String, kind: String) -> Result<Value, String> {\n    let sock = resolve_socket(&socket);\n    match kind.as_str() {\n")).toBe(true);
     expect(block(send, '        "human" => {')).toBe(CHAT_SEND_HUMAN_ARM_1118);
     // 화면 쪽 사람 말 IPC 칸(core → chat_send) = 1.1.18 꼴 `{socket:null, surfaceId, text, kind:"human"}`.
-    expect(read("views/core.ts")).toContain('this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: msg.text, kind: "human" })');
+    //   ★(TICKET=cysr-1121-ui K-2) 글 칸 = `outText` — 평소엔 msg.text 그대로, 10분 넘게 기다렸다 자동으로 나가는 말만 「(N분 전에 쓰신 말) 」 표지를 앞에 붙여
+    //   composeOutbound 를 다시 거친 글. 칸 이름·RPC 이름·나머지 칸은 1.1.18 그대로.
+    //   ★(TICKET=cysr-1121-ui K R1) 표지는 매 시도 원문(msg.text · 바꾸지 않음)에서 한 번만 만들고, 쓰기 전 영속하는 칸 = `sentText`(짝짓기 대상과 바이트가 같다) — msg.text 덮어쓰기 0.
+    const core = read("views/core.ts");
+    expect(core).toContain('this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: outText, kind: "human" })');
+    expect(core).toContain("let outText = msg.text;");
+    expect(core).toContain("composeOutbound(agedPrefix(age) + msg.text)");
+    expect(core).toContain("outText = pre.text;");
+    expect(core).toContain("sentText: outText }))");
+    expect(core).not.toContain(", text: outText }))");
   });
 
   // 두 데몬 파일 sha256(줄 끝 LF · `git show "<커밋>:<경로>" | shasum -a 256`) = 1.1.19 rc2 b489e23b1 바이트. 838f24421 대비 다른 것 = 관찰 3 고침(건강 룰 판정)뿐.

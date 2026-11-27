@@ -45,6 +45,7 @@
 .cv-limit-name { max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
 .cv-limit.warn .cv-limit-text { color: var(--cv-wait); }
 .cv-limit.crit .cv-limit-text { color: var(--cv-err); }
+.cv-limit.stale { opacity: .6; } /* (TICKET=cysr-1121-ui J) 오래된 값 = 경고색 없이 흐리게 · 글에 「오래됨」 */
 
 .cv-log { flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 12px 0; display: flex; flex-direction: column; gap: 12px; }
 .cv-empty { color: var(--cv-sub); }
@@ -114,6 +115,8 @@
 .cvb-trunc, .cvb-why { color: var(--cv-wait); }
 .cvb-nav { display: flex; align-items: center; gap: 10px; margin-top: 6px; font-size: 18px; color: var(--cv-sub); }
 .cvb-notice { margin-top: 6px; font-size: 18px; color: var(--cv-ink); }
+.cvb-wait { font-size: 16px; color: var(--cv-sub); } /* (TICKET=cysr-1121-ui L ㉡) 「안 누르셔도 돼요 …」 */
+.cvb-head[data-calm="true"] { color: var(--cv-sub); } /* (L ㉢) 마스터가 확인하는 중만 = 긴장 신호 아님 */
 .cvb-notice[hidden] { display: none; }
 .cv-answering { display: flex; align-items: center; gap: 8px; font-size: 18px; color: var(--cv-sub); padding: 4px 0; }
 .cv-answering[hidden] { display: none; }
@@ -294,6 +297,7 @@ body.view-chat #view-switch .vs-group button[aria-pressed="true"] { background: 
 .cv-rail .cv-limit-bar i { display: block; height: 100%; background: var(--cv-accent); }
 .cv-rail .cv-limit.warn .cv-limit-bar i { background: var(--cv-wait); }
 .cv-rail .cv-limit.crit .cv-limit-bar i { background: var(--cv-err); }
+.cv-rail .cv-limit.stale .cv-limit-bar i { background: var(--cv-sub); } /* (TICKET=cysr-1121-ui J · 화면 실측) 오래된 값 막대 = 회색 */
 
 /* V6 — 위를 읽는 중 새 답 = 「↓ 새 답 N · 맨 아래로」(대화 목록 아래 가운데 · 목록 위에 겹침 · 44px) */
 .cv-jump { align-self: center; position: relative; z-index: 2; margin: -56px 0 12px; min-height: 44px; padding: 0 16px; border-radius: 22px; border: 1px solid var(--cv-line); background: var(--cv-bg); color: var(--cv-ink); font: inherit; font-size: 18px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); cursor: pointer; }

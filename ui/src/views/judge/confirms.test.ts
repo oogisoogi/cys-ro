@@ -223,12 +223,13 @@ describe("띠(FR-C1·C1a·C6)", () => {
     expect(bandLabel(bandOf([], null, stall()))).toBe("확인할 것 살펴보는 중");
     expect(bandLabel(bandOf([], [], stall({ masterSid: undefined })))).toBe("확인할 것 살펴보는 중");
     expect(bandLabel(bandOf([], [], stall()))).toBeNull();
-    expect(bandLabel(bandOf(null, approvals, stall()))).toBe("확인이 필요해요 2 · 더 살펴보는 중");
-    expect(bandLabel(bandOf([{ id: "q1", text: "물음", uuid: null }], approvals, stall()))).toBe("확인이 필요해요 3");
+    // (TICKET=cysr-1121-ui L ㉢) 갈래별 머리 — 마스터 창 승인 = 직접 답하실 것 · 도우미(멈춤 아님) = 마스터가 확인하는 중 · 표식 = 마스터 물음
+    expect(bandLabel(bandOf(null, approvals, stall()))).toBe("직접 답하실 것 1 · 마스터가 확인하는 중 1 · 더 살펴보는 중");
+    expect(bandLabel(bandOf([{ id: "q1", text: "물음", uuid: null }], approvals, stall()))).toBe("직접 답하실 것 1 · 마스터 물음 1 · 마스터가 확인하는 중 1");
   });
-  it("마스터 물음 먼저 · 마스터 좌석 승인 = 마스터 창(직접 단추 없음) · 도우미 = 평소 멈춤 아님", () => {
+  it("(L ㉢) 직접 답하실 것(마스터 창 승인) 먼저 · 그다음 마스터 물음 · 마스터 좌석 승인 = 마스터 창(직접 단추 없음) · 도우미 = 평소 멈춤 아님(맨 뒤)", () => {
     const b = bandOf([{ id: "q1", text: "물음", uuid: null }], approvals, stall());
-    expect(b.items.map((x) => x.kind)).toEqual(["ask", "master_screen", "helper"]);
+    expect(b.items.map((x) => x.kind)).toEqual(["master_screen", "ask", "helper"]);
     const h = b.items[2];
     expect(h.kind === "helper" && h.stall).toBeNull();
   });

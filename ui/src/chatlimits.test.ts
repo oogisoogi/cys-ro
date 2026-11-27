@@ -27,14 +27,14 @@ describe("① 대화 화면 한도 줄 = 작업 화면 상황판과 같은 판�
       ["claude", 43, "43% · 금 06:00"],
       ["claude-acct2", 81, "81% · 목 17:00"],
     ]);
-    expect(rows).toEqual(accountLimitRows([one, two], now).map((r) => ({ name: r.name, pct: r.pct, line: r.line, title: r.title })));
+    expect(rows).toEqual(accountLimitRows([one, two], now).map((r) => ({ name: r.name, pct: r.pct, line: r.line, title: r.title, stale: r.stale })));
     expect(JSON.stringify(rows)).not.toContain("@");
   });
   test("계정 하나 = 상황판 한 줄(limitLine · limitTitle)과 같은 글 · 이름 없음", async () => {
     const { chatLimitRows, limitLine, limitTitle } = await import("./statusboard");
     const { accountRates } = await import("./wsusage");
     const rr = accountRates([one], now).map((r) => ({ label: r.label, usedPct: r.usedPct, resetsAt: r.resetsAt }));
-    expect(chatLimitRows([one], now)).toEqual([{ name: null, pct: 43, line: limitLine(rr, now)!, title: limitTitle(rr, now)! }]);
+    expect(chatLimitRows([one], now)).toEqual([{ name: null, pct: 43, line: limitLine(rr, now)!, title: limitTitle(rr, now)!, stale: false }]);
     expect(chatLimitRows([one], now)[0].line).toBe("43% · 금 06:00 초기화");
   });
   test("관측 전·7d 없음·빈 목록 = 줄 없음", async () => {

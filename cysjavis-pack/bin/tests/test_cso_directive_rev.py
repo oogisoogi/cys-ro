@@ -2469,8 +2469,10 @@ class CsoDirectiveRevision(unittest.TestCase):
         #     두 문단이 겹치지 않아 합 = 실측 MASTER 88,134 · CEO 103,620(gen_ceo_template --check GREEN · 103620 bytes)
         #   ⑨ 2026-11-24 래칫 하향(1.1.19 · TICKET=cysr-1119-s14 · PK-DRAIN): 드레인 절 마커 줄에 「상태 = ① 이 이름 대는 정본」을 넣고 같은 줄 실기 서술을 줄여 −5 B —
         #     MASTER 88,134 → 88,129 · CEO 103,620 → 103,615(gen_ceo_template --check GREEN · 103615 bytes)
-        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 88129, "MASTER_DIRECTIVE.md 바이트 예산(88,129) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
-        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103615, "CEO_TEMPLATE.md 바이트 예산(103,615) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
+        #   ⑨ 2026-11-27 내림(1.1.21 · TICKET=cysr-1121-ui L ㉠ · master 「같은 절 안에서 상쇄가 기본」): MASTER 88,129 → 88,127 · CEO 103,615 → 103,613
+        #     (−2 B 씩 = 「★ 대화 화면 표식」 절 ⟪확인 요청⟫ 줄을 사용자만 정할 세 가지로 좁힘 + 같은 절 낱말 다듬기로 상쇄 · 래칫 = 줄었으니 상한도 내림).
+        self.assertLessEqual(size("MASTER_DIRECTIVE.md"), 88127, "MASTER_DIRECTIVE.md 바이트 예산(88,127) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다)")
+        self.assertLessEqual(size("CEO_TEMPLATE.md"), 103613, "CEO_TEMPLATE.md 바이트 예산(103,613) 초과 — 늘리지 말고 줄여라(줄이면 이 상한도 낮춘다 · 생성물이라 MASTER 와 머리글 바이트가 함께 든다)")
 
     def test_utf8_and_lf(self):
         """세 지시문 모두 엄격 UTF-8 로 읽히고 CRLF 가 없어야 한다(Windows 체크아웃 회귀)."""

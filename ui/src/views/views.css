@@ -297,6 +297,7 @@ body.view-chat #view-switch .vs-group button[aria-pressed="true"] { background: 
 .cv-rail .cv-limit-bar i { display: block; height: 100%; background: var(--cv-accent); }
 .cv-rail .cv-limit.warn .cv-limit-bar i { background: var(--cv-wait); }
 .cv-rail .cv-limit.crit .cv-limit-bar i { background: var(--cv-err); }
+.cv-rail .cv-limit.stale .cv-limit-bar i { background: var(--cv-sub); } /* (TICKET=cysr-1121-ui J · 화면 실측) 오래된 값 막대 = 회색 */
 
 /* V6 — 위를 읽는 중 새 답 = 「↓ 새 답 N · 맨 아래로」(대화 목록 아래 가운데 · 목록 위에 겹침 · 44px) */
 .cv-jump { align-self: center; position: relative; z-index: 2; margin: -56px 0 12px; min-height: 44px; padding: 0 16px; border-radius: 22px; border: 1px solid var(--cv-line); background: var(--cv-bg); color: var(--cv-ink); font: inherit; font-size: 18px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12); cursor: pointer; }

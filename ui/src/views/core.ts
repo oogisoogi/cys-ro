@@ -62,11 +62,13 @@ export const HELD_MAX_AGE_MS = 600_000;
 export const STALE = "stale";
 /** (K-1) 10분 넘어 사람 클릭을 기다리는 말의 안내 — 첫 마디 = 「아직 안 보냈어요」(11-26 윈 제보 「보냈다고 여김」). */
 export const STALE_NOTE = "아직 안 보냈어요 · 오래 기다린 말이라 보낼지 여쭤요 — 「이 말 보내기」를 누르면 지금 보내요.";
+/** (TICKET=cysr-1121-ui K R1) 「보내지 않기」를 저장소에 남기지 못했을 때 — 말을 지우지 않는다(다시 켜면 RESTORED 로 되살아나는 길 막음). */
+export const DISCARD_FAILED_NOTE = "거두지 못했어요 — 앱 저장소에 쓸 수 없어요. 잠시 뒤 다시 눌러 주세요.";
 /** (K-2) 10분 넘게 기다렸다가 자동으로 나가는 말 앞에 붙이는 표지 — 마스터와 사람 모두 「옛 말」임을 안다. */
 export function agedPrefix(ageMs: number): string {
   return `(${Math.max(1, Math.floor(ageMs / 60_000))}분 전에 쓰신 말) `;
 }
-/** (K-2) 이 화면이 실제로 쓴(written) 원자 제출의 사람 입력 표지 — 좌석별 · 상한(오래된 것부터 버림). */
+/** (K-2) 이 화면이 실제로 쓴(outcome = written 만) 원자 제출의 사람 입력 표지 — 좌석별 · 상한(오래된 것부터 버림). */
 const OWN_STAMPS_MAX = 400;
 /** 앞 말(쓰는 중이거나 붙잡힌 말) 뒤에 줄 선 말의 표지 — 오래된 것부터 1건씩(설계 §2-5 · VERIFY 지적 1). */
 const AFTER_PREV = "after_prev";
@@ -331,6 +333,9 @@ export class ChatCore {
   private ownHuman: { seat: number; stamp: string } | null = null;
   /** (TICKET=cysr-1121-ui K-2) 이 화면이 쓴 제출의 표지 모음(좌석 → 표지) — noOtherHumanInputSince 의 「내 것」 */
   private ownStamps = new Map<number, Set<string>>();
+  /** (TICKET=cysr-1121-ui K R1) 결속 세션 기록에 나타난 남의 사람 차례(이 화면 말과 짝 안 된 글 있는 user 레코드) 가운데 가장 늦은 시각(ms · 기록 시각 · 못 읽으면 읽은 시각).
+   *  RC·다른 기기 입력은 데몬 사람 입력 표지를 늘리지 않을 수 있어 표지 불변만으로는 「다른 입력 없음」이 증명되지 않는다 → 10분 넘은 말 자동의 둘째 조건. */
+  private foreignHumanAt: number | null = null;
 
   /** (cysr-1116-s6 · 조각 6) 왼쪽 메뉴바 장부 — 맡긴 일·팀·부서(대화 화면이 켜져 있을 때만 조회). */
   readonly rail: RailBook;
@@ -645,7 +650,7 @@ export class ChatCore {
         // ★저장소 글은 자동으로 보내지 않는다(codex 1R blocking — 저장소 변조·손상 글이 사람 표지를 달고 원장 무기록 오너 입력이 되는 길).
         //   사람이 「이 말 보내기」를 눌러야(신뢰 클릭) 다듬기(composeOutbound)부터 다시 거쳐 새 말로 간다.
         // 저장소 id 는 믿지 않는다 — 새 말 id(`m…`)와 겹칠 수 없는 내부 id(`r…`)를 준다(codex 2R blocking: 같은 id 로 복원 /clear 가 새 말 대신 선택되던 길).
-        msgs.push({ id: `r${msgs.length + 1}`, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: RESTORED, note: "앱을 다시 켜기 전에 붙잡아 둔 말이에요 — 보내려면 「이 말 보내기」를 눌러 주세요.", thread: [], replies: [] });
+        msgs.push({ id: `r${msgs.length + 1}`, text: x.text, createdAt: x.at, sentAt: null, step: "held", code: RESTORED, note: "앱을 다시 켜기 전에 아직 보내지 않은 말이에요 — 보내려면 「이 말 보내기」를 눌러 주세요.", thread: [], replies: [] });
       }
       this.s = { ...this.s, msgs };
     } catch {
@@ -689,7 +694,9 @@ export class ChatCore {
   }
 
   private patchMsg(id: string, patch: Partial<Msg>): boolean {
-    return this.putMsgs(this.s.msgs.map((m) => (m.id === id ? { ...m, ...patch } : m)));
+    // (TICKET=cysr-1121-ui K R1) 붙잡음으로 돌아가면 이번 시도의 보낸 글을 지운다 — 다음 시도는 원문에서 표지를 새로 만든다(표지 겹침 0).
+    const p = patch.step === "held" ? { ...patch, sentText: undefined } : patch;
+    return this.putMsgs(this.s.msgs.map((m) => (m.id === id ? { ...m, ...p } : m)));
   }
 
   // ---------- 데몬 무리 ----------
@@ -826,7 +833,7 @@ export class ChatCore {
   private async accept(text: string): Promise<void> {
     // (조각 3) 같은 글의 앞 말이 아직 끝나지 않았으면 이 말은 자동으로 보내지 않는다(사람이 같은 말을 다시 친 경우 · 불명 응답 뒤 다시 누름 포함).
     if (dupPending(this.s.msgs, text)) {
-      const dup: Msg = { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: DUP, note: "같은 말이 아직 확인 중이라 두 번 가지 않게 붙잡아 뒀어요 — 앞 말이 끝나면 「한 번 더 보내기」로 보낼 수 있어요(글을 조금 바꾸면 바로 보내요).", thread: [], replies: [] };
+      const dup: Msg = { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: DUP, note: "같은 말이 아직 확인 중이라 두 번 가지 않게 아직 안 보냈어요 — 앞 말이 끝나면 「한 번 더 보내기」로 보낼 수 있어요(글을 조금 바꾸면 바로 보내요).", thread: [], replies: [] };
       this.s = { ...this.s, draft: "", notice: null };
       this.putMsgs([...this.s.msgs, dup]);
       return;
@@ -856,6 +863,8 @@ export class ChatCore {
    *  master = 판정에 쓸 마스터 행(쓰기 직전 = 재조회 값 · 그 밖 = 마지막 3초 조회 값). 모르면 false(= 사람 클릭 · 종전). */
   private agedAutoOk(m: Msg, master: MasterRow | null | undefined): boolean {
     if (!master || m.heldSeat !== master.surface_id) return false;
+    // (TICKET=cysr-1121-ui K R1) 둘째 조건 — 이 말을 받아들인 뒤 결속 세션 기록에 남의 사람 차례가 나타났으면 표지가 같아도 클릭(RC·다른 기기 = 표지 안 늘 수 있음).
+    if (this.foreignHumanAt !== null && this.foreignHumanAt >= m.createdAt) return false;
     return noOtherHumanInputSince(m.heldStamp, master.human_input_stamp, this.ownStamps.get(master.surface_id) ?? new Set());
   }
 
@@ -871,7 +880,13 @@ export class ChatCore {
   discardHeld(id: string): void {
     const hits = this.s.msgs.filter((x) => x.id === id);
     if (hits.length !== 1 || hits[0].step !== "held") return;
-    this.putMsgs(this.s.msgs.filter((x) => x.id !== id));
+    const next = this.s.msgs.filter((x) => x.id !== id);
+    // (TICKET=cysr-1121-ui K R1) 저장소에서 지운 것이 확인돼야 화면에서도 지운다 — 못 쓰면 말을 그대로 두고 알림(다시 켤 때 RESTORED 로 되살아나던 길).
+    if (!this.saveHold(next)) {
+      this.set({ notice: DISCARD_FAILED_NOTE });
+      return;
+    }
+    this.putMsgs(next);
   }
 
   /** (K-2) 말을 받아들일 때의 마스터 좌석·사람 입력 표지(마지막 3초 조회 값) — 모르면 빈 칸(= 10분 뒤 사람 클릭). */
@@ -971,6 +986,7 @@ export class ChatCore {
       if (age > HELD_MAX_AGE_MS) {
         // 10분 넘게 기다린 말은 여기서도 쓰지 않는다(사람 클릭으로 새 말이 되어야 함) —
         //   ★(K-2 · master 10:2x) 단 받아들인 뒤 같은 좌석에 다른 길 사람 입력이 없었으면(재조회 값으로 다시 잼) 「(N분 전에 쓰신 말)」 표지를 붙여 보낸다.
+        //   ★(K R1) 표지는 매 시도 **원문**에서 한 번만 만든다(msg.text 는 바꾸지 않음 · 보낸 글 = sentText · 짝짓기만 sentText 로).
         const pre = composeOutbound(agedPrefix(age) + msg.text);
         if (!this.agedAutoOk(msg, m) || !pre.ok) {
           this.patchMsg(id, { step: "held", code: STALE, notBefore: undefined, note: STALE_NOTE });
@@ -981,7 +997,7 @@ export class ChatCore {
       const sentAt = this.d.now();
       // ★쓰기 전에 「보내는 중」을 먼저 영속한다 — 저장소에서 이 말이 붙잡음 목록에서 빠진 것이 확인돼야 쓴다(codex 1R blocking:
       //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
-      if (!this.patchMsg(id, { step: "sending", sentAt, seat: m.surface_id, code: undefined, note: undefined, notBefore: undefined, text: outText })) {
+      if (!this.patchMsg(id, { step: "sending", sentAt, seat: m.surface_id, code: undefined, note: undefined, notBefore: undefined, sentText: outText })) {
         this.patchMsg(id, { step: "held", sentAt: null, code: "store_failed", note: "앱 저장소에 쓸 수 없어 보내지 않았어요(같은 말이 두 번 가는 것을 막으려고) — 잠시 뒤 다시 해 볼게요.", notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS });
         return;
       }
@@ -1014,7 +1030,8 @@ export class ChatCore {
       if (typeof hst === "string" && hst !== "") {
         this.ownHuman = { seat: m.surface_id, stamp: hst };
         // (K-2) 쓴 제출의 표지만 「내 것」으로 모은다 — 쓰기 직전 거부(바이트 0)는 데몬이 번호를 되돌리므로(handlers.rs:430) 넣지 않는다.
-        if (r.outcome !== "held" && r.outcome !== "failed" && r.outcome !== "queued_hold") {
+        //   ★(TICKET=cysr-1121-ui K R1) outcome = written 만 — 불명(uncertain)은 표지를 실어 와도 이 화면 제출이라고 확정할 수 없다(→ 그 번호 뒤 10분 말 = 클릭 · 보수 쪽).
+        if (r.outcome === "written") {
           const set = this.ownStamps.get(m.surface_id) ?? new Set<string>();
           set.add(hst);
           if (set.size > OWN_STAMPS_MAX) set.delete(set.values().next().value as string);
@@ -1430,6 +1447,13 @@ export class ChatCore {
           const readAt = this.d.now();
           const pooled = new Set(this.pendingUser.map((p) => p.r.uuid).filter((u): u is string => u !== null));
           for (const r of applied.unmatched) if (r.uuid === null || !pooled.has(r.uuid)) this.pendingUser.push({ r, seenAt: readAt });
+          // (TICKET=cysr-1121-ui K R1) 이 화면 말과 짝 안 된 글 있는 user 레코드 = 남의 사람 차례(작업 화면·RC·다른 기기·중계 포함 · 뒤에 내 말로 짝지어져도 보수 쪽) — 가장 늦은 시각만 기억(agedAutoOk 둘째 조건).
+          for (const r of applied.unmatched) {
+            if (r.text === null) continue;
+            const t = r.ts === null ? NaN : Date.parse(r.ts);
+            const at = Number.isNaN(t) ? readAt : t;
+            if (this.foreignHumanAt === null || at > this.foreignHumanAt) this.foreignHumanAt = at;
+          }
           if (this.pendingUser.length > PENDING_USER_MAX) this.pendingUser = this.pendingUser.slice(-PENDING_USER_MAX);
           // 「답함」은 여기서 칠하지 않는다(null) — 들고 있는 활동 값은 이 답보다 옛 관측일 수 있다. 다음 조회(poll)의 새 관측으로만.
           const known = new Set(this.s.stray.map((x) => x.uuid).filter((u): u is string => u !== null));

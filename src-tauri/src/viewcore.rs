@@ -359,7 +359,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
         //   ①은 「마스터가 받아 둠」 증거(role "queued" · 사슬 밖) · ②는 사람 말 레코드(role "user")로 넘긴다 — 둘 다 사람이 쓴 글 그대로라
         //   user 레코드와 같은 취급(NFR-S3 = 훅 글 등 「그 밖 종류」의 본문 0자 원칙은 그대로 · 이 두 꼴만 예외).
         if v["type"].as_str() == Some("queue-operation") {
-            if v["operation"].as_str() == Some("enqueue") {
+            let op = v["operation"].as_str();
+            if op == Some("enqueue") {
                 if let Some(t) = v["content"].as_str() {
                     out.push(json!({
                         "uuid": Value::Null,
@@ -370,6 +371,23 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
                         "ts": v["timestamp"].as_str(),
                         "sidechain": false,
                         "at": at,
+                    }));
+                }
+            } else if op != Some("dequeue") && !(op == Some("remove") && v["reason"].as_str() == Some("absorbed_mid_turn")) {
+                // (TICKET=cysr-1121-ui K R1) 흡수(absorbed_mid_turn) 아닌 remove(사람이 Claude Code 에서 대기 말을 거둠 등 · 까닭 꼴 미실측) ·
+                //   모르는 operation = 「대기에서 빠짐」(role "queue_removed" · 원문 · reason) — 화면이 「받아 둠」을 사실로 두지 않고 확인 불가로 바꾼다.
+                //   흡수 remove·dequeue 는 종전대로 넘기지 않는다(뒤따르는 queued_command·user 레코드가 근거).
+                if let Some(t) = v["content"].as_str() {
+                    out.push(json!({
+                        "uuid": Value::Null,
+                        "parent": Value::Null,
+                        "role": "queue_removed",
+                        "text": t,
+                        "parts": Value::Null,
+                        "ts": v["timestamp"].as_str(),
+                        "sidechain": false,
+                        "at": at,
+                        "reason": v["reason"].as_str(),
                     }));
                 }
             }
@@ -389,6 +407,8 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
                     "at": at,
                     "tools": Value::Null,
                     "thinking": false,
+                    // (TICKET=cysr-1121-ui K R1) 하던 일 중간 흡수에서 온 사람 말 — 화면이 「답에 하던 일 이야기가 섞일 수 있음」·같은 경계 두 말을 가린다
+                    "queued": true,
                 }));
                 continue;
             }
@@ -1739,6 +1759,34 @@ mod tests {
         assert!(recs[2]["text"].is_null());
         assert_eq!(recs[3]["role"], "link");
         assert!(recs[3]["text"].is_null(), "다른 attachment 본문은 여전히 0자(NFR-S3)");
+        assert_eq!(recs[1]["queued"], true, "(K R1) 흡수 queued_command 에서 온 user 레코드 표지");
+    }
+
+    /// (TICKET=cysr-1121-ui K R1) 흡수 아닌 remove(사람이 거둠 등)·모르는 까닭·까닭 없음·모르는 operation = 「queue_removed」(원문 · reason) ·
+    /// 흡수 remove·dequeue = 종전대로 0 · 보통 user 레코드엔 queued 표지 없음.
+    #[test]
+    fn k_r1_queue_remove_not_absorbed_becomes_record() {
+        let absorbed = r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-27T01:29:34.945Z","content":"말 A","reason":"absorbed_mid_turn"}"#;
+        let cancel = r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-27T01:30:00.000Z","content":"말 B","reason":"user_cancelled"}"#;
+        let noreason = r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-27T01:30:01.000Z","content":"말 C"}"#;
+        let unknown_op = r#"{"type":"queue-operation","operation":"popAll","timestamp":"2026-11-27T01:30:02.000Z","content":"말 D"}"#;
+        let deq = r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-27T01:30:07.517Z"}"#;
+        let nocontent = r#"{"type":"queue-operation","operation":"remove","timestamp":"t","reason":"x"}"#;
+        let user = r#"{"type":"user","uuid":"u1","parentUuid":null,"timestamp":"t1","message":{"role":"user","content":"안녕"}}"#;
+        let buf = format!("{absorbed}\n{cancel}\n{noreason}\n{unknown_op}\n{deq}\n{nocontent}\n{user}\n");
+        let (recs, used, bad) = parse_transcript_chunk(buf.as_bytes());
+        assert_eq!((used, bad), (buf.len(), 0));
+        assert_eq!(recs.len(), 4, "거둠 3 + user 1 · 흡수 remove·dequeue·글 없는 remove 0");
+        for (i, t) in ["말 B", "말 C", "말 D"].iter().enumerate() {
+            assert_eq!(recs[i]["role"], "queue_removed");
+            assert_eq!(recs[i]["text"], *t);
+            assert!(recs[i]["uuid"].is_null());
+        }
+        assert_eq!(recs[0]["reason"], "user_cancelled");
+        assert_eq!(recs[0]["ts"], "2026-11-27T01:30:00.000Z");
+        assert!(recs[1]["reason"].is_null());
+        assert_eq!(recs[3]["role"], "user");
+        assert!(recs[3]["queued"].is_null(), "보통 user 레코드엔 흡수 표지 없음");
     }
 
     #[test]

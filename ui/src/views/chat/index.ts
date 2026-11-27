@@ -5,7 +5,7 @@
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
 import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
-import { canRetry, HELD_CLICK_LABEL, STEP_LABEL, type Msg } from "../judge/msgstep";
+import { ABSORBED_NOTE, canRetry, HELD_CLICK_LABEL, STEP_LABEL, WITH_NEXT_NOTE, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
 import { jumpLabel, newKeys, placeAfterPaint, stickToBottom } from "../judge/scroll";
@@ -283,6 +283,9 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       const pg = prog(m, live);
       if (pg) li.append(pg);
       if (m.note) li.append(el("div", "cv-note", m.note));
+      // (TICKET=cysr-1121-ui K R1) 하던 일 중간에 받아 읽힌 말 — 답 귀속이 깔끔하지 않을 수 있음을 사실대로(U25-B·D 실측 · 귀속 규칙은 그대로).
+      if (m.withNext) li.append(el("div", "cv-note cv-absorbed", WITH_NEXT_NOTE));
+      else if (m.absorbed) li.append(el("div", "cv-note cv-absorbed", ABSORBED_NOTE));
       // (조각 3 · PRD FR-A2a) 오래 걸려요 = 마스터 상태를 함께 보인다(근거 없이 「못 보냄」으로 바꾸지 않음 · 다시 보내기 0).
       if (m.step === "slow") li.append(el("div", "cv-note cv-slow-health", `마스터 상태: ${HEALTH_LABEL[s.health]} — 다시 보내지 않고 계속 확인해요.`));
       // (조각 3) 같은 말 겹침: 앞 말이 끝나기 전에는 누를 단추가 없다(불명·확인 중 = 다시 보내기 0).

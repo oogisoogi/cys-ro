@@ -31775,6 +31775,8 @@ mod tests {
             &path,
             r#"{"schema_version":1,"tombstones":[],"tombstones_rev":0,"updated_at":1.0,
                 "entries":[{"role":"worker-9","agent":"claude","cwd":"/a"},
+                           {"role":"b-role","agent":"claude","cwd":"/b"},
+                           {"role":"a-role","agent":"claude","cwd":"/c"},
                            {"role":"master","agent":"claude","cwd":"/m","session_id":"SM"}]}"#,
         )
         .unwrap();
@@ -31784,7 +31786,9 @@ mod tests {
         let got = roles_on_disk(&path);
         assert_eq!(got.first().map(String::as_str), Some("master"), "보존 master 가 첫째가 아니다: {got:?}");
         assert_eq!(got.iter().filter(|r| r.as_str() == "master").count(), 1, "{got:?}");
-        assert_eq!(got.last().map(String::as_str), Some("worker-9"), "나머지 순서(보존분은 live 뒤)가 바뀌었다: {got:?}");
+        // 나머지 순서 불변(보존분 = 직전 파일 순서 · 이름 순으로 다시 세우지 않는다 — codex 코드 1R minor 의 변이)
+        let pos = |r: &str| got.iter().position(|x| x == r).unwrap();
+        assert!(pos("worker-9") < pos("b-role") && pos("b-role") < pos("a-role"), "보존분 상대 순서가 바뀌었다: {got:?}");
 
         // ② 살아 있는 master — 여러 역할 사이에 끼어 있어도 영속할 때마다 첫째
         let daemon = drill_daemon("topo-master-first-live");

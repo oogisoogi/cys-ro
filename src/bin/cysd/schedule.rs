@@ -34,6 +34,9 @@ const SCHEDULE_QUEUE_CAP: usize = 100;
 const SCHEDULE_FALLBACK_HEADROOM: usize = 50;
 /// ★(0.14.42 · 설계 H2) 틱의 pause 확인과 push 사이에 kill-switch 가 켜졌다 — via_queue 의 `Frozen` 과 같은 규약(ⓒ).
 const SCHEDULE_FROZEN_ERR: &str = "delivery_frozen: kill-switch paused between tick and push";
+/// ★(1.1.21 · cysr-1121-restore D5) `if_absent=launch` 의 launch-agent 가 rc 95(자동 복원이 그 역할을 되살리는 중)로 보류됐다 —
+/// 원샷은 틱이 이미 파일에서 지웠으므로 동결과 같은 길로 되돌린다(복원이 끝나면 역할이 살아 있어 그대로 배달된다).
+const SCHEDULE_RESTORE_DEFER_ERR: &str = "launch_deferred: auto-restore is reviving this role (launch-agent rc 95)";
 /// ★(0.14.42 · R3SH-1) 입증 못 한 **기계 모양** 초안(사람 바이트 0) 위에서 같은 주기 잡이 같은 입력 세대로 사람 입력
 /// 없이 이 횟수를 넘겨 연속 우회되면, 다음 회차는 종전(pre-H)처럼 직접 주입해 잔여를 병합 제출한다(푸는 주체 없는 무기한
 /// 보류 차단 · 유계). 2 = 두 회차까지는 초안을 지키고 세 번째에 푼다(5분 잡이면 10분 · 1분 잡이면 2분).
@@ -1643,12 +1646,17 @@ fn requeue_oneshot_after_frozen(daemon: &Arc<Daemon>, job: &Job) {
 }
 
 fn requeue_oneshot_after_frozen_at(daemon: &Arc<Daemon>, path: &std::path::Path, job: &Job) {
+    requeue_oneshot_to_at(daemon, path, job, None)
+}
+
+/// 원샷을 파일에 되돌린다 — 새 at = max(at+1, `not_before`)(없으면 at+1 · 동결 종전 동작). 주기 잡은 대상 아님.
+fn requeue_oneshot_to_at(daemon: &Arc<Daemon>, path: &std::path::Path, job: &Job, not_before: Option<i64>) {
     let Some(at) = job.at else { return };
     if job.every_minutes.is_some_and(|m| m > 0) {
         return;
     }
     let mut back = job.clone();
-    back.at = Some(at.saturating_add(1));
+    back.at = Some(at.saturating_add(1).max(not_before.unwrap_or(i64::MIN)));
     let ok = (|| {
         let _lock = ScheduleFileLock::acquire(path)?;
         // ★⑰(1.1.8 합성) 디렉터리 잠금 뒤 우리 공유 락(`ensure_builtin_jobs_at` 과 같은 순서).
@@ -1756,6 +1764,10 @@ async fn fire(daemon: Arc<Daemon>, job: Job) {
     //   pause 로 덮인 원샷의 종전 규약(해제 뒤 발화 · MISS_WINDOW 넘으면 missed)과 같아진다.
     if matches!(&result, Err(e) if e == SCHEDULE_FROZEN_ERR) {
         requeue_oneshot_after_frozen(&daemon, &job);
+    }
+    // ★(1.1.21 D5) 자동 복원 중 보류 — 되돌린 시각 = max(at+1, 지금): 복원이 길어도 놓침 창(MISS_WINDOW_SECS)이 원래 at 기준으로 닫히지 않게.
+    if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {
+        requeue_oneshot_to_at(&daemon, &schedule_path(), &job, Some(now_epoch() as i64));
     }
     // ★U4-B2① 결과 원장(메모리 전용) — 이벤트 발행과 독립으로 남는다(이벤트는 흘러가 사라진다).
     let kind = classify_fire_result(&result);
@@ -3019,6 +3031,9 @@ async fn launch_via_cli(daemon: &Arc<Daemon>, spec: &LaunchSpec) -> Result<u64, 
     //   **곧바로 텍스트를 주입**하는데(`inject(daemon, sid, text)`), 관문 창에 주입하면 그
     //   붙여넣기의 Return 이 실측상 면책 창의 `No, exit` 을 눌러 노드를 종료시킨다.
     //   즉 여기서 Ok 를 내는 것은 '스케줄 job 한 건 성공' 이 아니라 '노드 1개 사망' 이다.
+    if out.status.code() == Some(cys::EXIT_RESTORE_IN_PROGRESS) {
+        return Err(SCHEDULE_RESTORE_DEFER_ERR.to_string());
+    }
     if out.status.code() == Some(cys::EXIT_GATE_PENDING) {
         return Err(format!(
             "launch-agent gate-pending: pane 은 떴고 프로세스도 살아 있으나 첫기동 관문(테마·\
@@ -6220,6 +6235,36 @@ mod h2_schedule_hold_tests {
         assert!(!root["jobs"].as_array().unwrap().iter().any(|j| j["id"] == "p"));
         let _ = std::fs::remove_dir_all(&dir);
         done(&s);
+    }
+
+    /// ★(1.1.21 · cysr-1121-restore D5 · codex 코드 1R major) 자동 복원 중 launch-agent rc 95 로 보류된 원샷은 파일에 되돌려지고
+    /// 새 at = max(at+1, 지금) — 원래 at 기준 놓침 창(600초)이 복원 시간에 먹히지 않는다. 배선 = launch_via_cli 가 95 를 구분 · fire 가 되돌림.
+    #[test]
+    fn restore_deferred_oneshot_is_requeued_not_before_now() {
+        let (d, s) = rig("d5-oneshot-defer");
+        let dir = std::env::temp_dir().join(format!("cys-oneshot-defer-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("schedule.json");
+        std::fs::write(&path, r#"{"jobs": []}"#).unwrap();
+        let wake = job(json!({"id": "wake-d5", "at": 1_900_000_000i64, "action": "push", "to": "cso", "text": "[wakeup] x"}));
+        requeue_oneshot_to_at(&d, &path, &wake, Some(1_900_000_500));
+        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let back = root["jobs"].as_array().unwrap().iter().find(|j| j["id"] == "wake-d5").cloned().expect("되돌린 원샷");
+        assert_eq!(back["at"], json!(1_900_000_500i64), "지금보다 앞 시각으로 되돌리면 놓침 창이 닫힌다");
+        std::fs::write(&path, r#"{"jobs": []}"#).unwrap();
+        requeue_oneshot_to_at(&d, &path, &wake, Some(10));
+        let root: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(root["jobs"][0]["at"], json!(1_900_000_001i64), "하한이 과거면 종전 at+1");
+        let _ = std::fs::remove_dir_all(&dir);
+        done(&s);
+        let src = include_str!("schedule.rs");
+        let lv = &src[src.find("async fn launch_via_cli(").unwrap()..];
+        assert!(lv.find("Some(cys::EXIT_RESTORE_IN_PROGRESS)").unwrap() < lv.find("if !out.status.success()").unwrap(), "95 를 일반 실패로 접는다");
+        assert!(lv.contains("return Err(SCHEDULE_RESTORE_DEFER_ERR.to_string());"));
+        let fire_at = src.find("if matches!(&result, Err(e) if e == SCHEDULE_RESTORE_DEFER_ERR) {").expect("fire 가 보류 원샷을 안 되돌림");
+        let fire_body = &src[fire_at..];
+        let fire_body = &fire_body[..fire_body.find("\n    }").unwrap()];
+        assert!(fire_body.contains("requeue_oneshot_to_at(&daemon, &schedule_path(), &job, Some(now_epoch() as i64));"));
     }
 
     /// ★(T3 리뷰 3R ⑥) 동결 원샷 되돌리기(재직렬화)가 U1 필수 칸 `bulk`·`publish` 를 보존한다 → 되돌린 잡이 U1

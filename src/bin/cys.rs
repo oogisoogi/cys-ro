@@ -21267,8 +21267,8 @@ fn sanitize_launch_cwd(cwd: String) -> String {
 const ENV_AUTO_RESTORE_SELF: &str = "CYS_AUTO_RESTORE_SELF";
 /// 탈출 손잡이 — `1` 이면 자동 복원 중에도 종전대로 띄운다(자동 복원이 멈춘 듯 오래 갈 때 사람·master 가 쓰는 길).
 const ENV_LAUNCH_DURING_RESTORE: &str = "CYS_LAUNCH_DURING_RESTORE";
-/// 「자동 복원이 이 역할을 되살리는 중이라 띄우지 않았다」 — 실패가 아니라 보류(새 좌석·새 대화 0). 95-99 미할당 중 첫 번호.
-const EXIT_RESTORE_IN_PROGRESS: i32 = 95;
+/// 「자동 복원이 이 역할을 되살리는 중이라 띄우지 않았다」 — 실패가 아니라 보류(새 좌석·새 대화 0). 95-99 미할당 중 첫 번호 · 정의 = lib(cysd 스케줄러도 읽음).
+use cys::EXIT_RESTORE_IN_PROGRESS;
 
 /// 저장 목록 항목이 이 요청 역할의 복원 대상인가 — `worker` 요청은 데몬이 `worker-N` 으로 바꿔 띄우므로 worker 계열 전부를 본다(순수).
 fn restore_role_matches(requested: &str, saved_role: &str) -> bool {
@@ -21316,7 +21316,14 @@ fn restore_refusal_line(role: &str, pending: &str, phase: &str) -> String {
 /// D5 판정(주입 가능 — 시험 이음매). `None` = 종전대로 기동 · `Some(95)` = 거절(안내 1줄 출력).
 fn launch_restore_refusal_with(role: &str, self_marker: bool, escape: bool, phase: &dyn Fn() -> Option<String>,
                                topo: &dyn Fn() -> Option<Value>) -> Option<(i32, String)> {
+    // 값싼 판정 먼저(codex 코드 1R minor): 역할·표지·손잡이 → phase → 진행 중일 때만 topology 를 읽는다.
+    if role == "master" || self_marker || escape {
+        return None;
+    }
     let ph = phase();
+    if !auto_restore_in_progress(ph.as_deref()) {
+        return None;
+    }
     let pending = restore_refusal_target(role, self_marker, escape, ph.as_deref(), topo().as_ref())?;
     Some((EXIT_RESTORE_IN_PROGRESS, restore_refusal_line(role, &pending, ph.as_deref().unwrap_or(""))))
 }
@@ -35929,6 +35936,7 @@ mod tests {
             assert!(line.contains(must), "안내에 {must:?} 없음: {line}");
         }
         assert_eq!(EXIT_RESTORE_IN_PROGRESS, 95);
+        assert_eq!(cys::EXIT_RESTORE_IN_PROGRESS, 95);
     }
 
     /// ★(1.1.21 D5) 연결 소스 핀(플랫폼 무관) — 보통 갈래에만 · --resume-saved·boot 무접촉 · 복원 내부 무접촉 · phoenix 표지 = launch-agent 동사 한정 ·
@@ -35942,6 +35950,13 @@ mod tests {
                                           disp.find("launch_restore_refusal(&role)").expect("보통 갈래에 없다"),
                                           disp.find("run_launch_agent(&role, &agent, cwd)").unwrap());
         assert!(res_at < ref_at && ref_at < plain_at, "거절 판정이 보통 갈래(새 대화) 기동 바로 앞이 아니다");
+        assert!(disp.contains("if let Some(rc) = launch_restore_refusal(&role) {\n                    return rc;"), "거절 rc 를 돌려주지 않는다");
+        let w = &src[src.find("\nfn launch_restore_refusal(role: &str)").expect("운영 래퍼")..];
+        let w = &w[..w.find("\n}\n").unwrap()];
+        for must in ["on(ENV_AUTO_RESTORE_SELF)", "on(ENV_LAUNCH_DURING_RESTORE)", "request(\"org.status\"", "[\"daemon\"][\"auto_restore\"]",
+                     "request(\"system.topology\"", "Some(rc)"] {
+            assert!(w.contains(must), "운영 래퍼 배선에 {must:?} 없음");
+        }
         let boot = &src[src.find("\nfn run_boot(").expect("boot")..];
         let boot = &boot[..boot.find("\n}\n").unwrap()];
         assert!(!boot.contains("launch_restore_refusal"), "boot 은 --resume-saved(대화 임대)라 손대지 않는다");
@@ -35949,7 +35964,8 @@ mod tests {
         let restore = &restore[..restore.find("\n}\n").unwrap()];
         assert!(!restore.contains("launch_restore_refusal"), "복원 내부가 자기 복원을 거절한다");
         let spawn = &src[src.find("for k in TXN_ENV_KEYS {").expect("데몬 스폰 지우기 목록")..];
-        assert!(spawn[..400].contains("cmd.env_remove(ENV_AUTO_RESTORE_SELF);"), "데몬 스폰이 표지를 지우지 않는다");
+        let spawn = &spawn[..spawn.find("cmd.spawn_policy(").expect("스폰 정책 줄")];
+        assert!(spawn.contains("cmd.env_remove(ENV_AUTO_RESTORE_SELF);"), "데몬 스폰이 표지를 지우지 않는다");
         let ph = include_str!("../../cysjavis-pack/bin/javis_phoenix.py");
         assert!(ph.contains("    if bool(args) and str(args[0]) == \"launch-agent\":\n        env[\"CYS_AUTO_RESTORE_SELF\"] = \"1\"\n"),
                 "phoenix 표지가 launch-agent 동사 한정이 아니다");

@@ -1408,6 +1408,9 @@ pub fn gate_pending_close_from(env_val: Option<&str>) -> bool {
 /// `CYS_LAUNCH_EXIT_GATE_PENDING` ↔ GUI `src-tauri` 분기. 구 바이너리는 78 을 내지 않으므로
 /// (0/1 만) 이 분기는 신 바이너리에서만 발동한다 — 스큐 안전.
 pub const EXIT_GATE_PENDING: i32 = 78;
+/// ★(1.1.21 · cysr-1121-restore D5) `cys launch-agent`(보통 갈래)가 「데몬 자동 복원이 그 역할의 저장 대화를 되살리는 중」이라
+/// 띄우지 않았다 — 실패가 아니라 보류(새 좌석·새 대화 0). cys(CLI)가 내고 cysd 스케줄러가 읽는다(원샷 되돌림).
+pub const EXIT_RESTORE_IN_PROGRESS: i32 = 95;
 
 /// ★⑯(1.1.7) `refuse_on_approval` 이 켜진 직접 입력이 **승인·질문 창 화면**에서 거부될 때의 오류 코드.
 /// 순환의 무확인 `C-u`→`/clear`→Return 이 그 창의 선택지를 사람 대신 누르지 않게 한다(쓰기 0).

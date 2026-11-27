@@ -3138,6 +3138,12 @@ _RUST_WRAPPER_GUARD = re.compile(
     r"\s*return\s+(?:Ok\s*\(\s*vec!\s*\[\s*\]\s*\)|vec!\s*\[\s*\])\s*;\s*\}")
 
 
+def _rust_brace_depth(scode, pos):
+    """주석·문자열을 지운 사본(scode)에서 pos 앞의 여는 괄호 `{ ( [` − 닫는 괄호 깊이. 0 = 모듈 맨 바깥 항목 자리."""
+    head = scode[:pos]
+    return sum(head.count(c) for c in "{([") - sum(head.count(c) for c in "})]")
+
+
 def _rust_idents(code):
     return set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code))
 
@@ -3173,7 +3179,12 @@ def _rust_fn_body_following_core(src, start, core, need):
     need(not re.search(r"[!;{}]|::|\.", args), "%s 위임 인자에 허용 밖 구문(! ; { } :: .)이 있다" % core)
     extra = _rust_idents(args) - _RUST_WRAPPER_ARG_IDENTS
     need(not extra, "%s 위임 인자가 허용 밖 식별자를 쓴다(%s)" % (core, sorted(extra)))
-    defs = [m.start() for m in re.finditer(r"\bfn\s+" + re.escape(core) + r"\s*[<(]", scode)]
+    all_defs = [m.start() for m in re.finditer(r"\bfn\s+" + re.escape(core) + r"\s*[<(]", scode)]
+    # ★F3(codex 통합 3R major): 정의는 **모듈 맨 바깥(괄호 깊이 0) 항목**만 인정한다 — 매크로 입력·macro_rules 본문·impl/trait·중첩 fn
+    #   안의 `fn core` 는 실제 그 자리 함수 정의인지 이 정적 검사로 확정할 수 없다 → 깊이 >0 에 같은 이름 정의가 하나라도 있으면 적색.
+    defs = [d for d in all_defs if _rust_brace_depth(scode, d) == 0]
+    need(len(defs) == len(all_defs),
+         "%s 정의가 매크로·impl·중첩 안(괄호 깊이 >0)에도 있다 — 실제 함수 정의인지 판정 불가" % core)
     need(len(defs) == 1, "%s 정의가 %d개다(정확히 하나여야 위임을 따라갈 수 있다)" % (core, len(defs)))
     for m in name.finditer(scode):
         pre = scode[:m.start()].rstrip()
@@ -3326,6 +3337,9 @@ def h_conc_3():
         ("허용 밖 인자", "    merge_desired_hooks_core(settings_path, hidden_store(settings_path))", _hidden, None, "red"),
         ("core 정의 둘(cfg)", _call, "#[cfg(any())]\n" + _good_core, None, "red"),
         ("주석 속 가짜 정의", _call, "", "// fn merge_desired_hooks_core(a: u8) -> u8 {\n//     write_atomic(settings_path, a) DECOY_ATOMIC\n// }\n" + _bad_core, "follow"),
+        ("매크로 입력 속 core 정의", _call, "", "gen! {\n" + _good_core + "}\n", "red"),
+        ("macro_rules 본문 속 core 정의", _call, "", "macro_rules! decoy {\n    () => {\n" + _good_core + "    };\n}\n" + "gen!();\n", "red"),
+        ("impl 안 동명 메서드", _call, "impl X {\n    fn merge_desired_hooks_core(&self) {}\n}\n", None, "red"),
         ("정상 가드+위임", _guard + _call, "", None, "follow"),
         ("정상 로그 가드+위임", "    if !shell_hooks_supported() {\n        eprintln!(\"[pack] {}\", shell_hooks_degraded_note(hooks.len()));\n        return Ok(vec![]);\n    }\n" + _call, "", None, "follow"),
         ("정상 위임만", _call, "", None, "follow"),
@@ -3336,7 +3350,7 @@ def h_conc_3():
                                           + _bad_core, 0, _cc, need)
     need("std::fs::write(settings_path" in _decoy and "write_atomic(settings_path" not in _decoy,
          "계측 타당성 실패: 주석 속 가짜 core 정의를 이어 붙였다(진짜 정의 = 비원자 쓰기를 놓침)")
-    notes.append("위임 추적기 대조 18꼴 + 가짜 정의 1 통과(주석·문자열·raw·cr#·감싸개/헬퍼 쓰기·매크로·포인터·재바인딩·경로·허용 밖 인자·두 정의 = 비추적/적색 · 정상 3꼴 = 추적)")
+    notes.append("위임 추적기 대조 21꼴 + 가짜 정의 1 통과(주석·문자열·raw·cr#·감싸개/헬퍼 쓰기·매크로·포인터·재바인딩·경로·허용 밖 인자·두 정의·매크로/impl 안 정의 = 비추적/적색 · 정상 3꼴 = 추적)")
     need("write_atomic(settings_path" in mbody,
          "Rust 병합기가 원자 쓰기를 쓰지 않는다(반쪽 등록부 = 부트 발화 소실)")
     need("std::fs::write(settings" not in _code_lines(pk), "Rust 비원자 settings write 잔존")

@@ -11,6 +11,7 @@ U1 왕복: env `CYS_UPDATE_VERIFY_BIN` = `update-verify` 를 가진 **디버그*
 """
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -2556,6 +2557,31 @@ class TestCollectMacX64Static(unittest.TestCase):
         # 대조: 같은 꼴에서 깨지지 않았으면 통과(앞에 놓인 사본이 순차 탐색을 망치지 않음)
         r, out = self.collect(self.bundle(self.payload(prefix=data)), p)
         self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_n_med2_anchor_far_and_decoy_first_item(self):
+        """실물 꼴(첫 항목이 64KiB 창보다 훨씬 뒤) + 첫 항목의 사본이 앞쪽에 따로 있음(다른 include_str! 꼴) = 통과 ·
+        같은 꼴에서 중간 항목이 깨지면 거부(닻을 바꿔도 사슬이 안 이어짐)."""
+        p, _ = self.bi()
+        first = self.items[0][1]
+        decoy = first + b"\0" * 100000
+        r, out = self.collect(self.bundle(self.payload(prefix=decoy)), p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, out = self.collect(self.bundle(self.payload(prefix=decoy, flip="sub/b.md")), p)
+        self.refused(r, out, "커밋 팩 내용이 없다 1건(첫: sub/b.md)")
+
+    def test_n_med2_chain_unit(self):
+        """pack_chain_missing 단위: 순서 바뀜·겹침·같은 내용 합침 = 빠짐 · 빈 파일 = 통과."""
+        spec = importlib.util.spec_from_file_location("cx64", os.path.join(UPD, "collect_x64_static.py"))
+        cx = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cx)
+        it = [("a", b"AAAA"), ("b", b"BBBB"), ("e", b""), ("c", b"CCCC")]
+        self.assertEqual(cx.pack_chain_missing(b"xx" + b"AAAABBBBCCCC", it), [])
+        self.assertEqual(cx.pack_chain_missing(b"BBBBAAAACCCC", it), ["b"])                       # 순서 바뀜
+        self.assertEqual(cx.pack_chain_missing(b"AAAABBBB", [("a", b"AAAABB"), ("b", b"BBBB")]), ["b"])  # 겹침
+        self.assertEqual(cx.pack_chain_missing(b"AAAACCCC", [("a", b"AAAA"), ("a2", b"AAAA"), ("c", b"CCCC")]),
+                         ["a2 (앞 항목과 같은 내용)"])                                              # 같은 내용 합침
+        self.assertEqual(cx.pack_chain_missing(b"zz", [("e", b"")]), [])
+        self.assertEqual(cx.pack_chain_missing(b"zz", [("a", b"AAAA")]), ["a"])
 
     def test_n_med2_symlink_in_pack_tree_refused(self):
         """팩 트리의 심볼릭 링크(mode 120000)는 typ 이 blob 이어도 거부."""

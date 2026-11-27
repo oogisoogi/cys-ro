@@ -65,6 +65,41 @@ def pack_items(repo, commit):
     return [(rel, git(repo, "cat-file", "blob", oid)) for rel, oid in items]
 
 
+def pack_chain_missing(blob, items):
+    """팩 내용이 x64 바이트 안에 **순서대로 · 겹치지 않게** 있는가 — 못 찾은 항목 rel 목록(빈 목록 = 통과).
+
+    1.1.21 N med2(agy): 전에는 앞 항목 끝(pos) 근처에서 못 찾으면 맨 앞(오프셋 0)부터 다시 찾았다 — 뒤 파일이 빠지거나 깨져도
+    앞 파일·다른 상수 안의 같은 바이트에 걸려 통과할 수 있었다. 이제 다시 찾기는 없다: 첫 항목(닻)만 바이너리 전체에서 찾고
+    (실물 1.1.20 x64 = 첫 항목이 약 8.7MB 뒤 · 옛 길의 다시 찾기가 실제로 쓰인 곳은 이 한 번뿐 · 실측 2026-11-27), 나머지는 앞 항목
+    끝 뒤 창(len + 64KiB) 안에서만 찾는다. 첫 항목은 다른 include_str! 사본으로 바이너리에 여러 번 있을 수 있어(실물 = 팩 589항목
+    모두 2번 이상) 출현 자리마다 닻으로 시험해 사슬이 끝까지 이어지는 자리를 고른다 — 없으면 가장 덜 빠진 사슬의 빠진 목록.
+    빈 파일 = 찾을 바이트 없음(자리 그대로 · 종전과 같음). 앞 항목과 같은 내용 파일도 제자리가 따로 있어야 한다(표시 붙임)."""
+    first = next((d for _, d in items if d), None)
+    if first is None:
+        return []
+    best = None
+    a = blob.find(first)
+    while True:
+        if a < 0:
+            break
+        pos, missing, seen, anchored = a, [], set(), False
+        for rel, data in items:
+            if data:
+                i = a if not anchored else blob.find(data, pos, pos + len(data) + 65536)
+                anchored = True
+                if i < 0:
+                    missing.append(rel + (" (앞 항목과 같은 내용)" if data in seen else ""))
+                else:
+                    pos = i + len(data)
+            seen.add(data)
+        if not missing:
+            return []
+        if best is None or len(missing) < len(best):
+            best = missing
+        a = blob.find(first, a + 1)
+    return best if best is not None else [next(rel for rel, d in items if d)]
+
+
 def keyring_ids(raw):
     ids = []
     for k in json.loads(raw.decode("utf-8")).get("keys", []):
@@ -126,17 +161,7 @@ def main():
     bp = bi.get("bundled_pack") or {}
     if h.hexdigest() != bp.get("digest"):
         refuse("커밋 %s 팩 다시 계산 digest %s ≠ arm64 %s" % (commit[:12], h.hexdigest(), bp.get("digest")))
-    # 1.1.21 N med2(agy): 순서대로 · 앞 항목 끝(pos) 뒤에서만 찾는다(겹침 0) — 실패 때 맨 앞(오프셋 0)부터 다시 찾던 길을 없앴다
-    #   (뒤 파일이 빠지거나 깨져도 앞 파일·다른 상수 안의 같은 바이트에 걸려 통과할 수 있었다). 앞 항목과 내용이 글자까지 같은
-    #   파일도 예외 없이 제자리를 찾아야 한다(링커가 한 자리로 합쳤다면 거부 = fail-closed · 이유에 「같은 내용」 표시).
-    pos, missing, seen = 0, [], set()
-    for rel, data in items:
-        i = blob.find(data, pos, pos + len(data) + 65536) if data else pos
-        if i < 0:
-            missing.append(rel + (" (앞 항목과 같은 내용)" if data in seen else ""))
-        else:
-            pos = i + len(data)
-        seen.add(data)
+    missing = pack_chain_missing(blob, items)
     if missing:
         refuse("x64 바이너리에 커밋 팩 내용이 없다 %d건(첫: %s)" % (len(missing), ", ".join(missing[:3])))
     kr = git(a.repo, "show", commit + ":cysjavis-pack/trusted-keys.json")

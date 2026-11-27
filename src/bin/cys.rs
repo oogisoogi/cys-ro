@@ -10096,11 +10096,7 @@ fn consumed_hook_state(settings: &std::path::Path, pack_dir: &std::path::Path) -
     let missing: Vec<&'static str> = cys::pack::AWAKENING_HOOKS
         .iter()
         .filter(|h| {
-            !cys::pack::hook_registered_in(
-                &root,
-                h.event,
-                &cys::pack::hook_command_for(pack_dir, h.script),
-            )
+            !cys::pack::doctor_hook_registered_in(&root, h.event, pack_dir, h.script)
         })
         .map(|h| h.script)
         .collect();
@@ -10201,11 +10197,7 @@ fn diag_hook_personal(ctx: &DoctorCtx, fix: bool) -> DiagItem {
         cys::pack::AWAKENING_HOOKS
             .iter()
             .filter(|h| {
-                !cys::pack::hook_registered_in(
-                    &root,
-                    h.event,
-                    &cys::pack::hook_command_for(&ctx.pack_dir, h.script),
-                )
+                !cys::pack::doctor_hook_registered_in(&root, h.event, &ctx.pack_dir, h.script)
             })
             .map(|h| h.script)
             .collect()

@@ -615,10 +615,15 @@ pub fn hook_command_for(pack_dir: &Path, script: &str) -> String {
     if cfg!(windows) {
         // 런처가 없으면 종전 문자열 — **등록 여부는 [`shell_hooks_supported`] 가 가른다**.
         let launcher = windows_hook_launcher().unwrap_or_else(|| "bash".to_string());
-        format!("{launcher} \"{}\"", path.display().to_string().replace('\\', "/"))
+        windows_hook_command(&launcher, &path)
     } else {
         format!("sh {}", path.display())
     }
+}
+
+/// Windows 훅 명령 꼴 한 곳(`hook_command_for` 와 doctor 런처 변형 판정이 같은 글자를 내게).
+fn windows_hook_command(launcher: &str, script_path: &Path) -> String {
+    format!("{launcher} \"{}\"", script_path.display().to_string().replace('\\', "/"))
 }
 
 /// ★win-hooks-no-bash(2026-09-16 · 샌드박스 실증: git-bash 없는 Windows 에서 매 턴 훅마다
@@ -843,6 +848,104 @@ pub fn hook_registered_normalized_in(
         .unwrap_or(false)
 }
 
+/// ★win-doctor-hook(1.1.21 · 방송실 PC 실측 11-25) doctor **관측 전용** 판정(순수):
+/// `event` 에 「런처 후보 중 하나 + 같은 스크립트 경로」 인 command 가 등록돼 있는가.
+///
+/// 왜: [`hook_command_for`] 의 Windows 런처는 **부르는 프로세스의 PATH** 로 갈린다 — PATH 에 bash 가
+/// 있으면 `bash`, 없으면 첫 실재 후보의 절대경로. 등록한 쪽(데몬·설치기 = PATH 에 bash 없음 →
+/// `C:/…/cys/runtime/git/bin/bash.exe "…"`)과 doctor 를 띄운 좌석 셸(PATH 에 동봉 bash → `bash "…"`)이
+/// 달라 글자 동등이 깨지고, 훅이 등록·작동하는데도 「각성 hook 미등록」 WARN 이 났다.
+/// 인정하는 런처 = [`windows_hook_launcher_from`] 이 이 기계에서 낼 수 있는 값 전부 — `bash` +
+/// **실재하는**(`is_file`) 후보 각각. 실재하지 않는 후보 경로로 등록된 훅은 실행되지 않으므로 인정하지
+/// 않는다(여전히 WARN). 비교 = [`normalize_hook_command_for_compare`] windows 규칙(따옴표·`\`/`/`·
+/// 대소문자·`/c/`·`//?/` 정규화).
+/// ⛔집행 경로(`merge_desired_hooks`·`verify_desired_hooks_registered`)에는 쓰지 않는다 — 그쪽은 바이트
+/// 동등이 계약이다(위 `normalize_hook_command_for_compare` 주석).
+pub fn hook_registered_any_windows_launcher_in(
+    root: &serde_json::Value,
+    event: &str,
+    script_path: &Path,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> bool {
+    windows_launcher_variant_in(root, event, script_path, candidates, is_file).is_some()
+}
+
+/// [`hook_registered_any_windows_launcher_in`] 의 일치 command **원문**(첫 일치) — 병합기가 그 줄의
+/// timeout 을 올릴 때 바이트 동등으로 다시 찾을 수 있게 원문을 돌려준다(순수).
+pub fn windows_launcher_variant_in(
+    root: &serde_json::Value,
+    event: &str,
+    script_path: &Path,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let mut launchers: Vec<String> = Vec::new();
+    if let Some(l) = windows_hook_launcher_from(true, candidates, &is_file) {
+        launchers.push(l);
+    }
+    for c in candidates {
+        if let Some(l) = windows_hook_launcher_from(false, std::slice::from_ref(c), &is_file) {
+            launchers.push(l);
+        }
+    }
+    let wants: Vec<String> = launchers
+        .iter()
+        .map(|l| normalize_hook_command_for_compare(&windows_hook_command(l, script_path), true))
+        .collect();
+    root.get("hooks")
+        .and_then(|h| h.get(event))
+        .and_then(|v| v.as_array())?
+        .iter()
+        .filter_map(|m| m.get("hooks").and_then(|v| v.as_array()))
+        .flatten()
+        .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+        .find(|c| {
+            let got = normalize_hook_command_for_compare(c, true);
+            wants.iter().any(|w| *w == got)
+        })
+        .map(str::to_string)
+}
+
+/// 이 기계 env(`LOCALAPPDATA`·`ProgramFiles`)의 Windows bash 후보.
+fn windows_bash_candidates_env() -> Vec<String> {
+    windows_bash_candidates_from(
+        std::env::var("LOCALAPPDATA").ok().as_deref(),
+        std::env::var("ProgramFiles").ok().as_deref(),
+    )
+}
+
+/// 이 기계 env 후보로 [`windows_launcher_variant_in`] — **unix 는 언제나 `None`**(맥 동작 무변).
+fn windows_launcher_variant_env(
+    root: &serde_json::Value,
+    event: &str,
+    pack_dir: &Path,
+    script: &str,
+) -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    windows_launcher_variant_in(
+        root,
+        event,
+        &pack_dir.join("hooks").join(script),
+        &windows_bash_candidates_env(),
+        |p| Path::new(p).is_file(),
+    )
+}
+
+/// `cys doctor` 각성 hook 판정(관측 전용) — unix = 종전 글자 동등 그대로([`hook_registered_in`]).
+/// Windows = 글자 동등 **또는** [`hook_registered_any_windows_launcher_in`](이 기계 env 의 후보).
+pub fn doctor_hook_registered_in(
+    root: &serde_json::Value,
+    event: &str,
+    pack_dir: &Path,
+    script: &str,
+) -> bool {
+    hook_registered_in(root, event, &hook_command_for(pack_dir, script))
+        || windows_launcher_variant_env(root, event, pack_dir, script).is_some()
+}
+
 /// ★U10(0.14.41) 각성 훅 누락 목록 — **레인 팩 하나**를 기대값으로 삼는다(관측 전용·순수).
 ///
 /// 합집합(본부 팩 ∪ 레인 팩)을 쓰지 않는 이유: 부서 계정 settings 에 본부 팩 훅이 교차 등록된 경우를
@@ -852,6 +955,27 @@ pub fn awakening_hooks_missing_in(
     lane_pack: &Path,
     windows_rules: bool,
 ) -> Vec<&'static str> {
+    awakening_hooks_missing_with_in(
+        root,
+        lane_pack,
+        windows_rules,
+        &windows_bash_candidates_env(),
+        |p| Path::new(p).is_file(),
+    )
+}
+
+/// [`awakening_hooks_missing_in`] 의 순수 코어(후보·실재 판정 주입 — 맥에서 윈 꼴 시험용).
+/// ★win-doctor-hook(1.1.21): `windows_rules` 면 「런처 후보 중 하나 + 같은 스크립트 경로」 도 등록으로
+/// 인정한다([`hook_registered_any_windows_launcher_in`]) — 데몬이 `C:/…/bash.exe "…"` 로 등록한 좌석을
+/// PATH 에 bash 가 있는 launch-agent 가 「각성 훅 미등록」 으로 경고하던 오탐(doctor 와 같은 원인).
+/// `windows_rules == false`(맥)는 종전 판정 그대로.
+pub fn awakening_hooks_missing_with_in(
+    root: &serde_json::Value,
+    lane_pack: &Path,
+    windows_rules: bool,
+    candidates: &[String],
+    is_file: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
     AWAKENING_HOOKS
         .iter()
         .filter(|h| {
@@ -860,7 +984,14 @@ pub fn awakening_hooks_missing_in(
                 h.event,
                 &hook_command_for(lane_pack, h.script),
                 windows_rules,
-            )
+            ) && !(windows_rules
+                && hook_registered_any_windows_launcher_in(
+                    root,
+                    h.event,
+                    &lane_pack.join("hooks").join(h.script),
+                    candidates,
+                    &is_file,
+                ))
         })
         .map(|h| h.script)
         .collect()
@@ -982,6 +1113,26 @@ pub fn merge_desired_hooks(
         eprintln!("[pack] {}", shell_hooks_degraded_note(hooks.len()));
         return Ok(vec![]);
     }
+    merge_desired_hooks_core(
+        settings_path,
+        hooks,
+        &|script| hook_command_for(pack_dir, script),
+        &|root, event, script| windows_launcher_variant_env(root, event, pack_dir, script),
+    )
+}
+
+/// 소망 훅 command 를 내는 함수(`script` → command).
+type DesiredCommandFn<'a> = &'a dyn Fn(&str) -> String;
+/// 같은 스크립트가 **인정 런처**로 이미 등록된 command 원문(`root`·`event`·`script` → 원문). unix = 늘 `None`.
+type LauncherVariantFn<'a> = &'a dyn Fn(&serde_json::Value, &str, &str) -> Option<String>;
+
+/// [`merge_desired_hooks`] 본체 — 소망 command·런처 변형 판정을 주입받는다(맥에서 윈 꼴 재현 시험용).
+fn merge_desired_hooks_core(
+    settings_path: &Path,
+    hooks: &[DesiredHook],
+    desired_for: DesiredCommandFn<'_>,
+    variant: LauncherVariantFn<'_>,
+) -> Result<Vec<String>, String> {
     if std::fs::symlink_metadata(settings_path)
         .map(|m| m.file_type().is_symlink())
         .unwrap_or(false)
@@ -1010,7 +1161,7 @@ pub fn merge_desired_hooks(
     }
     let mut added: Vec<String> = Vec::new();
     for h in hooks {
-        let desired = hook_command_for(pack_dir, h.script);
+        let desired = desired_for(h.script);
         let declared = declared_timeout_for(h);
         if hook_registered_with_timeout_in(&root, h.event, &desired, declared) {
             continue;
@@ -1024,6 +1175,20 @@ pub fn merge_desired_hooks(
                 added.push(format!("{}←{} (timeout={want}s 교정)", h.event, h.script));
                 continue;
             }
+        }
+        // ★win-doctor-hook(1.1.21): 같은 스크립트가 **인정 런처**(bash · 실재 후보)로 이미 등록돼 있으면
+        //   append 하지 않는다 — 런처 글자만 다른 줄을 하나 더 붙이면 같은 훅이 두 번 발화한다(맥 재현:
+        //   윈 꼴 `C:/…/bash.exe "…"` 등록 + 병합 = 같은 스크립트 줄 2개). 선언 timeout 미달이면 그 줄만 올린다.
+        //   unix 는 `variant` 가 늘 `None` 이라 종전 경로 그대로.
+        if let Some(existing) = variant(&root, h.event, h.script) {
+            if let Some(want) = declared {
+                if !hook_registered_with_timeout_in(&root, h.event, &existing, declared)
+                    && raise_hook_timeout_in(&mut root, h.event, &existing, want)
+                {
+                    added.push(format!("{}←{} (timeout={want}s 교정)", h.event, h.script));
+                }
+            }
+            continue;
         }
         let mut entry = serde_json::json!({"hooks": [{"type": "command", "command": desired}]});
         if let Some(t) = declared {
@@ -1167,6 +1332,23 @@ pub fn verify_desired_hooks_registered(
     if !shell_hooks_supported() {
         return vec![];
     }
+    verify_desired_hooks_registered_core(
+        settings_path,
+        hooks,
+        &|script| hook_command_for(pack_dir, script),
+        &|root, event, script| windows_launcher_variant_env(root, event, pack_dir, script),
+    )
+}
+
+/// [`verify_desired_hooks_registered`] 본체(주입형). ★win-doctor-hook(1.1.21): 병합기가 인정 런처 변형을
+/// 「이미 있음」 으로 보고 append 하지 않으므로, ⊇ 게이트도 **같은 판정**(변형 + 선언 timeout 충족)을 쓴다 —
+/// 안 그러면 병합 직후 검증이 결손을 보고한다(U-21 과 같은 「집행 축과 같은 판정」 원칙).
+fn verify_desired_hooks_registered_core(
+    settings_path: &Path,
+    hooks: &[DesiredHook],
+    desired_for: DesiredCommandFn<'_>,
+    variant: LauncherVariantFn<'_>,
+) -> Vec<String> {
     let root: serde_json::Value = std::fs::read_to_string(settings_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -1176,12 +1358,11 @@ pub fn verify_desired_hooks_registered(
         .filter(|h| {
             // ★U-21: ⊇ 게이트는 **집행 축과 같은 판정**을 써야 한다. 병합기가 timeout 을 보고
             //   ⊇ 검증이 안 보면, timeout 스큐가 남은 디스크를 "충족"으로 보고하게 된다.
-            !hook_registered_with_timeout_in(
-                &root,
-                h.event,
-                &hook_command_for(pack_dir, h.script),
-                declared_timeout_for(h),
-            )
+            let declared = declared_timeout_for(h);
+            let exact = hook_registered_with_timeout_in(&root, h.event, &desired_for(h.script), declared);
+            !(exact
+                || variant(&root, h.event, h.script)
+                    .is_some_and(|e| hook_registered_with_timeout_in(&root, h.event, &e, declared)))
         })
         .map(|h| format!("{}←{}", h.event, h.script))
         .collect()
@@ -8030,6 +8211,233 @@ mod tests {
         assert!(windows_bash_candidates_from(None, None).is_empty());
         #[cfg(unix)]
         assert!(shell_hooks_supported(), "unix 는 항상 sh");
+    }
+
+    /// settings 루트 1개(event 하나에 command 들) — 아래 doctor 런처 변형 시험 전용.
+    fn win_doctor_root(event: &str, cmds: &[&str]) -> serde_json::Value {
+        let hs: Vec<serde_json::Value> = cmds
+            .iter()
+            .map(|c| serde_json::json!({"type": "command", "command": c}))
+            .collect();
+        serde_json::json!({"hooks": {event: [{"hooks": hs}]}})
+    }
+
+    /// ★win-doctor-hook(1.1.21): 방송실 PC(DESKTOP-LHRD50I · 11-25 실측) 꼴 — 데몬이 PATH 에 bash 없이
+    /// 등록한 `C:/…/cys/runtime/git/bin/bash.exe "…"` 를, PATH 에 bash 가 있는 좌석 셸의 doctor 도
+    /// 「등록됨」 으로 본다. 표기(구분자·대소문자·따옴표·MSYS `/c/`)는 정규화 · 진짜 미등록은 여전히 미등록.
+    #[test]
+    fn win_doctor_hook_any_launcher_same_script() {
+        let la = "C:\\Users\\admin\\AppData\\Local";
+        let cands = windows_bash_candidates_from(Some(la), Some("C:\\Program Files"));
+        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let only_bundled = |p: &str| p == bundled;
+        let script = Path::new("C:/Users/admin/.cys/pack/hooks/session-start.sh");
+        let ok = |cmds: &[&str], is_file: &dyn Fn(&str) -> bool| {
+            hook_registered_any_windows_launcher_in(
+                &win_doctor_root("SessionStart", cmds),
+                "SessionStart",
+                script,
+                &cands,
+                is_file,
+            )
+        };
+        // ① 방송실 PC 등록 글자 그대로(데몬 = 동봉 bash 절대경로)
+        assert!(ok(
+            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &only_bundled
+        ));
+        // ② 좌석 셸 꼴(`bash "…"`) — 런처 = bash
+        assert!(ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        // ③ 표기 변형: 역슬래시·소문자 드라이브·따옴표 런처·MSYS /c/ 스크립트
+        assert!(ok(
+            &["\"c:\\users\\admin\\appdata\\local\\cys\\runtime\\git\\bin\\bash.exe\" C:\\Users\\Admin\\.cys\\pack\\hooks\\session-start.sh"],
+            &only_bundled
+        ));
+        assert!(ok(&["BASH '/c/Users/admin/.cys/pack/hooks/session-start.sh'"], &only_bundled));
+        // ④ 공백 후보(Program Files) — 실재할 때만 인정
+        let pf_cmd = "\"C:/Program Files/Git/bin/bash.exe\" \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"";
+        assert!(ok(&[pf_cmd], &|p: &str| p.starts_with("C:\\Program Files")));
+        // ── 진짜 미등록 = 여전히 미등록 ──
+        // ⑤ 런처 파일이 실재하지 않는 절대경로(훅이 실행되지 않는다)
+        assert!(!ok(&[pf_cmd], &only_bundled));
+        assert!(!ok(
+            &["C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &|_: &str| false
+        ));
+        // ⑥ 후보가 아닌 런처
+        assert!(!ok(&["sh \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(
+            &["C:/Tools/bash.exe \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""],
+            &|_: &str| true
+        ));
+        // ⑦ 다른 스크립트·다른 팩·꼬리 인자·빈 등록·다른 이벤트
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/role-bootstrap.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack-dept-x/hooks/session-start.sh\""], &only_bundled));
+        assert!(!ok(&["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\" --x"], &only_bundled));
+        assert!(!ok(&[], &only_bundled));
+        assert!(!hook_registered_any_windows_launcher_in(
+            &win_doctor_root(
+                "UserPromptSubmit",
+                &["bash \"C:/Users/admin/.cys/pack/hooks/session-start.sh\""]
+            ),
+            "SessionStart",
+            script,
+            &cands,
+            only_bundled,
+        ));
+        assert!(!hook_registered_any_windows_launcher_in(
+            &serde_json::json!({}),
+            "SessionStart",
+            script,
+            &cands,
+            only_bundled,
+        ));
+    }
+
+    /// ★win-doctor-hook(1.1.21): doctor 판정 입구 — unix(맥) 는 종전 글자 동등 그대로.
+    /// 맥 꼴 `sh <path>` 는 등록 · 런처·따옴표만 다른 꼴은 **종전처럼 미등록**(맥 동작 무변).
+    #[cfg(unix)]
+    #[test]
+    fn win_doctor_hook_unix_stays_byte_equal() {
+        let pack = Path::new("/Users/u/.cys/pack");
+        let mac = hook_command_for(pack, "session-start.sh");
+        assert_eq!(mac, "sh /Users/u/.cys/pack/hooks/session-start.sh");
+        let reg = |c: &str| {
+            doctor_hook_registered_in(&win_doctor_root("SessionStart", &[c]), "SessionStart", pack, "session-start.sh")
+        };
+        assert!(reg(&mac));
+        assert_eq!(reg(&mac), hook_registered_in(&win_doctor_root("SessionStart", &[&mac]), "SessionStart", &mac));
+        assert!(!reg("bash /Users/u/.cys/pack/hooks/session-start.sh"));
+        assert!(!reg("sh \"/Users/u/.cys/pack/hooks/session-start.sh\""));
+        assert!(!reg("sh /Users/u/.cys/pack/hooks/role-bootstrap.sh"));
+        assert!(!doctor_hook_registered_in(&serde_json::json!({}), "SessionStart", pack, "session-start.sh"));
+    }
+
+    /// ★win-doctor-hook(1.1.21) ① launch-agent 「각성 훅 미등록」 경고 판정 — 윈 규칙이면 런처 변형 인정 ·
+    /// 맥 규칙(`windows_rules=false`)은 종전 그대로 · 진짜 미등록은 여전히 누락.
+    #[test]
+    fn win_awakening_warn_accepts_launcher_variant() {
+        let pack = Path::new("C:/Users/admin/.cys/pack");
+        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        let only_bundled = |p: &str| p == bundled;
+        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let root = serde_json::json!({"hooks": {
+            "SessionStart": [{"hooks": [{"type": "command",
+                "command": format!("{l} \"C:/Users/admin/.cys/pack/hooks/session-start.sh\"")}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command",
+                "command": format!("{l} \"C:/Users/admin/.cys/pack/hooks/role-bootstrap.sh\"")}]}]
+        }});
+        assert!(awakening_hooks_missing_with_in(&root, pack, true, &cands, only_bundled).is_empty());
+        // 맥 규칙 = 종전(런처 변형 불인정)
+        assert_eq!(awakening_hooks_missing_with_in(&root, pack, false, &cands, only_bundled).len(), 2);
+        // 런처 실재 안 함 → 누락
+        assert_eq!(awakening_hooks_missing_with_in(&root, pack, true, &cands, |_: &str| false).len(), 2);
+        // 다른 팩(레인 불일치) → 누락(U10 레인 팩 하나 규약 유지)
+        assert_eq!(
+            awakening_hooks_missing_with_in(&root, Path::new("C:/Users/admin/.cys/pack-dept-x"), true, &cands, only_bundled),
+            vec!["session-start.sh", "role-bootstrap.sh"]
+        );
+        assert_eq!(
+            awakening_hooks_missing_with_in(&serde_json::json!({}), pack, true, &cands, only_bundled).len(),
+            2
+        );
+    }
+
+    /// ★win-doctor-hook(1.1.21) ② 병합기 중복 append — 맥에서 윈 꼴 재현.
+    /// 가짜 settings 에 윈 꼴 `C:/…/bash.exe "<script>"` 등록 + 소망 command = 좌석 셸 꼴 `bash "<script>"`.
+    /// 종전 판정(변형 불인정)은 같은 스크립트 줄을 2개로 만든다(재현) · 고친 판정은 1개 그대로 + timeout 만 교정 ·
+    /// 재실행 멱등 · ⊇ 검증 충족 · 진짜 미등록·실재 안 하는 런처는 여전히 append.
+    #[test]
+    fn win_merge_no_duplicate_for_launcher_variant() {
+        let td = std::env::temp_dir().join(format!("cys-win-merge-dup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&td);
+        std::fs::create_dir_all(&td).unwrap();
+        let pack = td.join("pack");
+        let script = |s: &str| pack.join("hooks").join(s);
+        let bundled = "C:\\Users\\admin\\AppData\\Local\\cys\\runtime\\git\\bin\\bash.exe";
+        let l = "C:/Users/admin/AppData/Local/cys/runtime/git/bin/bash.exe";
+        let cands = windows_bash_candidates_from(Some("C:\\Users\\admin\\AppData\\Local"), None);
+        let desired = |s: &str| windows_hook_command("bash", &script(s));
+        let fixed = |root: &serde_json::Value, ev: &str, s: &str| {
+            windows_launcher_variant_in(root, ev, &script(s), &cands, |p: &str| p == bundled)
+        };
+        let gone = |root: &serde_json::Value, ev: &str, s: &str| {
+            windows_launcher_variant_in(root, ev, &script(s), &cands, |_: &str| false)
+        };
+        let none = |_: &serde_json::Value, _: &str, _: &str| -> Option<String> { None };
+        let seed = |name: &str, with_ups: bool| {
+            let mut root = serde_json::json!({"hooks": {
+                "SessionStart": [{"hooks": [{"type": "command",
+                    "command": windows_hook_command(l, &script("session-start.sh"))}]}]
+            }});
+            if with_ups {
+                root["hooks"]["UserPromptSubmit"] = serde_json::json!([{"hooks": [{"type": "command",
+                    "command": windows_hook_command(l, &script("role-bootstrap.sh"))}]}]);
+            }
+            let p = td.join(name);
+            std::fs::write(&p, serde_json::to_string_pretty(&root).unwrap()).unwrap();
+            p
+        };
+        let lines = |p: &Path, ev: &str, sc: &str| -> Vec<serde_json::Value> {
+            let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
+            v["hooks"][ev]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| g["hooks"].as_array())
+                .flatten()
+                .filter(|h| h["command"].as_str().is_some_and(|c| c.contains(sc)))
+                .cloned()
+                .collect()
+        };
+        let ups = &AWAKENING_HOOKS[1];
+        // ── 재현: 종전 판정(변형 불인정) = 같은 스크립트 줄 2개 ──
+        let a = seed("a.json", true);
+        merge_desired_hooks_core(&a, &AWAKENING_HOOKS, &desired, &none).unwrap();
+        assert_eq!(lines(&a, "SessionStart", "session-start.sh").len(), 2, "재현: 종전 판정은 중복 append");
+        assert_eq!(lines(&a, "UserPromptSubmit", "role-bootstrap.sh").len(), 2, "재현: 종전 판정은 중복 append");
+        // ── 고침: 같은 스크립트·인정 런처면 append 안 함 ──
+        let b = seed("b.json", true);
+        let added = merge_desired_hooks_core(&b, &AWAKENING_HOOKS, &desired, &fixed).unwrap();
+        let ss = lines(&b, "SessionStart", "session-start.sh");
+        let up = lines(&b, "UserPromptSubmit", "role-bootstrap.sh");
+        assert_eq!(ss.len(), 1);
+        assert_eq!(up.len(), 1);
+        assert_eq!(ss[0]["command"].as_str(), Some(windows_hook_command(l, &script("session-start.sh")).as_str()));
+        match declared_timeout_for(ups) {
+            // 선언 timeout 미달이면 그 줄만 올린다(새 줄 아님)
+            Some(want) => {
+                assert_eq!(up[0]["timeout"].as_u64(), Some(want));
+                assert_eq!(added, vec![format!("UserPromptSubmit←role-bootstrap.sh (timeout={want}s 교정)")]);
+            }
+            None => assert!(added.is_empty(), "{added:?}"),
+        }
+        // 재실행 멱등 · ⊇ 검증 충족(같은 판정) · 종전 ⊇ 판정이면 결손으로 보였을 것
+        assert!(merge_desired_hooks_core(&b, &AWAKENING_HOOKS, &desired, &fixed).unwrap().is_empty());
+        assert!(verify_desired_hooks_registered_core(&b, &AWAKENING_HOOKS, &desired, &fixed).is_empty());
+        assert_eq!(verify_desired_hooks_registered_core(&b, &AWAKENING_HOOKS, &desired, &none).len(), 2);
+        // ── 진짜 미등록(UPS 없음) = append · 이미 있는 SessionStart 는 그대로 ──
+        let c = seed("c.json", false);
+        merge_desired_hooks_core(&c, &AWAKENING_HOOKS, &desired, &fixed).unwrap();
+        assert_eq!(lines(&c, "SessionStart", "session-start.sh").len(), 1);
+        let up = lines(&c, "UserPromptSubmit", "role-bootstrap.sh");
+        assert_eq!(up.len(), 1);
+        assert_eq!(up[0]["command"].as_str(), Some(desired("role-bootstrap.sh").as_str()));
+        // ── 등록된 런처가 실재하지 않음(훅이 안 돈다) = 작동하는 줄을 append ──
+        let d = seed("d.json", true);
+        merge_desired_hooks_core(&d, &AWAKENING_HOOKS, &desired, &gone).unwrap();
+        assert_eq!(lines(&d, "SessionStart", "session-start.sh").len(), 2);
+        let _ = std::fs::remove_dir_all(&td);
+    }
+
+    /// ★win-doctor-hook(1.1.21): 맥(unix) 병합기 무변 — 공개 입구의 변형 판정은 unix 에서 늘 `None`.
+    #[cfg(unix)]
+    #[test]
+    fn win_merge_unix_variant_is_none() {
+        let root = serde_json::json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command",
+            "command": "bash \"/p/hooks/session-start.sh\""}]}]}});
+        assert_eq!(windows_launcher_variant_env(&root, "SessionStart", Path::new("/p"), "session-start.sh"), None);
     }
 
     #[test]

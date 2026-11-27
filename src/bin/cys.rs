@@ -35880,13 +35880,16 @@ mod tests {
                 let _ = writeln!(stream, "{}", json!({"id": req["id"], "ok": true, "result": result}));
             }
         });
-        let keys = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB, "HOME"];
+        // CLAUDE_CONFIG_DIR·CYS_ACCOUNT_DIR = 임대 관문이 읽는 실제 등록 폴더(Fable 코드 2R minor) — 시험 동안 비워 개발 기계·CI 판정 재료를 같게.
+        let keys = ["CYS_SOCKET", "CYS_NO_AUTOSTART", cys::session_lease::KNOB, "HOME", "CLAUDE_CONFIG_DIR", "CYS_ACCOUNT_DIR"];
         let rig = RestoreRunRig { socket: socket.clone(), dir: dir.clone(), server: Some(server),
                                   saved_env: keys.into_iter().map(|k| (k, std::env::var_os(k))).collect() };
         std::env::set_var(cys::session_lease::KNOB, if lease_on { "on" } else { "off" });
         std::env::set_var("CYS_SOCKET", &socket);
         std::env::set_var("CYS_NO_AUTOSTART", "1");
         std::env::set_var("HOME", dir.join("home"));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("CYS_ACCOUNT_DIR");
         let mut rec = RestoreOrderRec { calls: vec![], fail_role };
         let _ = run_restore_with(None, include_master, false, &mut rec);
         drop(rig);
@@ -36091,7 +36094,8 @@ mod tests {
         assert_eq!((ENV_AUTO_RESTORE_SELF, ENV_LAUNCH_DURING_RESTORE), ("CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"));
     }
 
-    /// ★(1.1.21 D2) 플랫폼 무관 소스 핀 — 위 시험은 unix 전용(가짜 소켓)이라 윈도우 빌드에서도 정렬 호출이 순회 **앞**에 있음을 잠근다.
+    /// ★(1.1.21 D2) 플랫폼 무관 소스 핀 — 위 시험은 unix 전용(가짜 소켓)이라 윈도우에서도 정렬 호출이 순회 **앞**에 있음을 잠근다
+    /// (윈도우 실행 = windows-health.yml 「복원 중 기동 거절 D5」 스텝의 `tests::restore_sorts_saved` 거르기).
     #[test]
     fn restore_sorts_saved_before_the_launch_loop_source_pin() {
         let src = code_only(include_str!("cys.rs"));

@@ -142,6 +142,42 @@ def runbook_axes(m, root, sink=None):
         check("R %s 자동 복원 끝 대기 줄이 launch-agent 앞" % name,
               wait_at is not None and first_la is not None and wait_at < first_la, (wait_at, first_la), sink)
         check("R %s rc 95 뜻 안내" % name, "rc 95" in text and "CYS_LAUNCH_DURING_RESTORE" in text, None, sink)
+    # 행동(codex 코드 2R minor): 대기 줄을 가짜 cys(status --json 이 running → running → done)로 실제로 돌린다 —
+    #   grep 고정 문자열화·JSON 칸 오타면 곧바로 빠져나가 호출 1회로 끝난다(아래 「호출 3회」 가 붉어진다).
+    fake = os.path.join(root, "fakebin-%d" % os.getpid())
+    os.makedirs(fake, exist_ok=True)
+    cnt = os.path.join(fake, "n")
+    with open(os.path.join(fake, "cys"), "w") as f:
+        f.write('#!/bin/bash\nn=$(( $(cat "%s" 2>/dev/null || echo 0) + 1 )); echo $n > "%s"\n'
+                'if [ "$1 $2" = "status --json" ]; then ph=running; [ $n -ge 3 ] && ph=done\n'
+                '  printf \'{\\n  "daemon": {\\n    "auto_restore": "%%s"\\n  }\\n}\\n\' "$ph"; fi\n' % (cnt, cnt))
+    os.chmod(os.path.join(fake, "cys"), 0o755)
+    env = dict(os.environ, PATH=fake + os.pathsep + os.environ.get("PATH", ""))
+    for name, render, runner in [("sh", m._render_deploy_runbook, ["bash", "-c"]),
+                                 ("ps1", m._render_deploy_runbook_ps1, ["pwsh", "-NoProfile", "-Command"])]:
+        if shutil.which(runner[0]) is None:
+            print("SKIP R %s 대기 줄 행동(%s 없음)" % (name, runner[0]))
+            continue
+        line = next((l for l in render(roster).splitlines() if "자동 복원 끝(또는 꺼짐)" in l and l.lstrip().startswith(("echo", "for"))), "")
+        if not line.lstrip().startswith(("echo", "for")) or "for" not in line:
+            check("R %s 대기 줄 있음" % name, False, line, sink)
+            continue
+        if os.path.exists(cnt):
+            os.remove(cnt)
+        r = subprocess.run(runner + [line], capture_output=True, text=True, env=env, timeout=60)
+        n = int(open(cnt).read().strip()) if os.path.exists(cnt) else 0
+        check("R %s 대기 줄 = running 동안 기다리고 done 에서 끝(호출 3회)" % name,
+              r.returncode == 0 and n == 3 and "자동 복원 끝" in r.stdout, (r.returncode, n, r.stdout[-120:], r.stderr[-200:]), sink)
+    if shutil.which("pwsh"):
+        pp = os.path.join(root, "MR-%d.ps1" % os.getpid())
+        with open(pp, "w", encoding="utf-8") as f:
+            f.write(m._render_deploy_runbook_ps1(roster))
+        r = subprocess.run(["pwsh", "-NoProfile", "-Command",
+                            "$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('%s',[ref]$null,[ref]$e); $e.Count" % pp],
+                           capture_output=True, text=True, timeout=60)
+        check("R ps1 구문 분석 오류 0", r.returncode == 0 and r.stdout.strip() == "0", (r.stdout.strip(), r.stderr[-200:]), sink)
+    else:
+        print("SKIP R ps1 구문 분석(pwsh 없음)")
     p = os.path.join(root, "MR-%d.sh" % os.getpid())
     with open(p, "w", encoding="utf-8") as f:
         f.write(m._render_deploy_runbook(roster))
@@ -157,6 +193,8 @@ def mutants(root):
         ("M1 재결합 지점 restore_order 제거", remerge,
          "    need = need + [r for r in forced_fresh if r not in need and r not in session_lease_held]\n", ["S1"]),
         ("M2 restore_order 가 정렬 안 함", sorter, "    return list(roles)\n", ["U", "S2", "R"]),
+        ("M4 runbook sh grep 고정 문자열(-F)", "do cys status --json 2>/dev/null | grep -Eq", "do cys status --json 2>/dev/null | grep -Fq", ["R"]),
+        ("M5 runbook ps1 JSON 칸 오타", ").daemon.auto_restore }", ").daemon.autorestore }", ["R"]),
         ("M3 runbook sh 순서 정렬 제거", "    for role in restore_order(sorted(roster.keys())):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys",
          "    for role in sorted(roster.keys()):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys", ["R"]),
     ]

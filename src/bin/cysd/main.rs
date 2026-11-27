@@ -1253,6 +1253,8 @@ fn main() {
         CysdCli::Run => {}
     }
     cys::seal_python_bytecode_in_process();
+    // ★(1.1.21 · cysr-1121-restore D5 · codex 코드 2R minor) 런타임(워커 스레드) 생성 **전** — set_var/remove_var 는 프로세스 전역이다(위 봉인과 같은 계약).
+    scrub_launch_restore_env();
     async_main();
 }
 
@@ -1269,7 +1271,6 @@ async fn async_main() {
     );
     scrub_claude_session_env();
     scrub_update_txn_env();
-    scrub_launch_restore_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
@@ -4431,7 +4432,9 @@ mod launch_restore_scrub_tests {
         }
         assert_eq!(cys::LAUNCH_RESTORE_ENV_KEYS, ["CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"]);
         let src: String = include_str!("main.rs").lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        assert!(src.contains("    scrub_update_txn_env();\n    scrub_launch_restore_env();\n"), "main 이 부팅 scrub 을 부르지 않는다");
+        // 위치 = 동기 main 의 async_main()(tokio 런타임 생성) 바로 앞 · 한 곳(codex 코드 2R minor)
+        assert!(src.contains("    scrub_launch_restore_env();\n    async_main();\n"), "부팅 scrub 이 런타임 생성 앞(동기 main)에 없다");
+        assert_eq!(src.matches("    scrub_launch_restore_env();\n").count(), 1, "부팅 scrub 호출은 한 곳");
     }
 }
 

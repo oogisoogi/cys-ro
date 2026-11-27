@@ -3810,29 +3810,80 @@ fn devtools_notice_marker() -> std::path::PathBuf {
 
 /// 안내를 낼 차례인가(순수 — 회귀 핀 대상). macOS 이고 이 버전에서 아직 알리지 않았고 CLT 도구가 빠졌을 때만
 /// 안내문. 문구는 lib 정본(`macos_devtools::devtools_missing_notice`) 그대로다(사본 금지).
+/// `fixed` = 좌석 셸 재선두 판정이 고친 도구(1.1.21 A · 판정 실패·시간 초과 = 빈 집합 = 종전 문구).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn devtools_notice_due(
     os: &str,
     already_shown: bool,
     python_present: bool,
     git_present: bool,
+    fixed: &[&str],
 ) -> Option<String> {
     if os != "macos" || already_shown {
         return None;
     }
-    cys::macos_devtools::devtools_missing_notice(python_present, git_present)
+    cys::macos_devtools::devtools_missing_notice_for(python_present, git_present, fixed)
+}
+
+/// GUI 안내문용 판정 상한(설계 §2-5 — 안 끝나면 종전 문구).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const DEVTOOLS_VERDICT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// ★1.1.21 A 좌석과 **같은 판정 함수**(`macos_devtools::seat_path_verdict`)를 GUI env 로 불러 고친 도구를 얻는다 —
+/// 판정 스레드를 따로 띄워 1.5초만 기다린다(시간 초과·패닉 = 빈 집합 = 종전 문구). 한계: GUI env 로 판정하므로 호출자
+/// 오버레이가 다른 좌석과는 다를 수 있다(설계 §6).
+#[cfg(target_os = "macos")]
+fn devtools_fixed_tools_for_notice() -> Vec<&'static str> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("devtools-verdict".into())
+        .spawn(move || {
+            let fixed: Vec<&'static str> = (|| {
+                let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+                let ctx = cys::macos_devtools::SeatPathCtx::for_process(&exe_dir, &cys::home_dir());
+                let mut env: std::collections::BTreeMap<String, std::ffi::OsString> = std::env::vars_os()
+                    .filter_map(|(k, v)| k.into_string().ok().map(|k| (k, v)))
+                    .collect();
+                let v = cys::macos_devtools::seat_path_verdict(&ctx, &mut env)?;
+                Some(v.fixed_tools().to_vec())
+            })()
+            .unwrap_or_default();
+            let _ = tx.send(fixed);
+        });
+    if spawned.is_err() {
+        return Vec::new();
+    }
+    rx.recv_timeout(DEVTOOLS_VERDICT_TIMEOUT).unwrap_or_default()
 }
 
 /// setup(macOS 블록)에서 부른다 — 판정은 파일 stat 몇 번(셔임 실행 0)이라 부트 무차단이다. 마커 쓰기는
 /// best-effort(실패해도 다음 기동에 한 번 더 알릴 뿐 — 무해). 에이전트 큐(`cys send`)로는 보내지 않는다(①폭주 무관).
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+///
+/// ★1.1.21 A: 문구가 도구별이라 좌석 판정(path_helper 두 번 · 수십 ms · 최대 1.5초)을 거친다 → **뒤 스레드**에서 돈다
+/// (부트 무차단). 판정은 CLT 도구가 빠졌고 이 버전에서 아직 안 알렸을 때만 부른다(정상 맥 = 판정 0).
+#[cfg(target_os = "macos")]
 fn maybe_push_devtools_notice(handle: &AppHandle) {
+    let handle = handle.clone();
+    let _ = std::thread::Builder::new()
+        .name("devtools-notice".into())
+        .spawn(move || push_devtools_notice_now(&handle));
+}
+
+#[cfg(target_os = "macos")]
+fn push_devtools_notice_now(handle: &AppHandle) {
     let marker = devtools_notice_marker();
+    let python_present = cys::macos_devtools::clt_tool_present("python3");
+    let git_present = cys::macos_devtools::clt_tool_present("git");
+    if devtools_notice_due(std::env::consts::OS, marker.exists(), python_present, git_present, &[]).is_none() {
+        return;
+    }
+    let fixed = devtools_fixed_tools_for_notice();
     let Some(msg) = devtools_notice_due(
         std::env::consts::OS,
         marker.exists(),
-        cys::macos_devtools::clt_tool_present("python3"),
-        cys::macos_devtools::clt_tool_present("git"),
+        python_present,
+        git_present,
+        &fixed,
     ) else {
         return;
     };
@@ -11164,17 +11215,22 @@ exit 0
     /// ★U15 안내 판정 진리표 — macOS ∧ 이 버전 미고지 ∧ 도구 결손일 때만 · 문구는 lib 정본 그대로.
     #[test]
     fn devtools_notice_due_truth_table() {
-        let full = devtools_notice_due("macos", false, false, false).expect("CLT 없는 맥에 안내가 없다");
+        let full = devtools_notice_due("macos", false, false, false, &[]).expect("CLT 없는 맥에 안내가 없다");
         assert_eq!(
             Some(full.clone()),
             cys::macos_devtools::devtools_missing_notice(false, false),
             "GUI 안내가 lib 정본 문구와 갈라졌다(사본 금지)"
         );
-        assert_eq!(devtools_notice_due("macos", true, false, false), None, "버전당 1회 스로틀이 없다");
-        assert_eq!(devtools_notice_due("macos", false, true, true), None, "CLT 있는 맥에서 안내가 떴다");
+        assert_eq!(devtools_notice_due("macos", true, false, false, &[]), None, "버전당 1회 스로틀이 없다");
+        assert_eq!(devtools_notice_due("macos", false, true, true, &["git"]), None, "CLT 있는 맥에서 안내가 떴다");
         for os in ["windows", "linux", ""] {
-            assert_eq!(devtools_notice_due(os, false, false, false), None, "{os} 에서 맥 안내가 떴다");
+            assert_eq!(devtools_notice_due(os, false, false, false, &["python3", "git"]), None, "{os} 에서 맥 안내가 떴다");
         }
+        // 1.1.21 A: 고친 도구가 있으면 lib 도구별 문구 그대로.
+        assert_eq!(
+            devtools_notice_due("macos", false, false, false, &["python3", "git"]),
+            cys::macos_devtools::devtools_missing_notice_for(false, false, &["python3", "git"])
+        );
         assert!(devtools_notice_marker()
             .to_string_lossy()
             .ends_with(&format!("devtools-notice-{}", env!("CARGO_PKG_VERSION"))));

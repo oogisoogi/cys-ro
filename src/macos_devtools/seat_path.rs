@@ -813,8 +813,9 @@ fn run_path_helper(
     timeout: Duration,
 ) -> Result<String, &'static str> {
     use std::io::Read;
-    use std::process::{Command, Stdio};
-    let mut cmd = Command::new(ph);
+    use std::process::Stdio;
+    // 창 정책 헬퍼 경유(원시 스폰 계수 동결 규약 · src/lib.rs spawn_policy_tests).
+    let mut cmd = crate::hidden_command(ph);
     cmd.arg("-s").env_clear();
     if let Some(p) = path {
         cmd.env("PATH", p);
@@ -1514,7 +1515,7 @@ printf 'PATH="%s"; export PATH;\n' "$out"
         let py_dir = f.rt.join("python/bin").to_string_lossy().into_owned();
         let seat_path = env["PATH"].clone();
         let run = |with_root: bool, prog: &str, args: &[&str]| -> String {
-            let mut c = std::process::Command::new(prog);
+            let mut c = crate::hidden_command(prog);
             c.args(args).env_clear().env("HOME", &home).env("PATH", &seat_path);
             if with_root {
                 c.env(ENV_PATH_HELPER_ROOT, &root);

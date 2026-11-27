@@ -1448,15 +1448,9 @@ pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        // 앱 번들 리소스 경로 우선, 개발 빌드(형제 runtime/) 폴백. 첫 유효 루트만 사용.
-        let roots = [
-            exe_dir.parent().map(|p| p.join("Resources").join("runtime")),
-            Some(exe_dir.join("runtime")),
-        ];
-        for rt in roots.into_iter().flatten() {
-            if !rt.is_dir() {
-                continue;
-            }
+        // 앱 번들 리소스 경로 우선, 개발 빌드(형제 runtime/) 폴백. 첫 유효 루트만 사용 — 뿌리 탐색 정본 =
+        // `macos_devtools::mac_runtime_root`(좌석 셸 재선두 판정과 같은 뿌리 · 1.1.21 A 중복 제거).
+        if let Some(rt) = crate::macos_devtools::mac_runtime_root(exe_dir) {
             // ★1.1.21 A: git/cysbin(동봉 dugite git 자립 감싸개 · scripts/mac-runtime/git-wrapper.sh)을 git/bin
             //   **앞에 더한다**(대체 아님) — 원시 bin/git 은 --exec-path 가 빌드 접두(//libexec/git-core)라 https·init
             //   템플릿을 못 찾고, 감싸개가 GIT_EXEC_PATH 를 세워 부른다. git/bin 은 scalar 노출 때문에 뒤에 남긴다.
@@ -1472,7 +1466,6 @@ pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
                     dirs.push(d);
                 }
             }
-            break;
         }
     }
     #[cfg(not(any(windows, target_os = "macos")))]

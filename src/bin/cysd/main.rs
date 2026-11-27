@@ -4405,8 +4405,10 @@ mod env_scrub_tests {
     #[test]
     fn boot_scrubs_inherited_seat_path_env() {
         let src = include_str!("main.rs");
-        let a = src.find("    scrub_update_txn_env();\n    scrub_mac_seat_path_env();").expect("부팅 scrub 배선 소실");
-        assert!(a > src.find("fn scrub_mac_seat_path_env()").unwrap_or(usize::MAX) || a > 0);
+        assert!(src.contains("fn scrub_mac_seat_path_env() {"), "부팅 scrub 정의 소실");
+        let call = src.find("    scrub_update_txn_env();\n    scrub_mac_seat_path_env();").expect("부팅 scrub 배선 소실");
+        let main_fn = src.find("\nfn main()").expect("main 소실");
+        assert!(call > main_fn, "부팅 scrub 이 main 첫 경로에 있지 않다");
     }
 
     #[test]

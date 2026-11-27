@@ -3832,7 +3832,7 @@ const DEVTOOLS_VERDICT_TIMEOUT: std::time::Duration = std::time::Duration::from_
 /// ★1.1.21 A 좌석과 **같은 판정 함수**(`macos_devtools::seat_path_verdict`)를 GUI env 로 불러 고친 도구를 얻는다 —
 /// 판정 스레드를 따로 띄워 1.5초만 기다린다(시간 초과·패닉 = 빈 집합 = 종전 문구). 한계: GUI env 로 판정하므로 호출자
 /// 오버레이가 다른 좌석과는 다를 수 있다(설계 §6).
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn devtools_fixed_tools_for_notice() -> Vec<&'static str> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
@@ -3861,7 +3861,7 @@ fn devtools_fixed_tools_for_notice() -> Vec<&'static str> {
 ///
 /// ★1.1.21 A: 문구가 도구별이라 좌석 판정(path_helper 두 번 · 수십 ms · 최대 1.5초)을 거친다 → **뒤 스레드**에서 돈다
 /// (부트 무차단). 판정은 CLT 도구가 빠졌고 이 버전에서 아직 안 알렸을 때만 부른다(정상 맥 = 판정 0).
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn maybe_push_devtools_notice(handle: &AppHandle) {
     let handle = handle.clone();
     let _ = std::thread::Builder::new()
@@ -3869,7 +3869,7 @@ fn maybe_push_devtools_notice(handle: &AppHandle) {
         .spawn(move || push_devtools_notice_now(&handle));
 }
 
-#[cfg(target_os = "macos")]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn push_devtools_notice_now(handle: &AppHandle) {
     let marker = devtools_notice_marker();
     let python_present = cys::macos_devtools::clt_tool_present("python3");

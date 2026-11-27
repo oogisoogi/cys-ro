@@ -198,6 +198,12 @@ def mutants(root):
         ("M3 runbook sh 순서 정렬 제거", "    for role in restore_order(sorted(roster.keys())):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys",
          "    for role in sorted(roster.keys()):\n        agent = (roster.get(role) or {}).get(\"agent\") or \"claude\"\n        lines.append('cys", ["R"]),
     ]
+    # pwsh 없는 환경은 ps1 행동 시험을 건너뛰므로 ps1 전용 변이(M5)는 미실행으로 가른다(codex 코드 3R minor) — CI_REQUIRE_PWSH=1 이면 부재 자체가 실패.
+    if shutil.which("pwsh") is None:
+        if os.environ.get("CI_REQUIRE_PWSH") == "1":
+            check("pwsh 필수 레인인데 pwsh 없음", False)
+        muts = [x for x in muts if not x[0].startswith("M5 ")]
+        print("SKIP M5 runbook ps1 JSON 칸 오타(pwsh 없음)")
     for name, old, new, want_red in muts:
         assert src.count(old) == 1, "변이 자리 소실: %s" % name  # 선-assert: 변이가 실제로 적용된다
         mp = os.path.join(root, "mut_%d.py" % len(name))

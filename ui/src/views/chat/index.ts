@@ -5,7 +5,7 @@
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
 import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
-import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
+import { canRetry, HELD_CLICK_LABEL, STEP_LABEL, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
 import { jumpLabel, newKeys, placeAfterPaint, stickToBottom } from "../judge/scroll";
@@ -277,7 +277,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       const li = el("li", `cv-msg cv-me step-${m.step}`);
       li.dataset.msgId = m.id;
       li.append(el("div", "cv-text", m.text));
-      const meta = el("div", "cv-step", STEP_LABEL[m.step]);
+      const meta = el("div", "cv-step", needsClick(m) ? HELD_CLICK_LABEL : STEP_LABEL[m.step]); // (K-1) 눌러야 나갈 말 = 「아직 안 보냄」
       meta.dataset.step = m.step;
       li.append(meta);
       const pg = prog(m, live);
@@ -295,6 +295,16 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
           void act.confirmHeld(m.id);
         });
         li.append(b);
+      }
+      // (TICKET=cysr-1121-ui K-2 · master 10:2x) 붙잡은 말(자동으로 나갈 말 · 눌러야 나갈 말 모두)은 사람이 언제든 거둘 수 있다 — 10분 상한을 좁힌 짝(쓰기 0).
+      if (m.step === "held") {
+        const d = el("button", "cv-retry cv-discard", "보내지 않기");
+        d.type = "button";
+        d.addEventListener("click", (e) => {
+          if (!e.isTrusted) return; // 사람의 신뢰 클릭만
+          act.discardHeld(m.id);
+        });
+        li.append(d);
       }
       // (조각 3 고침 · 검증 지적 H) 같은 글이 이미 전달됐으면 다시 보내기를 거두고 그 사실만 알린다.
       if (canRetry(m) && sameTextDelivered(s.msgs, m.text, m.id)) li.append(el("div", "cv-note cv-same-delivered", SAME_DELIVERED_NOTE));

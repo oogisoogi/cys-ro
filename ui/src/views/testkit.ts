@@ -45,6 +45,8 @@ export interface SimOpts {
   toolSteps?: Array<{ name: string; hint: string | null }>;
   toolGapMs?: number;
   toolsField?: boolean;
+  /** (TICKET=cysr-1121-ui K-3) ChatCore 의 busyPasteOk — false = 되돌리기 판(마스터가 쉴 때만 보냄) 동작을 시험 · 생략 = 제품 기본값(U25 = 받아 둔다) */
+  busyPasteOk?: boolean;
 }
 
 export class Sim {
@@ -90,6 +92,7 @@ export class Sim {
       },
       store: { get: (k) => self.mem.get(k) ?? null, set: (k, v) => void self.mem.set(k, v), remove: (k) => void self.mem.delete(k) },
       working: (r) => r.working === true,
+      busyPasteOk: o.busyPasteOk,
       listen: async (name, h) => {
         if (name === "daemon-event") {
           self.handler = h;

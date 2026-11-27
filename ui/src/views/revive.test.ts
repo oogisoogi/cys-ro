@@ -866,13 +866,16 @@ describe("S1-5 — 내 보내기 짝짓기(human_input_stamp)", () => {
     expect(ownLastHumanInput(m({ human_input_stamp: "1799:7" }), "1794:7")).toBe(false); // 데몬 다시 켜짐(세대 다름) = 아님
     // 짝짓기는 30초 쉼만 면제 — 입력줄 잔존·바쁨은 그대로 막는다
     expect(pick(sendGate({ master: m({ pending_input_human_bytes: 2 }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "draft" })).toEqual({ ok: false, code: "draft" });
-    expect(pick(sendGate({ master: m({ working: true }), approvalSeats: [], ownHumanStamp: "1794:7" }), { ok: false, code: "busy" })).toEqual({ ok: false, code: "busy" });
+    expect(pick(sendGate({ master: m({ working: true }), approvalSeats: [], ownHumanStamp: "1794:7", busyPasteOk: false }), { ok: false, code: "busy" })).toEqual({ ok: false, code: "busy" }); // (K-3) 바쁨 문턱 = 되돌리기 판(busyPasteOk false)에서만
   });
-  it("masterRowOf 가 새 칸(human_input_stamp · agent · agent_seen · seat)을 읽는다 · 옛 데몬(칸 없음) = null", () => {
+  it("masterRowOf 가 새 칸(human_input_stamp · agent · agent_seen · seat)을 읽는다 · 옛 데몬(칸 없음) = null(표지는 undefined = 모름 · K-2)", () => {
     const r = masterRowOf({ surfaces: [{ surface_id: 5, role: "master", human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" }] }, () => false);
     expect(pick(r, { human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" })).toEqual({ human_input_stamp: "1794:3", agent: "claude", agent_seen: false, seat: "empty" });
     const o = masterRowOf({ surfaces: [{ surface_id: 5, role: "master" }] }, () => false);
-    expect(pick(o, { human_input_stamp: null, agent: null, agent_seen: null, seat: null })).toEqual({ human_input_stamp: null, agent: null, agent_seen: null, seat: null });
+    // (TICKET=cysr-1121-ui K-2) 표지 칸 없음(옛 데몬) = undefined(모름) · 칸이 null(입력 없음) = null — 10분 상한 판정이 둘을 가른다
+    expect(pick(o, { agent: null, agent_seen: null, seat: null })).toEqual({ agent: null, agent_seen: null, seat: null });
+    expect(o?.human_input_stamp).toBeUndefined();
+    expect(masterRowOf({ surfaces: [{ surface_id: 5, role: "master", human_input_stamp: null }] }, () => false)?.human_input_stamp).toBeNull();
   });
 });
 

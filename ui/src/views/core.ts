@@ -10,7 +10,7 @@
 // 데몬·파일·localStorage 는 deps 로만 닿는다(시험 대역 · FR-X1).
 
 import { composeOutbound } from "./judge/outbound";
-import { approvalSeatsOf, masterRowOf, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
+import { approvalSeatsOf, masterRowOf, noOtherHumanInputSince, sendGate, type GateVerdict, type MasterRow } from "./judge/gate";
 import { applyRecords, applyRefusedAtWrite, applyRefusedById, canRetry, mergeOutcome, READ_AFTER_MS, rematchPending, SENDING_SILENT_MS, settleSteps, SLOW_MS, stepFromOutcome, type Msg, type PendingRec, type Rec, type Reply, type Step } from "./judge/msgstep";
 import { applyQueueEvent, autoHoldRemainingMs, queueEventOf, type AutoMsg } from "./judge/autostep";
 import { ConfirmBook } from "./confirm";
@@ -60,6 +60,14 @@ export const RESTORED = "restored";
 /** 붙잡은 지 이만큼 지난 말은 자동으로 보내지 않는다 — 사람 클릭 1회로만(master 결정 11-17 23:2x · 10분 · VERIFY 지적 5). */
 export const HELD_MAX_AGE_MS = 600_000;
 export const STALE = "stale";
+/** (K-1) 10분 넘어 사람 클릭을 기다리는 말의 안내 — 첫 마디 = 「아직 안 보냈어요」(11-26 윈 제보 「보냈다고 여김」). */
+export const STALE_NOTE = "아직 안 보냈어요 · 오래 기다린 말이라 보낼지 여쭤요 — 「이 말 보내기」를 누르면 지금 보내요.";
+/** (K-2) 10분 넘게 기다렸다가 자동으로 나가는 말 앞에 붙이는 표지 — 마스터와 사람 모두 「옛 말」임을 안다. */
+export function agedPrefix(ageMs: number): string {
+  return `(${Math.max(1, Math.floor(ageMs / 60_000))}분 전에 쓰신 말) `;
+}
+/** (K-2) 이 화면이 실제로 쓴(written) 원자 제출의 사람 입력 표지 — 좌석별 · 상한(오래된 것부터 버림). */
+const OWN_STAMPS_MAX = 400;
 /** 앞 말(쓰는 중이거나 붙잡힌 말) 뒤에 줄 선 말의 표지 — 오래된 것부터 1건씩(설계 §2-5 · VERIFY 지적 1). */
 const AFTER_PREV = "after_prev";
 /** (조각 3) 같은 글의 앞 말이 아직 끝나지 않았는데(보내는 중·전달 확인 중·확인 중·오래 걸려요·차례 기다림·자동으로 나갈 붙잡음) 또 보낸 말.
@@ -76,7 +84,7 @@ function slowHeld(m: Msg): boolean {
 }
 
 /** (조각 3) 끝나지 않은 말 — 같은 글을 또 보내면 두 번 갈 수 있는 상태. */
-const UNRESOLVED: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "checking", "slow", "queued_hold"]);
+const UNRESOLVED: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "accepted", "checking", "slow", "queued_hold"]);
 
 /** (조각 3) 이 글과 같은 글의 앞 말이 아직 끝나지 않았는가(exceptId = 자기 자신 제외). 순수. */
 export function dupPending(msgs: readonly Msg[], text: string, exceptId?: string): boolean {
@@ -136,6 +144,8 @@ export interface Deps {
   store: Store;
   /** org.status 행 → 지금 답하는 중인가(appearance.nodeWorking) */
   working(row: Record<string, unknown>): boolean;
+  /** (TICKET=cysr-1121-ui K-3) 마스터가 답하는 중에도 넘기는가 — 없으면 gate.U25_BUSY_PASTE_OK(실측 = 받아 둔다 · true). 되돌리기 판·시험이 false 로 종전(쉴 때만 보냄) 동작을 고른다. */
+  busyPasteOk?: boolean;
   /** (TICKET=cysr-chat-held-win) 대화 화면 문턱·마스터 카드 전용 「답하는 중」(judge/gate chatWorking — 자기 신고 없으면 출력 10초 정적 = 쉼). 없으면 working. */
   chatWorking?(row: Record<string, unknown>): boolean;
   /** (조각 4) daemon-event 구독 — 대화 화면이 켜져 있을 때만(attach~detach). 없으면 사건 없이(멈춤 = org.status·5분 규칙만).
@@ -319,6 +329,8 @@ export class ChatCore {
   private unlistenApp: Array<() => void> = [];
   /** (조각 5 · S1-5) 이 화면이 마스터 좌석에 낸 마지막 원자 제출의 사람 입력 표지(데몬 응답 human_input_stamp). */
   private ownHuman: { seat: number; stamp: string } | null = null;
+  /** (TICKET=cysr-1121-ui K-2) 이 화면이 쓴 제출의 표지 모음(좌석 → 표지) — noOtherHumanInputSince 의 「내 것」 */
+  private ownStamps = new Map<number, Set<string>>();
 
   /** (cysr-1116-s6 · 조각 6) 왼쪽 메뉴바 장부 — 맡긴 일·팀·부서(대화 화면이 켜져 있을 때만 조회). */
   readonly rail: RailBook;
@@ -753,7 +765,7 @@ export class ChatCore {
 
   private gateOf(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number }): GateVerdict {
     const own = f.master && this.ownHuman && this.ownHuman.seat === f.master.surface_id ? this.ownHuman.stamp : null;
-    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanStamp: own });
+    return sendGate({ master: f.master, approvalSeats: f.approvals, ownHumanStamp: own, busyPasteOk: this.d.busyPasteOk });
   }
 
   private applyFresh(f: { master: MasterRow | null | undefined; approvals: number[] | null; obsAt: number; feed?: unknown; org?: unknown }): void {
@@ -822,8 +834,8 @@ export class ChatCore {
     // 앞 말을 쓰는 중이거나 **앞서 붙잡힌(자동으로 나갈) 말이 있으면** 이 말은 그 뒤에 줄 선다 — 사람 지시의 앞뒤가 뒤집히지 않게(VERIFY 지적 1).
     const behind = this.writing || this.s.msgs.some(autoHeld);
     const msg: Msg = behind
-      ? { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: AFTER_PREV, note: "앞 말을 보낸 뒤 보낼게요.", thread: [], replies: [] }
-      : { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [] };
+      ? { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "held", code: AFTER_PREV, note: "앞 말이 전해진 뒤 이어서 보낼게요 — 그대로 두시면 돼요.", thread: [], replies: [], ...this.holdBase() }
+      : { id: `m${this.d.now()}-${++this.seq}`, text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [], ...this.holdBase() };
     this.s = { ...this.s, draft: "", notice: null };
     this.putMsgs([...this.s.msgs, msg]);
     if (!behind) await this.deliver(msg.id);
@@ -840,15 +852,33 @@ export class ChatCore {
     await this.deliver(first.id);
   }
 
-  /** 붙잡은 지 10분 넘은 자동 말 → 사람 클릭 대기로(자동 제출 0). */
+  /** (K-2) 10분 넘은 말이라도 자동으로 보내도 되는가 — 받아들일 때의 좌석과 같고, 그 뒤 그 좌석에 다른 길 사람 입력이 없었다(마지막 관측 기준).
+   *  master = 판정에 쓸 마스터 행(쓰기 직전 = 재조회 값 · 그 밖 = 마지막 3초 조회 값). 모르면 false(= 사람 클릭 · 종전). */
+  private agedAutoOk(m: Msg, master: MasterRow | null | undefined): boolean {
+    if (!master || m.heldSeat !== master.surface_id) return false;
+    return noOtherHumanInputSince(m.heldStamp, master.human_input_stamp, this.ownStamps.get(master.surface_id) ?? new Set());
+  }
+
+  /** 붙잡은 지 10분 넘은 자동 말 → 사람 클릭 대기로(자동 제출 0) — ★(K-2 · master 10:2x) 단 받아들인 뒤 같은 좌석에 다른 길 사람 입력이 없었으면 자동 그대로(쓰기 직전에 다시 잰다). */
   private markStale(): void {
     const now = this.d.now();
-    if (!this.s.msgs.some((m) => autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS)) return;
-    this.putMsgs(
-      this.s.msgs.map((m) =>
-        autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS ? { ...m, code: STALE, notBefore: undefined, note: "오래 기다린 말이에요 · 보낼까요? 「이 말 보내기」를 누르면 지금 보냅니다." } : m,
-      ),
-    );
+    const stale = (m: Msg) => autoHeld(m) && now - m.createdAt > HELD_MAX_AGE_MS && !this.agedAutoOk(m, this.s.master);
+    if (!this.s.msgs.some(stale)) return;
+    this.putMsgs(this.s.msgs.map((m) => (stale(m) ? { ...m, code: STALE, notBefore: undefined, note: STALE_NOTE } : m)));
+  }
+
+  /** (K-2) 사람이 붙잡은 말을 거둔다(「보내지 않기」) — 붙잡은 말(자동·클릭 대기 모두)만 · 쓰기 0 · 저장소에서도 지움. 같은 id 가 둘 이상이면 고르지 않는다. */
+  discardHeld(id: string): void {
+    const hits = this.s.msgs.filter((x) => x.id === id);
+    if (hits.length !== 1 || hits[0].step !== "held") return;
+    this.putMsgs(this.s.msgs.filter((x) => x.id !== id));
+  }
+
+  /** (K-2) 말을 받아들일 때의 마스터 좌석·사람 입력 표지(마지막 3초 조회 값) — 모르면 빈 칸(= 10분 뒤 사람 클릭). */
+  private holdBase(): { heldSeat?: number; heldStamp?: string } {
+    const m = this.s.master;
+    if (!m || m.human_input_stamp === undefined) return {};
+    return { heldSeat: m.surface_id, heldStamp: m.human_input_stamp ?? "" };
   }
 
   /** 사람 클릭이 필요한 붙잡은 말(다시 켠 뒤 복원 · 10분 넘음) — 「이 말 보내기」를 눌렀을 때만(다듬기부터 다시 · 새 번호 · 지금 시각). 막히면 그 말은 그대로 둔다. */
@@ -884,7 +914,7 @@ export class ChatCore {
       this.set({ notice: "같은 말이 아직 확인 중이에요 — 그 말이 끝나면 다시 보낼 수 있어요." });
       return;
     }
-    const msg: Msg = { id: `m${this.d.now()}-${++this.seq}`, text: m.text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [], retried: true };
+    const msg: Msg = { id: `m${this.d.now()}-${++this.seq}`, text: m.text, createdAt: this.d.now(), sentAt: null, step: "sending", thread: [], replies: [], retried: true, ...this.holdBase() };
     this.putMsgs([...this.s.msgs.map((x) => (x.id === id ? { ...x, retried: true } : x)), msg]);
     await this.deliver(msg.id);
   }
@@ -936,15 +966,22 @@ export class ChatCore {
       const m = fresh.master as MasterRow;
       const msg = this.s.msgs.find((x) => x.id === id);
       if (!msg) return;
-      if (this.d.now() - msg.createdAt > HELD_MAX_AGE_MS) {
-        // 10분 넘게 기다린 말은 여기서도 쓰지 않는다(사람 클릭으로 새 말이 되어야 함).
-        this.patchMsg(id, { step: "held", code: STALE, notBefore: undefined, note: "오래 기다린 말이에요 · 보낼까요? 「이 말 보내기」를 누르면 지금 보냅니다." });
-        return;
+      const age = this.d.now() - msg.createdAt;
+      let outText = msg.text;
+      if (age > HELD_MAX_AGE_MS) {
+        // 10분 넘게 기다린 말은 여기서도 쓰지 않는다(사람 클릭으로 새 말이 되어야 함) —
+        //   ★(K-2 · master 10:2x) 단 받아들인 뒤 같은 좌석에 다른 길 사람 입력이 없었으면(재조회 값으로 다시 잼) 「(N분 전에 쓰신 말)」 표지를 붙여 보낸다.
+        const pre = composeOutbound(agedPrefix(age) + msg.text);
+        if (!this.agedAutoOk(msg, m) || !pre.ok) {
+          this.patchMsg(id, { step: "held", code: STALE, notBefore: undefined, note: STALE_NOTE });
+          return;
+        }
+        outText = pre.text;
       }
       const sentAt = this.d.now();
       // ★쓰기 전에 「보내는 중」을 먼저 영속한다 — 저장소에서 이 말이 붙잡음 목록에서 빠진 것이 확인돼야 쓴다(codex 1R blocking:
       //   지우기 실패 + 불명 결과면 다시 켤 때 같은 말이 또 나가던 길). 저장 실패 = 쓰기 0 · 붙잡음 그대로.
-      if (!this.patchMsg(id, { step: "sending", sentAt, seat: m.surface_id, code: undefined, note: undefined, notBefore: undefined })) {
+      if (!this.patchMsg(id, { step: "sending", sentAt, seat: m.surface_id, code: undefined, note: undefined, notBefore: undefined, text: outText })) {
         this.patchMsg(id, { step: "held", sentAt: null, code: "store_failed", note: "앱 저장소에 쓸 수 없어 보내지 않았어요(같은 말이 두 번 가는 것을 막으려고) — 잠시 뒤 다시 해 볼게요.", notBefore: this.d.now() + HELD_REFUSED_BACKOFF_MS });
         return;
       }
@@ -961,7 +998,7 @@ export class ChatCore {
         this.scheduleReads();
       }, SENDING_SILENT_MS);
       try {
-        res = await this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: msg.text, kind: "human" });
+        res = await this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: outText, kind: "human" });
       } catch (e) {
         res = { outcome: "uncertain", code: "invoke_error", message: String(e) }; // Tauri 다리 자체 실패 = 쓰였는지 모름
       } finally {
@@ -974,7 +1011,16 @@ export class ChatCore {
       if (rid) this.patchMsg(id, { requestId: rid });
       // (조각 5 · S1-5) 데몬이 찍은 사람 입력 차례 — 다음 말의 30초 쉼을 「내 보내기」면 걸지 않는 짝짓기 열쇠
       const hst = r.result?.human_input_stamp;
-      if (typeof hst === "string" && hst !== "") this.ownHuman = { seat: m.surface_id, stamp: hst };
+      if (typeof hst === "string" && hst !== "") {
+        this.ownHuman = { seat: m.surface_id, stamp: hst };
+        // (K-2) 쓴 제출의 표지만 「내 것」으로 모은다 — 쓰기 직전 거부(바이트 0)는 데몬이 번호를 되돌리므로(handlers.rs:430) 넣지 않는다.
+        if (r.outcome !== "held" && r.outcome !== "failed" && r.outcome !== "queued_hold") {
+          const set = this.ownStamps.get(m.surface_id) ?? new Set<string>();
+          set.add(hst);
+          if (set.size > OWN_STAMPS_MAX) set.delete(set.values().next().value as string);
+          this.ownStamps.set(m.surface_id, set);
+        }
+      }
       const code = typeof r.code === "string" ? r.code : undefined;
       if (step !== "held" && step !== "failed" && step !== "queued_hold") this.lastHumanSentAt = sentAt; // 바이트가 나갔을 수 있음(R3)
       const cur = this.s.msgs.find((x) => x.id === id);
@@ -1075,7 +1121,7 @@ export class ChatCore {
       // ★통합(cysr-1116-integ-1120): 작업 화면 살핌 중(watchOnly)은 s79 V4(조회 3종만) — rail 의 list_surfaces·list_depts 를 부르지 않는다.
       if (this.attached && !this.watchOnly) void this.rail.refresh(fresh.org, fresh.approvals); // (조각 6) 왼쪽 메뉴바 — 이 조회 값 + 좌석 목록(쓰기 직전 재조회와 별개)
       this.lastWorking = fresh.master ? fresh.master.working : null;
-      const awaiting = this.s.msgs.some((m) => ["injected", "checking", "slow", "delivered", "replying"].includes(m.step));
+      const awaiting = this.s.msgs.some((m) => ["injected", "accepted", "checking", "slow", "delivered", "replying"].includes(m.step));
       // (조각 3 · 하네스 seed 370) 짧은 답(두 조회 사이 3초 안에 일 시작·끝)은 「활동 바뀜」으로 안 잡힌다 → 마스터 출력이 지난 조회 뒤에 있었으면(idle_secs) 그 틱도 읽는다.
       //   새 조회 0(이 조회 값만 씀) · 로컬 세션 파일 오프셋 읽기 · 기다리는 말이 있을 때만.
       const pollAt = this.d.now();

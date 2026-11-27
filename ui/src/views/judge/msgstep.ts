@@ -41,12 +41,16 @@ export const REFUSED_AT_WRITE_WINDOW_MS = 5_000;
 /** 사건 시각(데몬 timestamp)이 보낸 시각보다 이만큼 앞서도 같은 쓰기로 본다(같은 기계 · 시각 찍는 자리 차이). */
 export const REFUSED_AT_WRITE_SKEW_MS = 1_000;
 
-export type Step = "held" | "sending" | "injected" | "delivered" | "replying" | "replied" | "failed" | "checking" | "slow" | "queued_hold";
+export type Step = "held" | "sending" | "injected" | "accepted" | "delivered" | "replying" | "replied" | "failed" | "checking" | "slow" | "queued_hold";
 
 export const STEP_LABEL: Record<Step, string> = {
-  held: "붙잡아 둠",
+  // (TICKET=cysr-1121-ui K-1 · 11-27 사용자 「붙잡아둠 … 제가 인지 하지 못하는 건가요?」) 「붙잡아 둠」은 문제가 난 것처럼 읽혔다 —
+  //   자동으로 나갈 말 = 「보낼 차례 기다림」(사람 손 필요 없음) · 눌러야 나갈 말은 화면이 HELD_CLICK_LABEL 로 따로 적는다(core.needsClick).
+  held: "보낼 차례 기다림",
   sending: "보내는 중",
   injected: "전달 확인 중",
+  // (K-3 · U25 실측) 마스터가 바쁠 때 넘긴 말을 Claude Code 가 받아 뒀다(세션 기록 queue-operation enqueue) — 하던 일 경계에서 읽는다.
+  accepted: "마스터가 받아 둠",
   delivered: "전달됨",
   replying: "답하는 중",
   replied: "답함",
@@ -86,6 +90,10 @@ export interface Msg {
   requestId?: string;
   /** (조각 3) 원자 제출을 보낸 마스터 좌석 번호 — 좌석에 걸린 데몬 사건(쓰기 직전 거부)을 이 말에 잇는 데 씀 */
   seat?: number;
+  /** (TICKET=cysr-1121-ui K-2) 이 말을 받아들일 때 본 마스터 좌석·사람 입력 표지("" = 그때 입력 없음) — 10분이 지나도 이 뒤로 다른 길 사람 입력이 없으면 자동으로 보낸다.
+   *  없음(그때 마스터 상태를 몰랐음 · 옛 저장본) = 종전대로 10분 뒤 사람 클릭. */
+  heldSeat?: number;
+  heldStamp?: string;
   /** (TICKET=cysr-chat-held-win · ⓑ) 상태 확인 늦음으로 연달아 붙잡힌 횟수 — 상태가 한 번 제때 확인되면 지움 */
   slowHolds?: number;
   /** (TICKET=cysr-1118-ui ①) 이 말에 이어진 마스터 과정(도구·중간 글·생각 표지) — 진행 줄·「과정 보기」 재료 · 메모리만(화면 저장소 0 = NFR-S3) */
@@ -100,11 +108,17 @@ export interface Msg {
   tail?: "assistant" | "result";
 }
 
+/** (K-1) 사람이 눌러야만 나가는 붙잡은 말의 단계 이름 — 「아직 안 보냈다」가 첫 마디(11-26 윈 제보 「보냈다고 여김」). */
+export const HELD_CLICK_LABEL = "아직 안 보냄";
+/** (K-3) 받아 둔 말의 안내 — 작업 화면에서 바쁠 때 친 말과 같은 길(마스터가 하던 일의 다음 경계에서 읽음). */
+export const ACCEPTED_NOTE = "마스터가 받아 뒀어요 — 하던 일을 잠깐 멈출 때 읽어요(작업 화면에서 바쁠 때 친 말과 같아요).";
+
 export interface Rec {
   uuid: string | null;
   parent: string | null;
-  /** (조각 3 고침 · 검증 지적 B) "link" = user·assistant 밖 종류(attachment·system 등) — 글 0자 · uuid·부모만(사슬을 잇는 고리 · NFR-S3) */
-  role: "user" | "assistant" | "link";
+  /** (조각 3 고침 · 검증 지적 B) "link" = user·assistant 밖 종류(attachment·system 등) — 글 0자 · uuid·부모만(사슬을 잇는 고리 · NFR-S3)
+   *  (K-3) "queued" = 마스터가 바쁠 때 받아 둔 말(queue-operation enqueue · uuid 없음 · 원문) — 사슬 밖 · 「받아 둠」 증거로만 */
+  role: "user" | "assistant" | "link" | "queued";
   text: string | null;
   parts?: string[] | null;
   ts: string | null;
@@ -134,7 +148,7 @@ export function stepFromOutcome(outcome: unknown): Step {
 }
 
 // (조각 3 고침 · 검증 지적 C) 「보내는 중」(보낸 시각 있음 · 응답이 아직 안 옴)도 짝 후보 — 응답이 걸린 사이 읽힌 자기 레코드를 놓치지 않게.
-const AWAITING: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "checking", "slow"]);
+const AWAITING: ReadonlySet<Step> = new Set<Step>(["sending", "injected", "accepted", "checking", "slow"]); // (K-3) 받아 둔 말도 흡수·턴 끝 user 레코드를 기다린다
 
 export function normRecordText(t: string): string {
   return t.replace(/\r\n?/g, "\n").replace(/^\s+/, "").replace(/\s+$/, "");
@@ -184,6 +198,19 @@ export function applyRecords(msgs: readonly Msg[], recs: readonly Rec[], consume
   }
   for (const r of recs) {
     if (r.sidechain) continue;
+    if (r.role === "queued") {
+      // (K-3) 받아 둠 증거 — 아직 짝 없는(보낸 뒤) 같은 글 말 가장 오래된 하나를 「마스터가 받아 둠」으로. 사슬·소비·턴 닫기에 쓰지 않는다(uuid 없음).
+      const q = out
+        .filter((m) => (m.step === "sending" || m.step === "injected" || m.step === "checking" || m.step === "slow") && !m.userUuid && m.sentAt !== null && r.text !== null && recordAfter(r, m.sentAt))
+        .sort((a, b) => (a.sentAt as number) - (b.sentAt as number))
+        .find((m) => recordTextIs(r.text as string, m.text));
+      if (q) {
+        q.step = "accepted";
+        q.code = undefined;
+        q.note = ACCEPTED_NOTE;
+      }
+      continue;
+    }
     if (r.uuid !== null && seen.has(r.uuid)) continue;
     // 짝 없는 사람 글은 소비하지 않는다(아래에서 짝을 찾았을 때만 seen·used 에 넣음 · 검증 지적 C)
     const pendingHuman = r.role === "user" && r.text !== null;
@@ -300,6 +327,8 @@ export function settleSteps(msgs: readonly Msg[], now: number, masterWorking: bo
     if (m.step === "delivered" && masterWorking === true && m === newest) return { ...m, step: "replying" as Step };
     if (m.step === "sending" && m.sentAt !== null && now - m.sentAt >= SENDING_SILENT_MS) return { ...m, step: "checking" as Step, code: "no_answer_yet", note: "보낸 요청의 답을 기다리는 중이에요 — 다시 보내지 않아요." };
     if ((m.step === "injected" || m.step === "checking") && m.sentAt !== null && now - m.sentAt >= SLOW_MS) return { ...m, step: "slow" as Step };
+    // (K-3) 받아 둔 말 = 마스터가 일하는 동안은 오래 걸려도 정상(하던 일 경계에서 읽음) · 마스터가 쉬는데도 120초 넘게 안 읽혔을 때만 「오래 걸려요」
+    if (m.step === "accepted" && m.sentAt !== null && masterWorking === false && now - m.sentAt >= SLOW_MS) return { ...m, step: "slow" as Step };
     return m;
   });
 }
@@ -312,6 +341,7 @@ const EVIDENCED: ReadonlySet<Step> = new Set<Step>(["delivered", "replying", "re
 export function mergeOutcome(cur: Msg, outcomeStep: Step): Partial<Msg> {
   const definite = outcomeStep === "held" || outcomeStep === "failed" || outcomeStep === "queued_hold";
   if (EVIDENCED.has(cur.step) && !definite) return {};
+  if (cur.step === "accepted" && !definite) return {}; // (K-3) 「받아 둠」 근거가 늦게 온 written·불명 응답보다 정확하다
   if (cur.step === "checking" && cur.code === "refused_at_write" && !definite) return {}; // 쓰기 직전 거부 사건이 응답보다 먼저 왔음 — 그 근거가 「썼음」보다 정확하다
   if (EVIDENCED.has(cur.step) && definite) return { step: outcomeStep, userUuid: null, thread: [], replies: [], steps: undefined, stepsDropped: undefined, tail: undefined, turnClosed: undefined }; // (codex 1R major) 결속을 풀면 턴 끝 표지도 푼다
   return { step: outcomeStep };

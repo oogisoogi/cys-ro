@@ -353,6 +353,46 @@ pub(crate) fn parse_transcript_chunk(buf: &[u8]) -> (Vec<Value>, usize, usize) {
             bad += 1;
             continue;
         };
+        // (TICKET=cysr-1121-ui K-3 · U25 실측 2026-11-27 · 증거 workers/cysr-1121-ui/u25-evidence) 마스터가 바쁠 때 넘긴 말은 Claude Code 가
+        //   받아 둔다 — ① 받는 순간 `queue-operation enqueue`(uuid 없음 · content = 원문) ② 도구 경계에서 흡수되면 `attachment.queued_command`
+        //   (uuid·부모 있음 · prompt = 원문 · type:user 레코드는 생기지 않음) ③ 턴 끝까지 남으면 dequeue 뒤 보통 user 레코드.
+        //   ①은 「마스터가 받아 둠」 증거(role "queued" · 사슬 밖) · ②는 사람 말 레코드(role "user")로 넘긴다 — 둘 다 사람이 쓴 글 그대로라
+        //   user 레코드와 같은 취급(NFR-S3 = 훅 글 등 「그 밖 종류」의 본문 0자 원칙은 그대로 · 이 두 꼴만 예외).
+        if v["type"].as_str() == Some("queue-operation") {
+            if v["operation"].as_str() == Some("enqueue") {
+                if let Some(t) = v["content"].as_str() {
+                    out.push(json!({
+                        "uuid": Value::Null,
+                        "parent": Value::Null,
+                        "role": "queued",
+                        "text": t,
+                        "parts": Value::Null,
+                        "ts": v["timestamp"].as_str(),
+                        "sidechain": false,
+                        "at": at,
+                    }));
+                }
+            }
+            continue;
+        }
+        if v["type"].as_str() == Some("attachment") && v["attachment"]["type"].as_str() == Some("queued_command") {
+            let mode_ok = matches!(v["attachment"]["commandMode"].as_str(), None | Some("prompt"));
+            if let (true, Some(uuid), Some(t)) = (mode_ok, v["uuid"].as_str(), v["attachment"]["prompt"].as_str()) {
+                out.push(json!({
+                    "uuid": uuid,
+                    "parent": v["parentUuid"].as_str(),
+                    "role": "user",
+                    "text": t,
+                    "parts": Value::Null,
+                    "ts": v["attachment"]["timestamp"].as_str().or(v["timestamp"].as_str()),
+                    "sidechain": v["isSidechain"].as_bool().unwrap_or(false),
+                    "at": at,
+                    "tools": Value::Null,
+                    "thinking": false,
+                }));
+                continue;
+            }
+        }
         let role = match v["type"].as_str() {
             Some("user") => "user",
             Some("assistant") => "assistant",
@@ -1670,6 +1710,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(first.is_err(), "링크 그대로의 슬러그에는 파일이 없다(전제)");
         assert!(second.is_ok(), "풀린 경로 슬러그의 세션 파일을 못 열었다: {:?}", second.err());
+    }
+
+    /// (TICKET=cysr-1121-ui K-3) 바쁠 때 넘긴 말의 실측 꼴(Claude Code 2.1.332 · u25-evidence) — enqueue = 「queued」(uuid 없음 · 원문) ·
+    /// 흡수 `attachment.queued_command` = 사람 말 user(uuid·부모·원문) · dequeue/remove = 넘기지 않음 · 다른 attachment = 종전대로 글 없는 고리.
+    #[test]
+    fn k3_queued_command_and_enqueue_become_records() {
+        let enq = r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-27T01:29:00.750Z","sessionId":"s","content":"U25-B 첫 줄\n둘째 줄"}"#;
+        let rem = r#"{"type":"queue-operation","operation":"remove","timestamp":"2026-11-27T01:29:34.945Z","sessionId":"s","content":"U25-B 첫 줄\n둘째 줄","reason":"absorbed_mid_turn"}"#;
+        let deq = r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-27T01:30:07.517Z","sessionId":"s"}"#;
+        let abs = r#"{"parentUuid":"p1","isSidechain":false,"attachment":{"type":"queued_command","prompt":"U25-B 첫 줄\n둘째 줄","commandMode":"prompt","origin":{"kind":"human"},"timestamp":"2026-11-27T01:29:00.748Z","humanTurn":true},"type":"attachment","uuid":"q1","timestamp":"2026-11-27T01:29:00.748Z"}"#;
+        let bash = r#"{"parentUuid":"p1","attachment":{"type":"queued_command","prompt":"ls","commandMode":"bash"},"type":"attachment","uuid":"q2","timestamp":"t"}"#;
+        let hook = r#"{"type":"attachment","uuid":"x1","parentUuid":"q1","timestamp":"t3","attachment":{"type":"hook_additional_context","content":["비밀 글"]}}"#;
+        let buf = format!("{enq}\n{rem}\n{deq}\n{abs}\n{bash}\n{hook}\n");
+        let (recs, used, bad) = parse_transcript_chunk(buf.as_bytes());
+        assert_eq!((used, bad), (buf.len(), 0));
+        assert_eq!(recs.len(), 4, "enqueue 1 + 흡수 1 + bash 모드 고리 1 + 훅 고리 1 · remove·dequeue 0");
+        assert_eq!(recs[0]["role"], "queued");
+        assert_eq!(recs[0]["text"], "U25-B 첫 줄\n둘째 줄");
+        assert!(recs[0]["uuid"].is_null());
+        assert_eq!(recs[0]["ts"], "2026-11-27T01:29:00.750Z");
+        assert_eq!(recs[1]["role"], "user");
+        assert_eq!(recs[1]["uuid"], "q1");
+        assert_eq!(recs[1]["parent"], "p1");
+        assert_eq!(recs[1]["text"], "U25-B 첫 줄\n둘째 줄");
+        assert_eq!(recs[1]["ts"], "2026-11-27T01:29:00.748Z");
+        assert_eq!(recs[2]["role"], "link", "bash 모드 대기 명령은 사람 말 레코드로 올리지 않는다");
+        assert!(recs[2]["text"].is_null());
+        assert_eq!(recs[3]["role"], "link");
+        assert!(recs[3]["text"].is_null(), "다른 attachment 본문은 여전히 0자(NFR-S3)");
     }
 
     #[test]

@@ -3247,6 +3247,30 @@ def h_conc_3():
     mi = pk.find("pub fn merge_desired_hooks(")
     need(mi > 0, "Rust 병합기를 못 찾았다")
     mbody = _rust_fn_body_following_core(pk, mi, "merge_desired_hooks_core", need)
+    # ★F1 계측 타당성(codex 통합 1R major 재발 방지): 위임 추적기 자체의 음성·양성 대조 — 위반 꼴은 「따라가지 않음(plain)」 또는 적색,
+    #   정상 위임만 「따라감(follow)」. 하나라도 어긋나면 이 핀은 공허하다(옛 핀 적색 → 새 핀 초록 약화의 재발).
+    _cc = "merge_desired_hooks_core"
+    _good_core = "fn merge_desired_hooks_core(a: u8) -> u8 {\n    write_atomic(settings_path, a)\n}\n"
+
+    def _ctl(wrapper, extra=""):
+        src = "pub fn w() {\n" + wrapper + "\n}\n" + _good_core + extra
+        try:
+            got = _rust_fn_body_following_core(src, 0, _cc, need)
+        except Fail:
+            return "red"
+        return "follow" if ("fn " + _cc) in got else "plain"
+    for _name, _wrapper, _extra, _want in [
+        ("주석 속 호출", "    // merge_desired_hooks_core(x)\n    Ok(())", "", "plain"),
+        ("문자열 속 호출", '    let s = "merge_desired_hooks_core(";\n    Ok(())', "", "plain"),
+        ("raw 문자열 속 호출", '    let s = r#"merge_desired_hooks_core("#;\n    Ok(())', "", "plain"),
+        ("위임 앞 감싸개 쓰기", "    std::fs::write(p, b)?;\n    merge_desired_hooks_core(x)", "", "red"),
+        ("경로 붙은 core", "    other::merge_desired_hooks_core(x)", "", "red"),
+        ("core 정의 둘(cfg)", "    merge_desired_hooks_core(x)", "#[cfg(any())]\n" + _good_core, "red"),
+        ("정상 가드+위임", "    if !ok() {\n        return Ok(vec![]);\n    }\n    merge_desired_hooks_core(x)", "", "follow"),
+    ]:
+        _got = _ctl(_wrapper, _extra)
+        need(_got == _want, "계측 타당성 실패: 위임 추적기 대조 %s = %s (기대 %s)" % (_name, _got, _want))
+    notes.append("위임 추적기 대조 7꼴 통과(주석·문자열·raw·감싸개 쓰기·경로 core·두 정의 = 비추적/적색 · 정상 = 추적)")
     need("write_atomic(settings_path" in mbody,
          "Rust 병합기가 원자 쓰기를 쓰지 않는다(반쪽 등록부 = 부트 발화 소실)")
     need("std::fs::write(settings" not in _code_lines(pk), "Rust 비원자 settings write 잔존")

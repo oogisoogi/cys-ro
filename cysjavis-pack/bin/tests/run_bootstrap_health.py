@@ -3065,17 +3065,31 @@ sys.exit(0)
 
 
 def _rust_strip_comments_strings(src):
-    """Rust 소스에서 주석(`//`·`/* */` 중첩)과 문자열·문자 리터럴(`"…"`·`r#"…"#`·`b"…"`·`'x'`)의 **내용**을 지운다(따옴표 자리는 남긴다 ·
-    수명 `'a` 는 코드로 남긴다). 소스 핀이 「부른다」 를 판정할 때 주석·문자열 속 이름을 호출로 세지 않게 하는 결정론 전처리."""
-    out, i, n = [], 0, len(src)
+    """Rust 소스에서 주석(`//`·`/* */` 중첩)과 문자열·문자 리터럴(`"…"`·`r#"…"#`·`b"…"`·`c"…"`·`cr#"…"#`·`'x'`·`b'x'`)의
+    **내용을 같은 길이의 공백으로** 바꾼다(줄바꿈·따옴표 자리는 남긴다 · 수명 `'a` 는 코드로 남긴다).
+    ★길이 보존(F2 · codex 통합 2R major): 지운 사본의 위치가 원문 위치와 같아야, 사본에서 찾은 정의 자리를 그대로 쓸 수 있다
+      (사본에서 세고 원문에서 다시 찾으면 주석·문자열 속 가짜 정의가 끼어든다)."""
+    out = list(src)
+    n = len(src)
+
+    def blank(a, b):
+        for k in range(a, b):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def word_before(i):
+        return i > 0 and (src[i - 1].isalnum() or src[i - 1] == "_")
+
+    i = 0
     while i < n:
-        c = src[i]
         if src.startswith("//", i):
             j = src.find("\n", i)
-            i = n if j < 0 else j
+            j = n if j < 0 else j
+            blank(i, j)
+            i = j
             continue
         if src.startswith("/*", i):
-            depth, i = 1, i + 2
+            a, depth, i = i, 1, i + 2
             while i < n and depth:
                 if src.startswith("/*", i):
                     depth, i = depth + 1, i + 2
@@ -3083,61 +3097,93 @@ def _rust_strip_comments_strings(src):
                     depth, i = depth - 1, i + 2
                 else:
                     i += 1
-            out.append(" ")
+            blank(a, i)
             continue
-        m = re.match(r'b?r(#*)"', src[i:i + 300])
-        if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+        m = re.match(r'(?:b|c)?r(#*)"', src[i:i + 300])
+        if m and not word_before(i):
             close = '"' + m.group(1)
             j = src.find(close, i + m.end())
-            i = n if j < 0 else j + len(close)
-            out.append('""')
+            j = n if j < 0 else j + len(close)
+            blank(i + m.end(), j - len(close))
+            i = j
             continue
-        if c == '"' or (c == "b" and src.startswith('b"', i) and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_"))):
-            i += 2 if c == "b" else 1
-            while i < n and src[i] != '"':
-                i += 2 if src[i] == "\\" else 1
-            i += 1
-            out.append('""')
+        m = re.match(r'(?:b|c)?"', src[i:i + 2])
+        if m and (m.group(0) == '"' or not word_before(i)):
+            a = i + m.end()
+            j = a
+            while j < n and src[j] != '"':
+                j += 2 if src[j] == "\\" else 1
+            blank(a, min(j, n))
+            i = j + 1
             continue
-        if c == "'":
-            m = re.match(r"'(?:\\.|\\u\{[0-9a-fA-F]+\}|\\x[0-9a-fA-F]{2}|[^\\'])'", src[i:i + 16])
-            if m:
-                i += m.end()
-                out.append("''")
-                continue
-        out.append(c)
+        m = re.match(r"b?'(?:\\.|\\u\{[0-9a-fA-F]+\}|\\x[0-9a-fA-F]{2}|[^\\'])'", src[i:i + 16])
+        if m and not (m.group(0).startswith("b") and word_before(i)):
+            blank(i + 1 + (1 if m.group(0).startswith("b") else 0), i + m.end() - 1)
+            i += m.end()
+            continue
         i += 1
     return "".join(out)
 
 
-# ★1.1.21 F1(codex 통합 1R major): 위임 감싸개에 있으면 안 되는 쓰기 꼴 — 감싸개는 「가드 + core 호출」 만 허용한다.
-_RUST_WRAPPER_WRITE_TOKENS = re.compile(
-    r"\b(?:write\w*|File|OpenOptions|rename|set_len|copy|remove_file|create\w*|persist|sync_all|tmp_path_for)\b")
+# ★F2(codex 통합 2R major 3): 위임 감싸개는 **허용 꼴 하나**만 인정한다(이름 블랙리스트 폐기 — 헬퍼·별칭·매크로·간접 호출로 숨긴
+#   쓰기를 이름으로는 못 막는다). 허용 꼴 = ⑴(선택) `if !shell_hooks_supported() { [eprintln!(…);] return Ok(vec![]) | vec![]; }`
+#   ⑵ 꼬리식 하나 = `<core>(<인자>)` · 인자 식별자 ⊆ 아래 목록 · 인자 안 `!`·`;`·`{`·`::`·`.` 금지. 그 밖 문장(let·use·헬퍼 호출·매크로) = 적색.
+#   목록은 지금 두 감싸개(merge_desired_hooks · verify_desired_hooks_registered)의 실물 그대로다 — 감싸개를 바꾸면 이 목록도 같은 커밋에서 바꾼다.
+_RUST_WRAPPER_ARG_IDENTS = frozenset({"settings_path", "hooks", "pack_dir", "script", "root", "event",
+                                      "hook_command_for", "windows_launcher_variant_env"})
+_RUST_WRAPPER_GUARD_LOG_IDENTS = frozenset({"shell_hooks_degraded_note", "hooks", "len"})
+_RUST_WRAPPER_GUARD = re.compile(
+    r"\s*if\s*!\s*shell_hooks_supported\s*\(\s*\)\s*\{"
+    r"\s*(?:eprintln!\s*\((?P<log>[^;{}]*)\)\s*;)?"
+    r"\s*return\s+(?:Ok\s*\(\s*vec!\s*\[\s*\]\s*\)|vec!\s*\[\s*\])\s*;\s*\}")
+
+
+def _rust_idents(code):
+    return set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", code))
 
 
 def _rust_fn_body_following_core(src, start, core, need):
-    """★1.1.21(TICKET=cysr-1121-integ · win-doctor-hook 630 이 본체를 `<이름>_core` 로 옮김): 공개 함수 본문(start 부터 첫 `\n}\n`)이
-    `<core>(` 를 부르면 그 core 함수 본문을 이어 붙여 돌려준다 — 소스 핀이 **위임을 따라가되 약해지지 않게**: 감싸개가 core 를 부른다는
-    사실과 core 본문 실재를 둘 다 요구한다(감싸개 밖으로 성질이 빠져나가면 여전히 적색). core 호출이 없으면 종전 본문 그대로.
-    ★F1 강화(codex 통합 1R major · 옛 핀 적색 → 새 핀 초록이던 위반 5꼴을 다시 적색으로):
-      ① 호출 판정 = 주석·문자열을 지운 코드에서 **경로 없는** `core(` 만(주석·문자열 속 이름 · `other::core(` 는 위임 아님)
-      ② 위임할 때 감싸개 코드에 쓰기 꼴(_RUST_WRAPPER_WRITE_TOKENS)이 있으면 적색(위임 앞·뒤 비원자 쓰기)
-      ③ core 정의(`fn core(`)가 이 파일 코드에 **정확히 하나**(cfg 로 갈린 두 정의·다른 파일 동명 core = 모호 = 적색)."""
-    body = src[start:src.find("\n}\n", start)]
-    code = _rust_strip_comments_strings(body)
-    call = re.compile(r"(?<![\w:.])" + re.escape(core) + r"\s*\(")
-    if not call.search(code):
-        need(not re.search(r"\b" + re.escape(core) + r"\s*\(", code),
-             "%s 를 경로 붙여 부른다(다른 모듈 동명 core = 이 파일 본문으로 판정 불가)" % core)
-        return body
-    hit = _RUST_WRAPPER_WRITE_TOKENS.search(code)
-    need(hit is None, "%s 로 위임하는 감싸개가 스스로 쓴다(%r) — 감싸개는 가드+위임만" % (core, hit and hit.group(0)))
+    """★1.1.21(TICKET=cysr-1121-integ · win-doctor-hook 630 이 본체를 `<이름>_core` 로 옮김): 공개 함수(start 부터 첫 `\\n}\\n`)가
+    `<core>` 로 위임하면 그 core 본문을 이어 붙여 돌려준다 — 소스 핀이 **위임을 따라가되 약해지지 않게**.
+    돌려주는 글은 **주석·문자열을 지운 사본**이다(속성 핀이 주석·문자열 속 `write_atomic(…` 따위 언급에 속지 않게 · F2 minor 의 기존 한계도 닫음).
+    ★F1·F2 강화(codex 통합 1R·2R major · 옛 핀 = 감싸개 본문만 · 그보다 약해지지 않게):
+      ① 감싸개 코드에 core 이름이 **한 번이라도** 나오면 감싸개는 허용 꼴(_RUST_WRAPPER_GUARD + 꼬리 `core(인자)`)과 정확히 맞아야 한다 —
+         아니면 적색(숨긴 헬퍼 쓰기·let 별칭·함수 포인터·매크로 안 호출·경로 붙은 core·공백/줄바꿈 낀 경로 전부 여기서 적색).
+      ② 파일 전체(지운 사본)에서 core 이름의 모든 출현 = `fn core` 정의 정확히 1개 + 앞이 `::`·`.` 아닌 직접 호출뿐(`use … as core` 재바인딩 = 적색).
+      ③ core 정의 자리는 지운 사본에서 찾는다(길이 보존 = 원문 위치 동일) — 주석·raw 문자열 속 가짜 `fn core(` 정의는 이어 붙지 않는다.
+      core 이름이 감싸개에 없으면 종전대로 감싸개 본문만(지운 사본) — 옛 핀과 같은 판정."""
     scode = _rust_strip_comments_strings(src)
-    defs = re.findall(r"\bfn\s+" + re.escape(core) + r"\s*[<(]", scode)
+    end = scode.find("\n}\n", start)
+    need(end > start, "%s 감싸개 본문 끝을 못 찾았다" % core)
+    wrapper = scode[start:end + 2]
+    name = re.compile(r"\b" + re.escape(core) + r"\b")
+    if not name.search(wrapper):
+        return wrapper
+    ob = wrapper.find("{")
+    need(ob > 0 and wrapper.endswith("\n}"), "%s 감싸개 본문 꼴을 못 읽었다" % core)
+    inner = wrapper[ob + 1:-1]
+    g = _RUST_WRAPPER_GUARD.match(inner)
+    if g:
+        need(_rust_idents(g.group("log") or "") <= _RUST_WRAPPER_GUARD_LOG_IDENTS,
+             "%s 감싸개 가드 로그가 허용 밖 식별자를 쓴다(%s)" % (core, sorted(_rust_idents(g.group("log") or "") - _RUST_WRAPPER_GUARD_LOG_IDENTS)))
+        inner = inner[g.end():]
+    tail = re.fullmatch(r"\s*" + re.escape(core) + r"\s*\((?P<args>.*)\)\s*", inner, re.S)
+    need(tail is not None, "%s 로 위임하는 감싸개가 허용 꼴(가드 + 꼬리 core(인자) 하나)이 아니다 — 숨긴 헬퍼·별칭·매크로·경로 호출 의심" % core)
+    args = tail.group("args")
+    need(not re.search(r"[!;{}]|::|\.", args), "%s 위임 인자에 허용 밖 구문(! ; { } :: .)이 있다" % core)
+    extra = _rust_idents(args) - _RUST_WRAPPER_ARG_IDENTS
+    need(not extra, "%s 위임 인자가 허용 밖 식별자를 쓴다(%s)" % (core, sorted(extra)))
+    defs = [m.start() for m in re.finditer(r"\bfn\s+" + re.escape(core) + r"\s*[<(]", scode)]
     need(len(defs) == 1, "%s 정의가 %d개다(정확히 하나여야 위임을 따라갈 수 있다)" % (core, len(defs)))
-    ci = src.find("fn " + core + "(")
-    need(ci > 0, "%s 를 부르는데 그 정의를 못 찾았다" % core)
-    return body + src[ci:src.find("\n}\n", ci)]
+    for m in name.finditer(scode):
+        pre = scode[:m.start()].rstrip()
+        is_def = re.search(r"\bfn$", pre) is not None
+        is_call = re.match(r"\s*\(", scode[m.end():]) is not None and not (pre.endswith(":") or pre.endswith("."))
+        need(is_def or is_call, "%s 가 정의·직접 호출 밖 꼴로 나온다(재바인딩·경로·값 사용 = 위임 대상 판정 불가) @%d" % (core, m.start()))
+    ci = defs[0]
+    ce = scode.find("\n}\n", ci)
+    need(ce > ci, "%s 정의 본문 끝을 못 찾았다" % core)
+    return wrapper + "\n" + scode[ci:ce + 2]
 
 
 @specimen("H-CONC-3", "W3", "settings.json 다중 writer 경합 — 무파손·무 lost-update(공용 락+mkstemp)",
@@ -3247,30 +3293,50 @@ def h_conc_3():
     mi = pk.find("pub fn merge_desired_hooks(")
     need(mi > 0, "Rust 병합기를 못 찾았다")
     mbody = _rust_fn_body_following_core(pk, mi, "merge_desired_hooks_core", need)
-    # ★F1 계측 타당성(codex 통합 1R major 재발 방지): 위임 추적기 자체의 음성·양성 대조 — 위반 꼴은 「따라가지 않음(plain)」 또는 적색,
-    #   정상 위임만 「따라감(follow)」. 하나라도 어긋나면 이 핀은 공허하다(옛 핀 적색 → 새 핀 초록 약화의 재발).
+    # ★F1·F2 계측 타당성(codex 통합 1R·2R major 재발 방지): 위임 추적기 자체의 음성·양성 대조 — 위반 꼴은 「따라가지 않음(plain)」·적색,
+    #   정상 위임만 「따라감(follow)」 · 따라갈 때 이어 붙는 core 는 **진짜 정의**(주석·raw 문자열 속 가짜 정의 아님).
+    #   하나라도 어긋나면 이 핀은 공허하다(옛 핀 = 감싸개 본문만 · 그보다 약해지는 재발).
     _cc = "merge_desired_hooks_core"
     _good_core = "fn merge_desired_hooks_core(a: u8) -> u8 {\n    write_atomic(settings_path, a)\n}\n"
+    _guard = "    if !shell_hooks_supported() {\n        return Ok(vec![]);\n    }\n"
+    _call = "    merge_desired_hooks_core(settings_path, hooks)"
+    _hidden = "fn hidden_store(p: &Path) -> u8 {\n    std::fs::write(p, b)\n}\n"
 
-    def _ctl(wrapper, extra=""):
-        src = "pub fn w() {\n" + wrapper + "\n}\n" + _good_core + extra
+    def _ctl(wrapper, extra="", core_text=None):
+        src = "pub fn w() {\n" + wrapper + "\n}\n" + (_good_core if core_text is None else core_text) + extra
         try:
             got = _rust_fn_body_following_core(src, 0, _cc, need)
         except Fail:
             return "red"
         return "follow" if ("fn " + _cc) in got else "plain"
-    for _name, _wrapper, _extra, _want in [
-        ("주석 속 호출", "    // merge_desired_hooks_core(x)\n    Ok(())", "", "plain"),
-        ("문자열 속 호출", '    let s = "merge_desired_hooks_core(";\n    Ok(())', "", "plain"),
-        ("raw 문자열 속 호출", '    let s = r#"merge_desired_hooks_core("#;\n    Ok(())', "", "plain"),
-        ("위임 앞 감싸개 쓰기", "    std::fs::write(p, b)?;\n    merge_desired_hooks_core(x)", "", "red"),
-        ("경로 붙은 core", "    other::merge_desired_hooks_core(x)", "", "red"),
-        ("core 정의 둘(cfg)", "    merge_desired_hooks_core(x)", "#[cfg(any())]\n" + _good_core, "red"),
-        ("정상 가드+위임", "    if !ok() {\n        return Ok(vec![]);\n    }\n    merge_desired_hooks_core(x)", "", "follow"),
+    _bad_core = "fn merge_desired_hooks_core(a: u8) -> u8 {\n    std::fs::write(settings_path, a)\n}\n"
+    for _name, _wrapper, _extra, _core, _want in [
+        ("주석 속 호출", "    // merge_desired_hooks_core(x)\n    Ok(())", "", None, "plain"),
+        ("문자열 속 호출", '    let s = "merge_desired_hooks_core(";\n    Ok(())', "", None, "plain"),
+        ("raw 문자열 속 호출", '    let s = r#"merge_desired_hooks_core("#;\n    Ok(())', "", None, "plain"),
+        ("cr# 문자열 속 호출", '    let s = cr#"x" merge_desired_hooks_core("#;\n    Ok(())', "", None, "plain"),
+        ("위임 앞 감싸개 쓰기", "    std::fs::write(p, b)?;\n" + _call, "", None, "red"),
+        ("위임 앞 숨긴 헬퍼 쓰기", "    hidden_store(settings_path)?;\n" + _call, _hidden, None, "red"),
+        ("위임 뒤 숨긴 헬퍼 쓰기", "    let r = " + _call.strip() + "?;\n    hidden_store(settings_path);\n    Ok(r)", _hidden, None, "red"),
+        ("매크로 안 이름", "    stringify!(merge_desired_hooks_core(settings_path));\n    hidden_store(settings_path)", _hidden, None, "red"),
+        ("let 함수 포인터", "    let f = merge_desired_hooks_core;\n    f(settings_path, hooks)", "", None, "red"),
+        ("use as 재바인딩", _call, "use self::hidden_store as merge_desired_hooks_core;\n", None, "red"),
+        ("경로 붙은 core", "    other::merge_desired_hooks_core(settings_path, hooks)", "", None, "red"),
+        ("공백 낀 경로 core", "    other:: merge_desired_hooks_core(settings_path, hooks)", "", None, "red"),
+        ("허용 밖 인자", "    merge_desired_hooks_core(settings_path, hidden_store(settings_path))", _hidden, None, "red"),
+        ("core 정의 둘(cfg)", _call, "#[cfg(any())]\n" + _good_core, None, "red"),
+        ("주석 속 가짜 정의", _call, "", "// fn merge_desired_hooks_core(a: u8) -> u8 {\n//     write_atomic(settings_path, a) DECOY_ATOMIC\n// }\n" + _bad_core, "follow"),
+        ("정상 가드+위임", _guard + _call, "", None, "follow"),
+        ("정상 로그 가드+위임", "    if !shell_hooks_supported() {\n        eprintln!(\"[pack] {}\", shell_hooks_degraded_note(hooks.len()));\n        return Ok(vec![]);\n    }\n" + _call, "", None, "follow"),
+        ("정상 위임만", _call, "", None, "follow"),
     ]:
-        _got = _ctl(_wrapper, _extra)
+        _got = _ctl(_wrapper, _extra, _core)
         need(_got == _want, "계측 타당성 실패: 위임 추적기 대조 %s = %s (기대 %s)" % (_name, _got, _want))
-    notes.append("위임 추적기 대조 7꼴 통과(주석·문자열·raw·감싸개 쓰기·경로 core·두 정의 = 비추적/적색 · 정상 = 추적)")
+    _decoy = _rust_fn_body_following_core("pub fn w() {\n" + _call + "\n}\n// fn merge_desired_hooks_core() { write_atomic(settings_path, a) }\n"
+                                          + _bad_core, 0, _cc, need)
+    need("std::fs::write(settings_path" in _decoy and "write_atomic(settings_path" not in _decoy,
+         "계측 타당성 실패: 주석 속 가짜 core 정의를 이어 붙였다(진짜 정의 = 비원자 쓰기를 놓침)")
+    notes.append("위임 추적기 대조 18꼴 + 가짜 정의 1 통과(주석·문자열·raw·cr#·감싸개/헬퍼 쓰기·매크로·포인터·재바인딩·경로·허용 밖 인자·두 정의 = 비추적/적색 · 정상 3꼴 = 추적)")
     need("write_atomic(settings_path" in mbody,
          "Rust 병합기가 원자 쓰기를 쓰지 않는다(반쪽 등록부 = 부트 발화 소실)")
     need("std::fs::write(settings" not in _code_lines(pk), "Rust 비원자 settings write 잔존")

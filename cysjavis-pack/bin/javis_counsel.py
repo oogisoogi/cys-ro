@@ -75,7 +75,12 @@ DROP_TALLY = "dropped.tally"           # 버린 쓰기 1회 = 1바이트 덧붙�
 DROP_OP = "counsel.dropped"            # 「버린 쓰기 N」 신호 — error_code = counsel.dropped_writes.<N> · N = 0 이면 줄 생략
 DROP_N_MAX = 99999
 LOCK_RETRY_S = 0.05
-DOCTOR_TIMEOUT_S = 60
+DOCTOR_TIMEOUT_S = 60                  # 맥·리눅스 — fleet daily 수집~도착 중앙 3.3초(분석 2026-11-27 §10-1 · 237/237 실림)
+DOCTOR_TIMEOUT_NT_S = 240              # ★1.1.21(TICKET=cysr-1121-pack · TODO 76) 윈 — 60초에서 doctor 칸이 빠진 윈 daily 328건 중 300건이
+#   60초 이상(중앙 63.2초 · 실림 77/404) = 시간 초과가 주 원인(분석 §10-2 ⑵). 값은 틱 예산이 정한다: 한 판 500(= TICK_CAP_S − 끝내기 몫)
+#   안에서 ensure_client 잠금 60 + version 20 + seats 20 + doctor 끝내기 40 + help 6 + agora 최소 30 을 빼면 위끝 ≈324 → 그 안쪽 240.
+#   상한이 커서 드는 비용은 「정말 느린 기기에서만 그만큼 기다림」뿐(빠른 기기는 끝나는 즉시 돌아온다). 불변식 = 시험 test_counsel_doctor_timeout.
+#   우리 윈 노트북 실측(WIN-QUERY-1121-E · 1.1.20 · 고치기 전)이 이 안인지 확인한 뒤 확정한다.
 CLI_TIMEOUT_S = 20
 TICK_CAP_S = 540                       # 한 판 전체 상한 — cysd command 잡 600초 안쪽(cysd 는 시간 초과 자식을 안 죽인다)
 TASKKILL_TIMEOUT_S = 30                # 시간 초과 뒤 윈 taskkill /T /F 상한
@@ -362,6 +367,30 @@ def _run(argv, timeout):
     return r.returncode, r.stdout.decode("utf-8", errors="replace")
 
 
+def _run_tree(argv, timeout):
+    """`_run` 과 같은 반환 · ★시간 초과 때 **자손째** 끝낸다(_kill_group 재사용 · 1.1.21 TODO 76 ②).
+    `subprocess.run(timeout=)` 은 직계 자식만 끝낸다 — `cys doctor` 의 runtime-seal 검사가 띄운 파이썬 손자(상한 없음 ·
+    cys.rs diag_runtime_seal)가 남을 수 있고, 윈 `run()` 은 끝낸 뒤 상한 없는 communicate() 로 파이프 끝을 기다린다.
+    여기서는 끝낸 뒤 회수도 REAP_TIMEOUT_S 로 묶는다(이 판 한 번의 최대 = timeout + KILL_BUDGET_S)."""
+    try:
+        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                start_new_session=(os.name != "nt"), **NOWIN)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)                            # 윈 ≤ TASKKILL_TIMEOUT_S
+        try:
+            proc.communicate(timeout=REAP_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+        return None, None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None, None
+    return proc.returncode, (out or b"").decode("utf-8", errors="replace")
+
+
 def probe_version():
     out = {}
     exe = cys_bin()
@@ -415,11 +444,16 @@ def _count_ok(v):
     return type(v) is int and 0 <= v <= 999
 
 
+def doctor_timeout_s():
+    """이 기기의 `cys doctor --json` 상한(초) — 윈 = DOCTOR_TIMEOUT_NT_S · 그 밖 = DOCTOR_TIMEOUT_S."""
+    return DOCTOR_TIMEOUT_NT_S if os.name == "nt" else DOCTOR_TIMEOUT_S
+
+
 def probe_doctor():
     exe = cys_bin()
     if not exe:
         return None
-    _rc, text = _run([exe, "doctor", "--json"], DOCTOR_TIMEOUT_S)   # FAIL 이 있으면 rc≠0 일 수 있다 — JSON 으로 판정
+    _rc, text = _run_tree([exe, "doctor", "--json"], doctor_timeout_s())   # FAIL 이 있으면 rc≠0 일 수 있다 — JSON 으로 판정
     if not text:
         return None
     try:

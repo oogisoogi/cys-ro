@@ -220,9 +220,15 @@ describe("K18 — 사람 쓰기 길 바이트 동일(838f24421)", () => {
   //   · `"surface.send_text" => {` 갈래 본문 55,492자 = 838f24421 글자 그대로 · 그 갈래 호출 사슬(두 파일 정의 160개) 본문 다른 것 = default_health_rules(`builtin: true,` 한 칸 · 이름 겹침 `new(` 로 닿는 과대 연결)뿐.
   //   이 핀이 붉으면 = 두 파일이 또 바뀐 것 → 사람 쓰기 길(surface.send_text 처리기·writer) 무접촉을 함수 단위로 다시 대조한 뒤에만 값을 옮긴다
   //   (DESIGN §3-4 K18 · 정밀 검증 2R′ C). 함수 본문 핀으로 좁히는 일은 1.1.20 에서 쓰기 길을 바꿀 때 함께.
+  //   ★옮긴 근거 2(TICKET=cysr-1121-integ · [master#fbcd9729] · state.rs d2d74d96… → bdd98c0fe1909305… · handlers.rs 그대로):
+  //   · 바꾼 가지 = macpath2(1.1.21 A-4·A-8·A-9·A-10 · 맥 좌석 PATH_HELPER_ROOT 재선두) · fafe3eee1..9b3b3d5b8 diff = 추가 125줄 · 지운 줄 0.
+  //   · 함수 단위(fafe3eee1 → 9b3b3d5b8 · 624 → 631): 본문이 바뀐 기존 함수 = create_surface_core 1개(좌석 spawn 합류점 · 맥 전용 블록 2개 추가 =
+  //     배선 앞 우리 root 걷기 · spawn 직전 재선두 주입 · 입양 갈래 제외) · 새 함수 = BuilderSeatEnv 의 get·set·remove · scrub_mac_seat_path_before_wire ·
+  //     apply_mac_seat_path · 시험 2 · 사라진 함수 0 · 이름에 send·write·inject·submit 든 함수 중 본문 바뀐 것 0(write_operator_token 본문 바이트 동일).
+  //   · 사람 쓰기 길(handlers.rs `"surface.send_text" => {` 처리기 · writer) = handlers.rs sha256 그대로라 무접촉.
   const DAEMON_1119: Record<string, string> = {
     "src/bin/cysd/handlers.rs": "3a458847466a77abf1a5b534aad71e232acca6eca1c7b42f01ce19d3b8d03328",
-    "src/bin/cysd/state.rs": "d2d74d967f5ebedf199fd5108eed2fe8d938ae26e121e099a2a7335fd7d2c26d",
+    "src/bin/cysd/state.rs": "bdd98c0fe190930506f76c65bf050687f412ff922b546703ac8bf4f410e03cd4",
   };
   it("k18_daemon_files_1119 — 데몬 `handlers.rs`·`state.rs` = b489e23b1 바이트(838f24421 대비 관찰 3 고침(건강 룰 판정)만 다름)", () => {
     for (const [p, want] of Object.entries(DAEMON_1119)) {

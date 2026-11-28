@@ -15,6 +15,7 @@ import {
   stepFromOutcome,
   type Msg,
   type Step,
+  UNSURE_NOTE,
 } from "./judge/msgstep";
 import { applyQueueEvent, AUTO_HOLD_AFTER_HUMAN_MS, AUTO_STEP_LABEL, autoHoldRemainingMs, autoStepFor, queueEventOf, type AutoMsg, type QueueEvent } from "./judge/autostep";
 import { composeOutbound } from "./judge/outbound";
@@ -65,10 +66,15 @@ describe("§5-2 단계 표 fixture(사람 말 전 행)", () => {
     expect(settleSteps([{ ...a, step: "replying" }, b], T + 20, null).map((m) => m.step)).toEqual(["delivered", "delivered"]);
   });
   it("(검토 지적 4) 기록으로 전달됨이 되면 옛 「확인 중」 까닭·안내가 지워진다", () => {
-    const r = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내" })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
+    const r = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내", wrote: true })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
     expect(r.msgs[0].step).toBe("delivered");
     expect(r.msgs[0].code).toBeUndefined();
     expect(r.msgs[0].note).toBeUndefined();
+    // (TICKET=cysr-1121-ui-kfix ②) 데몬이 썼다고 답하지 않은 시도 = 옛 까닭은 지우되 안내는 「출처 확인 못 함」(같은 글이 다른 길로 왔을 수 있음)
+    const u = applyRecords([msg({ step: "checking", code: "refused_at_write", note: "옛 안내" })], [{ uuid: "u1", parent: null, role: "user", text: "안녕", ts: null }]);
+    expect(u.msgs[0].code).toBeUndefined();
+    expect(u.msgs[0].note).toBe(UNSURE_NOTE);
+    expect(u.msgs[0].unsure).toBe(true);
   });
   it("답하는 중 아님: 활동 모름(null) · 쉼(false · 답 없음) · 아직 전달 전", () => {
     const d = msg({ step: "delivered", userUuid: "u1", thread: ["u1"] });
@@ -379,13 +385,15 @@ describe("같은 말 겹침 — 중복 쓰기 0", () => {
     await sim.advance(130_000);
     expect(sim.core.state.msgs[0].step).toBe("slow");
     expect(sim.sends()).toBe(1);
-    await sim.advance(25_000); // 150초 뒤 첫 말 기록 → 전달됨
+    await sim.advance(25_000); // 150초 뒤 첫 말 기록 → (내부) 전달됨
     await sim.core.readTranscript();
     expect(sim.core.state.msgs[0].step).toMatch(/delivered|replying|replied/);
-    expect(dupPending(sim.core.state.msgs, d.text, d.id)).toBe(false);
+    // ★(TICKET=cysr-1121-ui-kfix2 ② · 통합 codex 3R major) 첫 말은 불명 응답 = 그 기록이 이 화면 것인지 모름(확인 못 함) → 같은 글은 여전히 미해결로 막는다(두 번 쓰기 0).
+    //   예전 기대(전달됨 뒤 클릭 1회로 1건 더)는 불명 시도에서 같은 말이 두 번 가는 길이었다 — 글을 바꾸면 새 말로 나간다.
+    expect(dupPending(sim.core.state.msgs, d.text, d.id)).toBe(true);
     await sim.core.confirmHeld(d.id);
     await sim.advance(100);
-    expect(sim.sends()).toBe(2);
+    expect(sim.sends()).toBe(1);
   });
   it("★(하네스 seed 131) 확정 실패 X 뒤 같은 글 Y 가 확인 중이면 X 의 다시 보내기도 막음(쓰기 0 · 안내) · (고침 H) Y 가 전달되면 X 의 다시 보내기는 거둠(쓰기 0 · 「이미 전달됐어요」)", async () => {
     const sim = new Sim({ plan: (n) => (n === 0 ? "failed" : n === 1 ? "uncertain_written" : "written"), recordDelay: (n) => (n === 1 ? 200_000 : 100), replyDelay: () => null });
@@ -408,7 +416,8 @@ describe("같은 말 겹침 — 중복 쓰기 0", () => {
     await sim.core.retry(x.id);
     await sim.advance(40_000);
     expect(sim.sends()).toBe(2); // (조각 3 고침 · 검증 지적 H · master 결정 = 거둠) 같은 글이 이미 전달됨 → 다시 보내기 0
-    expect(sim.core.state.notice).toMatch(/이미 전달됐어요/);
+    // ★(kfix2 ②) Y 는 불명 응답이라 「확인 못 함」 — 「이미 전달됐어요」라고 단정하지 않고 확인 못 함 안내(쓰기 0 은 그대로).
+    expect(sim.core.state.notice).toMatch(/확인 못 함/);
   });
   it("Enter 연타 20회(같은 글) → 쓰기 1", async () => {
     const sim = new Sim({ recordDelay: () => null });

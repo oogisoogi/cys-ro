@@ -4,8 +4,8 @@
 // 최소 계약 4칸 = [data-min=confirms|lastSendStep|masterHealth|errors] · 화면 바꾸기는 공통 자리(#view-switch).
 
 import type { ViewContext, ViewInstance, ViewModule } from "../contract";
-import { DUP, dupPending, errorCount, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
-import { canRetry, STEP_LABEL, type Msg } from "../judge/msgstep";
+import { DUP, dupPending, errorCount, shownNote, FAST_POLL_MS, HEALTH_LABEL, lastSendStep, logOrder, needsClick, SAME_DELIVERED_NOTE, sameTextDelivered, type ChatCore, type ChatState } from "../core";
+import { absorbedNote, canRetry, HELD_CLICK_LABEL, stepLabel, viewStep, type Msg } from "../judge/msgstep";
 import { AUTO_STEP_LABEL, type AutoMsg } from "../judge/autostep";
 import { liveMsg, progressLine, stepTime } from "../judge/progress";
 import { jumpLabel, newKeys, placeAfterPaint, stickToBottom } from "../judge/scroll";
@@ -274,15 +274,20 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
     });
 
     const bubble = (m: Msg, s: ChatState, live: boolean): HTMLLIElement => {
-      const li = el("li", `cv-msg cv-me step-${m.step}`);
+      const li = el("li", `cv-msg cv-me step-${viewStep(m)}`); // (kfix2 ②′) 확인 못 함 = 「전달됨」 강조색 0(이름·진행 줄과 같은 값)
       li.dataset.msgId = m.id;
       li.append(el("div", "cv-text", m.text));
-      const meta = el("div", "cv-step", STEP_LABEL[m.step]);
-      meta.dataset.step = m.step;
+      const meta = el("div", "cv-step", needsClick(m) ? HELD_CLICK_LABEL : stepLabel(m)); // (K-1) 눌러야 나갈 말 = 「아직 안 보냄」 · (kfix ②·④) 출처 확인 못 함 · 대기에서 빠짐
+      meta.dataset.step = viewStep(m);
       li.append(meta);
       const pg = prog(m, live);
       if (pg) li.append(pg);
-      if (m.note) li.append(el("div", "cv-note", m.note));
+      const note = shownNote(s.msgs, m); // (kfix2 ②) 겹친 말 안내 = 지금 앞 말 상태로(확인 못 함이면 「앞 말이 끝나면」 약속 0)
+      if (note) li.append(el("div", "cv-note", note));
+      // (TICKET=cysr-1121-ui K R1) 하던 일 중간에 받아 읽힌 말 — ★(kfix ③) 그 뒤 마스터 글은 이 말에 붙이지 않고 「마스터」 줄로(U25-B·D 실측).
+      //   (kfix2 ②′) 확인 못 함이면 「받아 읽었어요」 단정 없는 문구 — absorbedNote 한 곳.
+      const ab = absorbedNote(m);
+      if (ab) li.append(el("div", "cv-note cv-absorbed", ab));
       // (조각 3 · PRD FR-A2a) 오래 걸려요 = 마스터 상태를 함께 보인다(근거 없이 「못 보냄」으로 바꾸지 않음 · 다시 보내기 0).
       if (m.step === "slow") li.append(el("div", "cv-note cv-slow-health", `마스터 상태: ${HEALTH_LABEL[s.health]} — 다시 보내지 않고 계속 확인해요.`));
       // (조각 3) 같은 말 겹침: 앞 말이 끝나기 전에는 누를 단추가 없다(불명·확인 중 = 다시 보내기 0).
@@ -295,6 +300,16 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
           void act.confirmHeld(m.id);
         });
         li.append(b);
+      }
+      // (TICKET=cysr-1121-ui K-2 · master 10:2x) 붙잡은 말(자동으로 나갈 말 · 눌러야 나갈 말 모두)은 사람이 언제든 거둘 수 있다 — 10분 상한을 좁힌 짝(쓰기 0).
+      if (m.step === "held") {
+        const d = el("button", "cv-retry cv-discard", "보내지 않기");
+        d.type = "button";
+        d.addEventListener("click", (e) => {
+          if (!e.isTrusted) return; // 사람의 신뢰 클릭만
+          act.discardHeld(m.id);
+        });
+        li.append(d);
       }
       // (조각 3 고침 · 검증 지적 H) 같은 글이 이미 전달됐으면 다시 보내기를 거두고 그 사실만 알린다.
       if (canRetry(m) && sameTextDelivered(s.msgs, m.text, m.id)) li.append(el("div", "cv-note cv-same-delivered", SAME_DELIVERED_NOTE));
@@ -347,7 +362,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       limits.replaceChildren();
       limits.hidden = rows.length === 0;
       for (const r of rows) {
-        const row = el("span", `cv-limit${r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`);
+        const row = el("span", `cv-limit${r.stale ? " stale" : r.pct >= 80 ? " crit" : r.pct >= 60 ? " warn" : ""}`); // (J) 오래된 값 = 경고색 없이 흐리게
         row.title = r.title;
         row.append(el("span", "cv-limit-name", r.name ?? "7일 한도"), el("span", "cv-limit-text", r.line));
         // (V3) 6px 막대(왼쪽 칸에서만 보임 · 글 없음 = 글 대조 불변)
@@ -377,7 +392,7 @@ export const chatView: ViewModule<ChatState, ChatCore> = {
       errors.textContent = ec > 0 ? `문제 ${ec}` : "문제 없음";
       errors.dataset.count = String(ec);
       const st = lastSendStep(s);
-      live.textContent = st ? `마지막 보낸 말: ${STEP_LABEL[st]}` : "아직 보낸 말 없음";
+      live.textContent = st ? `마지막 보낸 말: ${stepLabel(s.msgs[s.msgs.length - 1])}` : "아직 보낸 말 없음"; // (kfix ②) 말 이름과 같은 판정
       live.dataset.step = st ?? "";
       notice.textContent = s.notice ?? "";
       const prevTop = log.scrollTop;

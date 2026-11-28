@@ -57,10 +57,17 @@ pub struct BuildInfo {
 /// ★1.1.20 #57(TICKET=cysr-1120-integ2 · master#58de9790 A) 정적 빌드 표지 — 발행 재료 수집(`scripts/update/collect-inputs.sh mac …
 /// macos-x64`)이 x64 번들을 **실행하지 않고** Mach-O 바이트에서 이 글자를 찾아 arm64 build-info 의 `release_seq`·`build_id` 와
 /// 글자 그대로 대조한다(arm64 맥에서 x64 실행 = Rosetta 경고). `release_seq` 는 `option_env!` 한두 글자 숫자라 홀로는 판별력이
-/// 없어 앞뒤가 닫힌 한 덩어리로 박는다: `cysr-buildmark:seq=<CYSR_RELEASE_SEQ>;build_id=<CYS_BUILD_ID>;`.
+/// 없어 앞뒤가 닫힌 한 덩어리로 박는다: `cysr-buildmark:seq=<CYSR_RELEASE_SEQ>;build_id=<CYS_BUILD_ID>;version=<CARGO_PKG_VERSION>;pack=<CYS_PACK_DIGEST>;`.
+/// ★1.1.21 N med1(agy 서명 도구 검토 · TICKET=cysr-1121-integ): 판(version)도 표지에 — 전에는 수집기가 x64 바이트 안 판을 보지
+/// 않아, 남은 `CYSR_BUILD_ID` 로 판(Cargo.toml)을 바꾼 트리를 빌드하면 옛 build_id 표지 + 다른 판 본체가 대조를 지날 길이 있었다.
+/// ★1.1.21 N med2: 팩 digest(build.rs 가 빌드 때 계산 · 런타임 embedded_pack_hash 와 같은 식)도 — 수집기가 커밋 재계산값과 대조.
 /// 두 값은 build.rs 가 늘 넣는다(seq 없이 빌드 = `seq=0` = 미발행 → 수집기가 거부) · 바이트 배열 static + `#[used]` + build_info()
 /// 안 참조(링커가 지우지 않게) · 바이너리 안 1번 = 시험(scripts/tests/test_update_publish.py · 이 파일 tests).
-const BUILD_MARK_STR: &str = concat!("cysr-buildmark:seq=", env!("CYSR_RELEASE_SEQ"), ";build_id=", env!("CYS_BUILD_ID"), ";");
+const BUILD_MARK_STR: &str =
+    concat!(
+        "cysr-buildmark:seq=", env!("CYSR_RELEASE_SEQ"), ";build_id=", env!("CYS_BUILD_ID"), ";version=", env!("CARGO_PKG_VERSION"),
+        ";pack=", env!("CYS_PACK_DIGEST"), ";"
+    );
 const fn build_mark_bytes() -> [u8; BUILD_MARK_STR.len()] {
     let src = BUILD_MARK_STR.as_bytes();
     let mut out = [0u8; BUILD_MARK_STR.len()];
@@ -238,7 +245,19 @@ mod tests {
     #[test]
     fn build_mark_is_one_closed_token_of_seq_and_build_id() {
         let m = std::str::from_utf8(&BUILD_MARK).unwrap();
-        assert_eq!(m, format!("{}seq={};build_id={};", "cysr-buildmark:", release_seq(), crate::pack::build_id()));
+        assert_eq!(
+            m,
+            format!(
+                "{}seq={};build_id={};version={};pack={};",
+                "cysr-buildmark:",
+                release_seq(),
+                crate::pack::build_id(),
+                env!("CARGO_PKG_VERSION"),
+                crate::pack::embedded_pack_hash()
+            )
+        );
+        // build.rs 가 박은 digest = 런타임 PACK_ALL 해시(같은 식 · 수집기 대조의 전제)
+        assert_eq!(env!("CYS_PACK_DIGEST"), crate::pack::embedded_pack_hash());
         assert!(m.ends_with(';') && m.matches("cysr-buildmark:").count() == 1);
     }
 

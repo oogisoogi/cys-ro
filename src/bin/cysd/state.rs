@@ -6522,6 +6522,71 @@ fn write_operator_token(path: &std::path::Path, token: &str) -> std::io::Result<
 ///   팩으로 다시 가리키는 라이브 오염이 난다. 제품 빌드에는 이 분기가 없다.
 const SEAT_WIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// 좌석 `CommandBuilder` 를 판정 함수의 env 손잡이로 감싼다(`get_env` = 데몬 상속 env + 지금까지 얹은 값).
+#[cfg(target_os = "macos")]
+struct BuilderSeatEnv<'a>(&'a mut CommandBuilder);
+
+#[cfg(target_os = "macos")]
+impl cys::macos_devtools::SeatEnv for BuilderSeatEnv<'_> {
+    fn get(&self, key: &str) -> Option<std::ffi::OsString> {
+        self.0.get_env(key).map(|v| v.to_os_string())
+    }
+    fn set(&mut self, key: &str, val: &std::ffi::OsStr) {
+        self.0.env(key, val);
+    }
+    fn remove(&mut self, key: &str) {
+        self.0.env_remove(key);
+    }
+}
+
+/// 배선 자식 앞 걷기 — 좌석 판정 ②와 같은 식별(`scrub_inherited_ours`) · 판정 본체(spawn 직전)가 다시 돌아도 멱등.
+#[cfg(target_os = "macos")]
+fn scrub_mac_seat_path_before_wire(builder: &mut CommandBuilder) {
+    // 홈이 없어도 건너뛰지 않는다 — 짝 표식 같음·빈 값만으로 걷는다(codex 코드 r2 minor).
+    let base = dirs::home_dir().map(|h| cys::macos_devtools::path_helper_root_base(&h));
+    cys::macos_devtools::scrub_inherited_ours_opt(&mut BuilderSeatEnv(builder), base.as_deref());
+}
+
+/// ★1.1.21 A ③ 좌석 셸 재선두 주입(맥 좌석 · 설계 DESIGN-A r7.2 §2-3) — 판정 결과에 따라 builder env 를 고치고 데몬 로그 1줄
+/// (NotNeeded 제외). exe 위치·홈은 pane PATH 선두 주입(`spawn_env_pairs_from_process`)과 같은 출처다.
+#[cfg(target_os = "macos")]
+fn apply_mac_seat_path(builder: &mut CommandBuilder, id: u64) {
+    use cys::macos_devtools::{SeatEnv, SeatPathVerdict};
+    let Some(home) = dirs::home_dir() else {
+        // 홈을 못 구해도 ②(물려받은 우리 값 걷기)는 건너뛰지 않는다 — 짝 표식 같음·빈 값만으로(Fable 코드 r1 minor).
+        let mut e = BuilderSeatEnv(builder);
+        cys::macos_devtools::scrub_inherited_ours_opt(&mut e, None);
+        e.set(cys::macos_devtools::ENV_CYS_SEAT_PATH_VERDICT, std::ffi::OsStr::new("error:home"));
+        eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = error:home(홈 디렉터리 없음)");
+        return;
+    };
+    // exe 위치를 못 구하면 runtime 없음으로 판정한다(② 걷기·진단 표지는 그대로 돈다).
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_default();
+    let mut ctx = cys::macos_devtools::SeatPathCtx::for_process(&exe_dir, &home);
+    if exe_dir.as_os_str().is_empty() {
+        ctx.runtime_root = None;
+    }
+    match cys::macos_devtools::seat_path_verdict(&ctx, &mut BuilderSeatEnv(builder)) {
+        None => {}
+        Some(SeatPathVerdict::NotNeeded { unfixed }) if unfixed.is_empty() => {}
+        Some(SeatPathVerdict::NotNeeded { unfixed }) => {
+            eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = not-needed · 동봉본 없어 못 고친 도구 = {}", unfixed.join(","))
+        }
+        Some(v @ SeatPathVerdict::Applied { .. }) => {
+            let SeatPathVerdict::Applied { unfixed, .. } = &v else { unreachable!() };
+            if unfixed.is_empty() {
+                eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {}", v.diag());
+            } else {
+                eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {} · 못 고친 도구 = {}", v.diag(), unfixed.join(","));
+            }
+        }
+        Some(v) => eprintln!("cysd: 좌석 {id} PATH 재선두 판정 = {}", v.diag()),
+    }
+}
+
 fn wire_seat_profile_before_exec(
     daemon: &Daemon,
     builder: &CommandBuilder,
@@ -8339,6 +8404,12 @@ impl Daemon {
         //   함수가 5경로(create RPC·launch-agent·boot·restore·schedule)의 단일 합류점이라 여기 한 번이면
         //   master 좌석(부모 = cysd 직접 · VM 실측)까지 전부 덮는다. 좌석 토큰 주입 **앞**이다(배선
         //   자식에 비밀을 넘기지 않는다). 실패해도 기동은 계속된다(이벤트 1줄).
+        // ★1.1.21 A ③: 배선 자식은 builder env 를 복사해 받는다 — 호출자 오버레이로 들어온 **우리** root 키(옛 좌석 값)를 배선 전에 걷는다
+        //   (좌석 판정 ②와 같은 식별 함수 · 새 root 는 아래 spawn 직전에만 실린다 · codex 코드 r1 minor).
+        #[cfg(target_os = "macos")]
+        if adopt_rec.is_none() {
+            scrub_mac_seat_path_before_wire(&mut builder);
+        }
         if adopt_rec.is_none() {
             wire_seat_profile_before_exec(self, &builder, id, env);
         }
@@ -8407,6 +8478,18 @@ impl Daemon {
             }
         };
 
+        // ★1.1.21 A ③ 맥 좌석 셸 재선두(`PATH_HELPER_ROOT` · 설계 DESIGN-A r7.2 §2-3) — CLT 없는 맥에서 좌석과 그 안의 중첩 로그인 셸
+        //   (codex 의 명령마다 `zsh -lc` · Claude Code 스냅숏 `zsh -c -l`)이 path_helper 로 `/usr/bin` 셔임을 동봉 python3·git 앞에 되돌리는
+        //   것을 막는다. 판정·생성·확인 = `macos_devtools::seat_path_verdict` 한 함수(GUI 안내문과 같은 함수).
+        // · 자리: 좌석 env 조립의 **마지막**(호출자 오버레이·좌석 토큰 뒤 · spawn 직전) — 판정이 좌석 **최종** env(PATH·DEVELOPER_DIR·
+        //   물려받은 PATH_HELPER_ROOT)를 보고, 배선 자식(`wire_seat_profile_before_exec` · 위)에는 두 키가 안 섞인다(핀 시험).
+        // · 대화형 `-l`·명령 `-lc` 둘 다 · 입양 갈래 제외(살아 있는 자식 — env 는 이미 정해짐 · 소급 금지).
+        // · 롤백 `CYS_MAC_SEAT_PATH=0` · `CYS_BOOT_GATES=0`(데몬 env 판독) → 두 키 안 실음 + 물려받은 우리 값만 걷음.
+        // · 실패(확인 실패·쓰기 오류) = 좌석은 그대로 뜬다(종전 동작) + 데몬 로그 1줄.
+        #[cfg(target_os = "macos")]
+        if adopt_rec.is_none() {
+            apply_mac_seat_path(&mut builder, id);
+        }
         // 좌석 프로세스 손잡이(T3) — 자식 기동·Job 결박·slave 닫기는 `seat_proc::Opened::spawn`.
         // T4(입양 노브 켬 · 새 seatkeep 좌석): 자식을 띄우기 **전** 임시본 기록 — 못 쓰면 좌석을 만들지 않는다(기록 없는 산 좌석 = 입양도 정리도
         // 못 하는 좌석 · codex T4 1R #1). 노브 끔·직접 PTY·입양 갈래 = 이 블록 없음.
@@ -10431,6 +10514,48 @@ mod tests {
     /// 그 실측은 격리 cysd 로 따로 수행했고(수리 전 0건 / 수리본 `<HOME>/.cys/claude` /
     /// `CYS_ACCOUNT_DIR` 지정 시 그 부서 계정 dir) 절차·수치는 `docs/HANDOFF-v115r2-pack.md` §4 에 있다.
     /// 값 축(부서/본부 갈림)은 `cys::resolve_claude_config_dir` 의 자체 시험(lib.rs)이 고정한다.
+    /// ★1.1.21 A ③ 좌석 셸 재선두 주입 자리 핀 — 배선 자식(`wire_seat_profile_before_exec`) **뒤** · 좌석 토큰 **뒤** · spawn **앞** ·
+    /// 입양 갈래 제외. 배선 자식은 주입 전 builder 로 뜨므로 두 키를 못 본다 · 좌석은 최종 env 로 판정한다.
+    #[test]
+    fn mac_seat_path_injection_sits_last_before_spawn() {
+        let src = include_str!("state.rs");
+        let body = &src[src.find("pub(crate) fn create_surface_core(").expect("합류점")..];
+        let wire = body.find("wire_seat_profile_before_exec(self, &builder, id, env);").expect("배선 호출");
+        let early = body.find("scrub_mac_seat_path_before_wire(&mut builder);").expect("배선 앞 걷기 소실");
+        assert!(early < wire, "배선 앞 걷기가 배선 호출 뒤에 있다 — 호출자 오버레이의 우리 root 가 배선 자식에 샌다");
+        let token = body.find("builder.env(cys::ENV_SEAT_TOKEN, &tok);").expect("좌석 토큰 주입");
+        let inject = body.find("apply_mac_seat_path(&mut builder, id);").expect("재선두 주입 소실");
+        let spawn = body.find("(None, Some(o)) => o.spawn(builder)?,").expect("spawn");
+        assert!(wire < token && token < inject && inject < spawn, "wire={wire} token={token} inject={inject} spawn={spawn}");
+        let guard = &body[..inject];
+        let g = guard.rfind("if adopt_rec.is_none() {").expect("입양 제외 가드");
+        assert!(inject - g < 80, "주입이 입양 제외 가드 바로 안에 있지 않다");
+        assert!(guard[g - 40..g].contains("#[cfg(target_os = \"macos\")]"), "맥 전용 cfg 가 아니다");
+    }
+
+    /// `BuilderSeatEnv` 가 데몬 상속 env 까지 본다/지운다 — 판정 ②가 「좌석 최종 env」 를 다룬다는 전제.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn builder_seat_env_sees_and_removes_final_env() {
+        use cys::macos_devtools::{SeatEnv, ENV_CYS_PATH_HELPER_ROOT, ENV_PATH_HELPER_ROOT};
+        let mut b = CommandBuilder::new("true");
+        b.env(ENV_PATH_HELPER_ROOT, "/h/.cys/path-helper-root/abc");
+        b.env(ENV_CYS_PATH_HELPER_ROOT, "/h/.cys/path-helper-root/abc");
+        let home_inherited = std::env::var_os("HOME").is_some();
+        {
+            let mut e = BuilderSeatEnv(&mut b);
+            assert!(e.get(ENV_PATH_HELPER_ROOT).is_some());
+            if home_inherited {
+                assert!(e.get("HOME").is_some(), "상속 env 를 못 본다");
+            }
+            let removed = cys::macos_devtools::scrub_inherited_ours(&mut e, std::path::Path::new("/h/.cys/path-helper-root"));
+            assert_eq!(removed, (true, true));
+            assert!(e.get(ENV_PATH_HELPER_ROOT).is_none());
+            e.remove("HOME");
+        }
+        assert!(b.iter_full_env_as_str().all(|(k, _)| k != "HOME" && k != ENV_PATH_HELPER_ROOT && k != ENV_CYS_PATH_HELPER_ROOT));
+    }
+
     #[test]
     fn d4_spawn_confluence_pins_claude_config_dir_before_caller_env() {
         let src = include_str!("state.rs");

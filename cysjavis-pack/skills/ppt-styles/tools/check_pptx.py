@@ -6,12 +6,13 @@
 
   --slides N  장 수가 N 이 아니면 실패
   --pdf       LibreOffice(soffice)로 PDF 를 만들어 쪽 수 = 장 수인지 대조(없으면 설치 안내 후 코드 3)
-  --strict    경고(글 넘침 의심 · 화면 밖 상자 · 빈 장 · 없는 글꼴)도 실패로 친다
+  --strict    경고(글 넘침 의심 · 화면 밖 상자 · 빈 장 · 없는 글꼴 · 렌더 실측 겹침·잘림)도 실패로 친다
 
 점검:
   ① zip 이 온전한가(CRC) · 필수 파일([Content_Types].xml · _rels/.rels · ppt/presentation.xml)
   ② presentation.xml 의 장 목록 = 실제 장 파일 · 장마다 XML 이 읽히고 [Content_Types].xml 에 등록됐는가
   ③ 글 넘침 의심(글자 수·크기로 높이를 어림 — 실제 렌더가 아니다) · 화면 밖으로 나간 상자 · 빈 장
+  ③-1 (--pdf · pdftotext 가 있을 때) 렌더 실측: PDF 낱말 좌표로 글끼리 겹침 · PDF 에 안 나온 글자(쪽 밖으로 잘림)
   ④ 덱이 쓰는 글꼴이 이 컴퓨터에 있는가(없으면 열 때 대체 글꼴로 보인다)
 끝 코드: 0 통과 · 1 실패 · 2 사용법/파일 오류 · 3 --pdf 인데 LibreOffice 없음
 """
@@ -165,6 +166,19 @@ def shapes_on_slide(el, T=(1.0, 0.0, 1.0, 0.0)):
             yield from shapes_on_slide(c, T)
 
 
+def shown_text(el):
+    """PDF 에 나와야 할 글자 — 숨긴 도형(cNvPr hidden)의 글과 필드(a:fld · 날짜·쪽 번호처럼 열 때 새로 쓰이는 값)는 뺀다."""
+    out = []
+    for c in el:
+        if c.tag == f"{{{NS['a']}}}fld":
+            continue
+        cnv = c.find("./*/p:cNvPr", NS)
+        if cnv is not None and cnv.get("hidden") in ("1", "true"):
+            continue
+        out.append((c.text or "") if c.tag == f"{{{NS['a']}}}t" else shown_text(c))
+    return "".join(out)
+
+
 def check(path, want, strict, do_pdf):
     errs, warns = [], []
     try:
@@ -212,6 +226,7 @@ def check(path, want, strict, do_pdf):
     missing = [n for n in slides if n not in names]
     listcheck = "일치" if not orphan and not missing and slides and len(listed) == len(slides) else "불일치"
     faces = set()
+    slide_text = {}
     for i, name in enumerate(slides, 1):
         if name not in names:
             errs.append(f"{i}장: 목록에 있는 파일이 없음 {name}")
@@ -224,6 +239,7 @@ def check(path, want, strict, do_pdf):
             errs.append(f"{i}장: XML 오류 {e}")
             continue
         text_chars, pics = 0, len(root.findall(".//p:pic", NS))
+        slide_text[i] = shown_text(root)
         for f in root.iter():
             if f.tag.endswith("}latin") or f.tag.endswith("}ea"):
                 tf = f.get("typeface")
@@ -258,15 +274,17 @@ def check(path, want, strict, do_pdf):
                 faces.add(f.get("typeface"))
     faces.discard("")
     fams = installed_families()
+    subst = False
     for face in sorted(faces):
         if not has_font(face, fams):
+            subst = True
             hint = next((v for k, v in FONT_HELP.items() if norm_font(face).startswith(k)), "그 글꼴을 설치하거나 다른 글꼴을 쓰세요")
             warns.append(f"글꼴 없음: {face} — 이 컴퓨터에서 열면 대체 글꼴로 보입니다. {hint}")
     if want is not None and want != len(slides):
         errs.append(f"장 수 {len(slides)} ≠ 기대 {want}")
     code = 0
     if do_pdf:
-        code = pdf_check(path, len(slides), faces, errs)
+        code = pdf_check(path, len(slides), faces, errs, warns, slide_text, subst)
     for e in errs:
         print(f"[실패] {e}")
     for w_ in warns:
@@ -288,7 +306,48 @@ def find_soffice():
     return None
 
 
-def pdf_check(path, n, faces, errs):
+OVERLAP_THR = 0.15  # 두 낱말 사각형 교차 넓이 / 작은 쪽 넓이 — 시험(2026-11-26) 0.02~0.3 에서 같은 판정
+
+
+def render_check(pdf, slide_text, warns, subst=False):
+    """PDF 낱말 좌표(pdftotext -bbox-layout)로 ① 글끼리 겹침 ② PDF 에 안 나온 글자(쪽 밖으로 잘림)를 잰다.
+    글과 도형·선·그림의 겹침은 보지 않는다(글끼리만). pdftotext 가 없거나 낱말 좌표를 못 내면 1줄 안내 후 건너뛴다.
+    subst = 덱 글꼴 중 이 기기에 없는 것이 있음 → 건너뜀: 대체 글꼴 렌더는 LibreOffice 프로필 상태에 따라 같은 덱도
+    경고가 달라진다(2026-11-26 실측 · 같은 192장 덱이 182·186장 ↔ 1·152장) — 잴 수 없는 것을 재지 않는다."""
+    if subst:
+        print("[안내] 덱 글꼴 중 이 컴퓨터에 없는 것이 있어 렌더 실측 겹침 점검을 건너뜁니다(대체 글꼴로 그린 겹침은 믿을 수 없음 · 위 「글꼴 없음」을 먼저 해결)")
+        return
+    if not shutil.which("pdftotext"):
+        print("[안내] pdftotext(poppler)가 없어 렌더 실측 겹침 점검을 건너뜁니다. 설치: 맥 `brew install poppler` · "
+              "리눅스 `sudo apt install poppler-utils` · 윈도 https://github.com/oschwartz10612/poppler-windows/releases (Library\\bin 을 PATH 에)")
+        return
+    r = subprocess.run(["pdftotext", "-bbox-layout", "-enc", "UTF-8", str(pdf), "-"], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=300, stdin=subprocess.DEVNULL, **NOWIN)
+    pages = list(re.finditer(r'<page width="[\d.]+" height="[\d.]+">(.*?)</page>', r.stdout, re.S))
+    if r.returncode != 0 or not pages:  # xpdf 판 pdftotext 등 -bbox-layout 을 모르면 쪽 0개로 조용히 통과하던 길을 막는다
+        print(f"[안내] pdftotext 가 낱말 좌표를 내지 못해(끝 코드 {r.returncode}) 렌더 실측 겹침 점검을 건너뜁니다 — poppler 판(-bbox-layout 지원)이 필요합니다")
+        return
+    from collections import Counter
+    from html import unescape
+    for i, pm in enumerate(pages, 1):
+        ws = [(float(a), float(b), float(c), float(d), unescape(t)) for a, b, c, d, t in
+              re.findall(r'<word xMin="([\d.-]+)" yMin="([\d.-]+)" xMax="([\d.-]+)" yMax="([\d.-]+)">(.*?)</word>', pm.group(1))]
+        pairs = []
+        for j, a in enumerate(ws):
+            for b in ws[j + 1:]:
+                ix, iy = min(a[2], b[2]) - max(a[0], b[0]), min(a[3], b[3]) - max(a[1], b[1])
+                small = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
+                if ix > 0 and iy > 0 and small > 0 and ix * iy / small >= OVERLAP_THR:
+                    pairs.append(f"«{a[4]}»×«{b[4]}»")
+        if pairs:
+            warns.append(f"{i}장: 글끼리 겹침(렌더 실측) {len(pairs)}쌍 — {' · '.join(pairs[:3])}")
+        # 대문자 변환(cap="all")·작은 대문자 장식은 글자를 바꾸므로 대소문자를 접어서 센다
+        lost = sum((Counter(re.sub(r"\s", "", slide_text.get(i, "")).casefold()) - Counter(re.sub(r"\s", "", "".join(w[4] for w in ws)).casefold())).values())
+        if lost >= 2:
+            warns.append(f"{i}장: PDF 에 안 나온 글자 {lost}자 — 쪽 밖으로 잘렸을 수 있음(렌더 실측)")
+
+
+def pdf_check(path, n, faces, errs, warns=None, slide_text=None, subst=False):
     so = find_soffice()
     if not so:
         print("[안내] LibreOffice(soffice)가 없어 PDF 대조를 못 했습니다. 설치: 맥 `brew install --cask libreoffice` · "
@@ -325,6 +384,14 @@ def pdf_check(path, n, faces, errs):
         print("[pdf 글꼴] " + " ".join(sorted({re.sub(r"^[A-Z]{6}\+", "", l.split()[0]) for l in fl if l.split()})))
     if pages != n:
         errs.append(f"PDF 쪽 수 {pages} ≠ 장 수 {n}")
+    if warns is not None and slide_text is not None:
+        if pages != n:  # 숨긴 장 등으로 쪽↔장이 어긋나면 장 번호가 틀린 경고가 나므로 건너뜀
+            print("[안내] PDF 쪽 수가 장 수와 달라 렌더 실측 겹침 점검을 건너뜁니다(숨긴 장이 있으면 PDF 에 안 나옵니다)")
+        else:
+            try:
+                render_check(pdf, slide_text, warns, subst)
+            except Exception as e:  # 바깥 도구 출력이 낯설어도 기존 점검 결과는 그대로 낸다
+                print(f"[안내] 렌더 실측 겹침 점검을 건너뜁니다: {e}")
     return 0
 
 

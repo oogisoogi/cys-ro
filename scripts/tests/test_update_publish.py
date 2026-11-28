@@ -11,8 +11,10 @@ U1 왕복: env `CYS_UPDATE_VERIFY_BIN` = `update-verify` 를 가진 **디버그*
 """
 import base64
 import hashlib
+import importlib.util
 import json
 import os
+import plistlib
 import re
 import shutil
 import subprocess
@@ -1739,7 +1741,8 @@ class TestOfflineRitual(Base):
                  "--out-dir", os.path.join(self.tmp, "rout"), "--wait-eject", "0"], env=self.env, cwd=evil)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(os.path.exists(marker))
-        for n in ("lib/offline-sign.sh", "sign-release.sh", "sign-revocations.sh", "gen-offline-key.sh", "cf-route-probe.sh"):
+        for n in ("lib/offline-sign.sh", "sign-release.sh", "sign-revocations.sh", "gen-offline-key.sh", "cf-route-probe.sh",
+                  "collect-inputs.sh", "lib/offline-sign-dev.sh"):  # 1.1.21 N low3: 1.1.20 에 -I 를 넣은 두 파일도 핀
             code = [l for l in open(os.path.join(UPD, n), encoding="utf-8").read().splitlines() if not l.lstrip().startswith("#")]
             bare = [l for l in code if re.search(r"\bpython3\s+(?!-I\b)", l)]
             self.assertEqual(bare, [], n)
@@ -2400,10 +2403,12 @@ class TestCollectMacX64Static(unittest.TestCase):
         json.dump(b, open(p, "w"))
         return p, b
 
-    def payload(self, seq=5, bid=None, marks=1, flip=None):
-        mark = b"cysr-buildmark:seq=%d;build_id=%s;" % (seq, (bid or self.bid).encode())
+    def payload(self, seq=5, bid=None, marks=1, flip=None, ver="1.2.3", prefix=b"", mark=None, pack=None):
+        if mark is None:
+            mark = b"cysr-buildmark:seq=%d;build_id=%s;version=%s;pack=%s;" % (
+                seq, (bid or self.bid).encode(), ver.encode(), (pack or self.digest).encode())
         body = b"".join(d if r != flip else d[:-1] + bytes([d[-1] ^ 1]) for r, d in self.items)
-        return b"\0".join([mark] * marks + [body, self.keyring])
+        return b"\0".join(([prefix] if prefix else []) + [mark] * marks + [body, self.keyring])
 
     def bundle(self, payload, arch="x86_64"):
         n = len(os.listdir(self.tmp))
@@ -2509,7 +2514,7 @@ class TestCollectMacX64Static(unittest.TestCase):
         p, _ = self.bi()
         kr = self.keyring.replace(b'"p2"', b'"pX"')
         self.assertNotEqual(kr, self.keyring)
-        mark = b"cysr-buildmark:seq=5;build_id=%s;" % self.bid.encode()
+        mark = b"cysr-buildmark:seq=5;build_id=%s;version=1.2.3;pack=%s;" % (self.bid.encode(), self.digest.encode())
         r, out = self.collect(self.bundle(b"\0".join([mark, b"".join(d for _, d in self.items if _ != "trusted-keys.json"), kr])), p)
         # trusted-keys.json 은 팩 안에도 있어(PACK_ALL) 팩 내용 탐색이 같은 바이트를 먼저 요구한다 — 키링 바이트 칸은 그 뒤의 이중 방어(준등가)
         self.refused(r, out, "x64 바이너리에 커밋 팩 내용이 없다 1건(첫: trusted-keys.json)")
@@ -2531,6 +2536,117 @@ class TestCollectMacX64Static(unittest.TestCase):
         r, out = self.collect(self.bundle(self.payload(bid=dirty)), p)
         self.refused(r, out, "build_id 형식")
 
+    # ── 1.1.21 N(agy 서명 도구 검토 med1·med2 · TICKET=cysr-1121-integ) ──
+    def test_n_med1_mark_version_differs(self):
+        """표지 version 이 커밋 Cargo.toml·arm64 값과 다르면 거부(seq·build_id 는 같음 = 남은 CYSR_BUILD_ID + 판 바꾼 트리 꼴)."""
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(ver="1.2.4")), p)
+        self.refused(r, out, "x64 표지 1.2.4")
+
+    def test_n_med1_old_mark_without_version_refused(self):
+        """1.1.20 꼴 표지(version·pack 칸 없음) · version 만 있는 꼴 = 닫힌 꼴 아님 → 거부."""
+        p, _ = self.bi()
+        for old in (b"cysr-buildmark:seq=5;build_id=%s;" % self.bid.encode(),
+                    b"cysr-buildmark:seq=5;build_id=%s;version=1.2.3;" % self.bid.encode()):
+            r, out = self.collect(self.bundle(self.payload(mark=old)), p)
+            self.refused(r, out, "닫힌 꼴(seq=…;build_id=…;version=…;pack=…;)")
+
+    def test_n_med2_mark_pack_digest_binds(self):
+        """표지 pack digest 가 커밋 재계산값과 다르면 거부 — 바이트 사슬이 (가까운 가짜 닻·뒤쪽 사본으로) 이어져도 결속은 digest 다
+        (codex N 1R major 반례 꼴: 첫 항목을 깨고 그 원문을 바로 앞에 둠)."""
+        p, _ = self.bi()
+        r, out = self.collect(self.bundle(self.payload(pack="0" * 64)), p)
+        self.refused(r, out, "x64 표지 pack=" + "0" * 64)
+        first, data = self.items[0]
+        r, out = self.collect(self.bundle(self.payload(prefix=data, flip=first, pack="1" * 64)), p)
+        self.refused(r, out, "x64 표지 pack=")
+
+    def test_n_med2_no_offset0_rescan(self):
+        """뒤 항목이 깨졌는데 그 원래 바이트가 표지 앞(오프셋 0 쪽)에 있으면 — 옛 길(맨 앞부터 다시 찾기)은 통과 · 지금 = 거부."""
+        p, _ = self.bi()
+        last, data = "sub/b.md", self.PACK["sub/b.md"]  # 뒤쪽(키링 앞) 항목 — 키링은 본문 뒤에 따로 있어 맨 끝 항목으론 재현 안 됨
+        r, out = self.collect(self.bundle(self.payload(flip=last, prefix=data)), p)
+        self.refused(r, out, "커밋 팩 내용이 없다 1건(첫: %s)" % last)
+        # 대조: 같은 꼴에서 깨지지 않았으면 통과(앞에 놓인 사본이 순차 탐색을 망치지 않음)
+        r, out = self.collect(self.bundle(self.payload(prefix=data)), p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_n_med2_anchor_far_and_decoy_first_item(self):
+        """실물 꼴(첫 항목이 64KiB 창보다 훨씬 뒤) + 첫 항목의 사본이 앞쪽에 따로 있음(다른 include_str! 꼴) = 통과 ·
+        같은 꼴에서 중간 항목이 깨지면 거부(닻을 바꿔도 사슬이 안 이어짐)."""
+        p, _ = self.bi()
+        first = self.items[0][1]
+        far = self.collect(self.bundle(self.payload(prefix=b"\0" * 100000)), p)[0]  # 사본 없이 멀리만(실물 1.1.20 꼴)
+        self.assertEqual(far.returncode, 0, far.stderr)
+        decoy = first + b"\0" * 100000
+        r, out = self.collect(self.bundle(self.payload(prefix=decoy)), p)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r, out = self.collect(self.bundle(self.payload(prefix=decoy, flip="sub/b.md")), p)
+        self.refused(r, out, "커밋 팩 내용이 없다 1건(첫: sub/b.md)")
+
+    def test_n_med2_chain_unit(self):
+        """pack_chain_missing 단위: 순서 바뀜·겹침·같은 내용 합침 = 빠짐 · 빈 파일 = 통과."""
+        spec = importlib.util.spec_from_file_location("cx64", os.path.join(UPD, "collect_x64_static.py"))
+        cx = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cx)
+        it = [("a", b"AAAA"), ("b", b"BBBB"), ("e", b""), ("c", b"CCCC")]
+        self.assertEqual(cx.pack_chain_missing(b"xx" + b"AAAABBBBCCCC", it), [])
+        # codex N 1R major 반례: 이른 중간 사본(BBBB @4) 뒤에 유효 사슬(b @65008 · c @66012) — 사본 하나에 고정하면 거짓 거부
+        three = [("a", b"AAAA"), ("b", b"BBBB"), ("c", b"CCCC")]
+        self.assertEqual(cx.pack_chain_missing(b"AAAABBBB" + b"\0" * 65000 + b"BBBB" + b"\0" * 1000 + b"CCCC", three), [])
+        self.assertEqual(cx.pack_chain_missing(b"BBBBAAAACCCC", it), ["b"])                       # 순서 바뀜
+        self.assertEqual(cx.pack_chain_missing(b"AAAA" + b"\0" * 70000 + b"BBBBCCCC", it), ["b"])  # 창 밖
+        self.assertEqual(cx.pack_chain_missing(b"AAAABBBB", [("a", b"AAAABB"), ("b", b"BBBB")]), ["b"])  # 겹침
+        self.assertEqual(cx.pack_chain_missing(b"AAAACCCC", [("a", b"AAAA"), ("a2", b"AAAA"), ("c", b"CCCC")]),
+                         ["a2 (앞 항목과 같은 내용)"])                                              # 같은 내용 합침
+        self.assertEqual(cx.pack_chain_missing(b"zz", [("e", b"")]), [])
+        # codex N 2R minor: 짧은 공통 내용 × 큰 입력 = 출현 자리 상한 즉시 거부(시간 상한) · 상한 안이면 그대로 판정
+        t0 = time.time()
+        self.assertEqual(cx.pack_chain_missing(b"A" * 100000, [("x", b"A"), ("y", b"A")]), ["x (출현 자리 4096 초과 · 판정 불가)"])
+        self.assertLess(time.time() - t0, 2.0)
+        t0 = time.time()
+        self.assertEqual(cx.pack_chain_missing(b"A" * 4000, [("x", b"A"), ("y", b"A"), ("z", b"A")]), [])
+        self.assertLess(time.time() - t0, 2.0)
+        self.assertEqual(cx.pack_chain_missing(b"zz", [("a", b"AAAA")]), ["a"])
+
+    def test_n_med2_symlink_in_pack_tree_refused(self):
+        """팩 트리의 심볼릭 링크(mode 120000)는 typ 이 blob 이어도 거부."""
+        os.symlink("a.txt", os.path.join(self.g, "cysjavis-pack", "link.txt"))
+        genv = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_SYSTEM=os.devnull, GIT_AUTHOR_NAME="t",
+                    GIT_AUTHOR_EMAIL="t@example.invalid", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
+        for a in (["add", "-A"], ["commit", "-q", "-m", "link"]):
+            self.assertEqual(run(["git", "-C", self.g, *a], env=genv).returncode, 0, a)
+        self.assertIn("120000", run(["git", "-C", self.g, "ls-tree", "HEAD", "cysjavis-pack/link.txt"]).stdout)
+        bid = run(["git", "-C", self.g, "rev-parse", "--short=12", "HEAD"]).stdout.strip() + ".20261126T0000Z"
+        p, _ = self.bi(build_id=bid)
+        r, out = self.collect(self.bundle(self.payload(bid=bid)), p)
+        self.refused(r, out, "심볼릭 링크 항목: link.txt")
+
+    def test_n_med2_bundle_cys_symlink_refused(self):
+        """번들 안 Contents/MacOS/cys 가 심볼릭 링크면 거부(실행·대조 전에). codesign 은 **주 실행 파일**이 링크면 스스로
+        서명을 거부하므로(실측) 주 실행 파일 이름을 바꾸고 cys 만 링크로 둔 꼴 = 봉인은 통과하는 꼴로 잰다."""
+        p, _ = self.bi()
+        z = self.bundle(self.payload())
+        d = os.path.join(self.tmp, "relink")
+        subprocess.check_call(["ditto", "-x", "-k", z, d])
+        app = os.path.join(d, "cysr.app")
+        exe = os.path.join(app, "Contents", "MacOS", "cys")
+        os.rename(exe, os.path.join(app, "Contents", "MacOS", "cys-real"))
+        os.symlink("cys-real", exe)
+        plist = os.path.join(app, "Contents", "Info.plist")
+        body = open(plist).read()  # 먼저 읽는다(codex N 1R minor: open(…, "w") 가 먼저 비우던 결함)
+        self.assertIn("<string>cys</string>", body)
+        open(plist, "w").write(body.replace("<string>cys</string>", "<string>cys-real</string>"))
+        self.assertEqual(plistlib.load(open(plist, "rb"))["CFBundleExecutable"], "cys-real")
+        for t in (os.path.join(app, "Contents", "MacOS", "cys-real"), app):  # 안쪽 실행 파일 서명이 옛 Info.plist 에 묶여 있어 다시
+            subprocess.check_call(["codesign", "-s", "-", "--force", t], stderr=subprocess.DEVNULL)
+        v = run(["codesign", "--verify", "--deep", "--strict", app])
+        self.assertEqual(v.returncode, 0, v.stderr)  # 대조: 봉인은 통과하는 꼴
+        z2 = os.path.join(self.tmp, "relink.zip")
+        subprocess.check_call(["ditto", "-c", "-k", "--keepParent", app, z2])
+        r, out = self.collect(z2, p)
+        self.refused(r, out, "심볼릭 링크다")
+
     def test_x64_branch_never_executes_bundle_binary(self):
         src = open(os.path.join(UPD, "collect-inputs.sh"), encoding="utf-8").read()
         a = src.index('    if [ "$target" = macos-arm64 ]; then')
@@ -2547,9 +2663,74 @@ class TestBuildMarkInBinary(unittest.TestCase):
         """1.1.20 #57 ②: 빌드된 cys 바이트 안에 빌드 표지가 **정확히 1번** · 글자 = 그 바이너리 build-info 의 seq·build_id(개발 빌드 = seq 0)."""
         blob = open(VERIFY_BIN, "rb").read()
         self.assertEqual(blob.count(b"cysr-buildmark:"), 1)
-        m = re.search(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);", blob)
+        m = re.search(rb"cysr-buildmark:seq=([0-9]+);build_id=([0-9A-Za-z.\-]+);version=([0-9A-Za-z.+\-]+);pack=([0-9a-f]{64});", blob)
         bi = json.loads(run([VERIFY_BIN, "build-info", "--json"], env=dict(os.environ, CYS_UPDATE_STATE_DIR=tempfile.mkdtemp())).stdout)
-        self.assertEqual((int(m.group(1)), m.group(2).decode()), (bi["release_seq"], bi["build_id"]))
+        self.assertEqual((int(m.group(1)), m.group(2).decode(), m.group(3).decode(), m.group(4).decode()),
+                         (bi["release_seq"], bi["build_id"], bi["version"], bi["bundled_pack"]["digest"]))
+
+
+class TestOfflinePyLow3(unittest.TestCase):
+    """1.1.21 N low3(agy · TICKET=cysr-1121-integ): _offline_py 는 PYTHONPYCACHEPREFIX 가 없어도 소스 옆 __pycache__ 를
+    읽지도 쓰지도 않는다(늘 -I -B + 이 호출만의 빈 pycache 자리 · 끝나면 지움 · 종료 코드 그대로)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="u3low3-")
+        self.lib = os.path.join(UPD, "lib", "offline-sign.sh")
+        self.t = os.path.join(self.tmp, "t")
+        os.makedirs(self.t)
+        self.env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+        self.env["TMPDIR"] = self.t
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _py(self, *args):
+        return run(["bash", "-c", '. "$1"; shift; _offline_py "$@"', "_", self.lib, *args], env=self.env)
+
+    def test_hijack_pyc_not_read_without_prefix(self):
+        d = os.path.join(self.tmp, "m")
+        os.makedirs(d)
+        src = os.path.join(d, "update_common.py")
+        open(src, "w").write("OK = 1\n")
+        hj = run(["python3", "-c", (
+            "import importlib.util as u, importlib._bootstrap_external as e, os, sys\n"
+            "src = sys.argv[1]; st = os.stat(src)\n"
+            "code = compile('import sys\\nprint(\\'PYC-HIJACK\\', file=sys.stderr)\\nsys.exit(7)\\n', src, 'exec')\n"
+            "pyc = u.cache_from_source(src); os.makedirs(os.path.dirname(pyc), exist_ok=True)\n"
+            "open(pyc, 'wb').write(e._code_to_timestamp_pyc(code, int(st.st_mtime), st.st_size))\n"
+            "print(pyc)\n"), src])
+        self.assertEqual(hj.returncode, 0, hj.stderr)
+        pyc = hj.stdout.strip()
+        before = open(pyc, "rb").read()
+        imp = "import sys; sys.path.insert(0, sys.argv[1]); import update_common"
+        ctl = run(["python3", "-I", "-c", imp, d], env=self.env)  # 대조: 옛 갈래(맨 -I)는 먹힌다
+        self.assertEqual(ctl.returncode, 7, ctl.stderr)
+        r = self._py("-c", imp, d)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("PYC-HIJACK", r.stderr)
+        self.assertEqual(open(pyc, "rb").read(), before)
+        self.assertEqual(os.listdir(self.t), [])  # 빈 임시 자리는 지워졌다
+
+    def test_no_pyc_written_and_rc_passthrough(self):
+        d = os.path.join(self.tmp, "w")
+        os.makedirs(d)
+        open(os.path.join(d, "fresh_mod.py"), "w").write("X = 1\n")
+        r = self._py("-c", "import sys; sys.path.insert(0, sys.argv[1]); import fresh_mod", d)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(d, "__pycache__")))
+        r = self._py("-c", "raise SystemExit(5)")
+        self.assertEqual(r.returncode, 5, r.stderr)
+        r = self._py("-c", "import sys; print(sys.pycache_prefix, sys.dont_write_bytecode, sys.flags.isolated)")
+        self.assertEqual(r.stdout.split(), ["/dev/null/cys-nopyc", "True", "1"])  # 만들 수 없는 자리 = 임시 폴더 0 · 신호로 끊겨도 잔재 0
+        self.assertEqual(os.listdir(self.t), [])
+        # PYTHONPYCACHEPREFIX 가 있으면 그 자리를 쓴다(새 임시 자리 0 · sign-release --expect-head 갈래 그대로)
+        pfx = os.path.join(self.tmp, "pfx")
+        os.makedirs(pfx)
+        self.env["PYTHONPYCACHEPREFIX"] = pfx
+        r = self._py("-c", "import sys; print(sys.pycache_prefix, sys.dont_write_bytecode)")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), [pfx, "True"])
+        self.assertEqual(os.listdir(self.t), [])
 
 
 class TestSourcePins(unittest.TestCase):

@@ -200,7 +200,16 @@ describe("K18 — 사람 쓰기 길 바이트 동일(838f24421)", () => {
     expect(send.startsWith("pub async fn chat_send(socket: Option<String>, surface_id: u64, text: String, kind: String) -> Result<Value, String> {\n    let sock = resolve_socket(&socket);\n    match kind.as_str() {\n")).toBe(true);
     expect(block(send, '        "human" => {')).toBe(CHAT_SEND_HUMAN_ARM_1118);
     // 화면 쪽 사람 말 IPC 칸(core → chat_send) = 1.1.18 꼴 `{socket:null, surfaceId, text, kind:"human"}`.
-    expect(read("views/core.ts")).toContain('this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: msg.text, kind: "human" })');
+    //   ★(TICKET=cysr-1121-ui K-2) 글 칸 = `outText` — 평소엔 msg.text 그대로, 10분 넘게 기다렸다 자동으로 나가는 말만 「(N분 전에 쓰신 말) 」 표지를 앞에 붙여
+    //   composeOutbound 를 다시 거친 글. 칸 이름·RPC 이름·나머지 칸은 1.1.18 그대로.
+    //   ★(TICKET=cysr-1121-ui K R1) 표지는 매 시도 원문(msg.text · 바꾸지 않음)에서 한 번만 만들고, 쓰기 전 영속하는 칸 = `sentText`(짝짓기 대상과 바이트가 같다) — msg.text 덮어쓰기 0.
+    const core = read("views/core.ts");
+    expect(core).toContain('this.d.invoke("chat_send", { socket: null, surfaceId: m.surface_id, text: outText, kind: "human" })');
+    expect(core).toContain("let outText = msg.text;");
+    expect(core).toContain("composeOutbound(agedPrefix(age) + msg.text)");
+    expect(core).toContain("outText = pre.text;");
+    expect(core).toContain("sentText: outText }))");
+    expect(core).not.toContain(", text: outText }))");
   });
 
   // 두 데몬 파일 sha256(줄 끝 LF · `git show "<커밋>:<경로>" | shasum -a 256`) = 1.1.19 rc2 b489e23b1 바이트. 838f24421 대비 다른 것 = 관찰 3 고침(건강 룰 판정)뿐.
@@ -211,9 +220,15 @@ describe("K18 — 사람 쓰기 길 바이트 동일(838f24421)", () => {
   //   · `"surface.send_text" => {` 갈래 본문 55,492자 = 838f24421 글자 그대로 · 그 갈래 호출 사슬(두 파일 정의 160개) 본문 다른 것 = default_health_rules(`builtin: true,` 한 칸 · 이름 겹침 `new(` 로 닿는 과대 연결)뿐.
   //   이 핀이 붉으면 = 두 파일이 또 바뀐 것 → 사람 쓰기 길(surface.send_text 처리기·writer) 무접촉을 함수 단위로 다시 대조한 뒤에만 값을 옮긴다
   //   (DESIGN §3-4 K18 · 정밀 검증 2R′ C). 함수 본문 핀으로 좁히는 일은 1.1.20 에서 쓰기 길을 바꿀 때 함께.
+  //   ★옮긴 근거 2(TICKET=cysr-1121-integ · [master#fbcd9729] · state.rs d2d74d96… → bdd98c0fe1909305… · handlers.rs 그대로):
+  //   · 바꾼 가지 = macpath2(1.1.21 A-4·A-8·A-9·A-10 · 맥 좌석 PATH_HELPER_ROOT 재선두) · fafe3eee1..9b3b3d5b8 diff = 추가 125줄 · 지운 줄 0.
+  //   · 함수 단위(fafe3eee1 → 9b3b3d5b8 · 624 → 631): 본문이 바뀐 기존 함수 = create_surface_core 1개(좌석 spawn 합류점 · 맥 전용 블록 2개 추가 =
+  //     배선 앞 우리 root 걷기 · spawn 직전 재선두 주입 · 입양 갈래 제외) · 새 함수 = BuilderSeatEnv 의 get·set·remove · scrub_mac_seat_path_before_wire ·
+  //     apply_mac_seat_path · 시험 2 · 사라진 함수 0 · 이름에 send·write·inject·submit 든 함수 중 본문 바뀐 것 0(write_operator_token 본문 바이트 동일).
+  //   · 사람 쓰기 길(handlers.rs `"surface.send_text" => {` 처리기 · writer) = handlers.rs sha256 그대로라 무접촉.
   const DAEMON_1119: Record<string, string> = {
     "src/bin/cysd/handlers.rs": "3a458847466a77abf1a5b534aad71e232acca6eca1c7b42f01ce19d3b8d03328",
-    "src/bin/cysd/state.rs": "d2d74d967f5ebedf199fd5108eed2fe8d938ae26e121e099a2a7335fd7d2c26d",
+    "src/bin/cysd/state.rs": "bdd98c0fe190930506f76c65bf050687f412ff922b546703ac8bf4f410e03cd4",
   };
   it("k18_daemon_files_1119 — 데몬 `handlers.rs`·`state.rs` = b489e23b1 바이트(838f24421 대비 관찰 3 고침(건강 룰 판정)만 다름)", () => {
     for (const [p, want] of Object.entries(DAEMON_1119)) {

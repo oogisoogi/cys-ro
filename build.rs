@@ -188,6 +188,24 @@ fn main() {
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR 없음");
     fs::write(Path::new(&out_dir).join("pack_all.rs"), code).expect("pack_all.rs 생성 실패");
 
+    // ★1.1.21 N med2(agy · codex N 1R · TICKET=cysr-1121-integ): 팩 digest 를 빌드 때 계산해 빌드 표지(src/update/buildinfo.rs
+    //   BUILD_MARK `;pack=<sha256>;`)에 박는다 — 식 = 런타임 `pack_items_sha256(PACK_ALL)`(rel\0content\0 · rels 순서 = PACK_ALL 순서).
+    //   x64 정적 수집기(scripts/update/collect_x64_static.py)는 바이트 존재 탐색만으로는 팩 항목과 결속할 수 없어(가까운 가짜 닻·
+    //   뒤쪽 사본 · 빈 파일 누락) 이 값을 커밋 재계산 digest 와 대조한다. 같은 식 = 시험 build_mark_pack_equals_embedded_hash.
+    //   다시 돌기 = 위 `rerun-if-changed=cysjavis-pack`(폴더 전체) — include_str! 내용과 이 값이 갈리지 않는다.
+    {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        for rel in &rels {
+            let bytes = fs::read(pack_root.join(rel)).unwrap_or_else(|e| panic!("팩 digest: {rel} 읽기 실패: {e}"));
+            h.update(rel.as_bytes());
+            h.update(b"\0");
+            h.update(&bytes);
+            h.update(b"\0");
+        }
+        println!("cargo:rustc-env=CYS_PACK_DIGEST={:x}", h.finalize());
+    }
+
     // T1-2: 단일진실 enum → OUT_DIR/cys_kinds.json (스키마·검증기 파리티의 기준).
     // 기존 디렉터리스캔 코드젠 철학과 동형(손목록 드리프트 차단). enum 정의는 src/edit_kinds.rs가
     // 진실이나 build.rs는 컴파일 전이라 그 타입을 못 본다 → 리터럴 목록을 여기 둔다(serde_json

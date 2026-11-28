@@ -261,7 +261,7 @@ describe("도우미 허락 — 평소 「마스터가 확인하는 중」(FR-C6)
     await h.open(2);
     h.emit("approval.stalled", { request_id: "r2", age_secs: 300 }, 7);
     const st = h.core.confirm.band().items.map((x) => (x.kind === "helper" ? x.stall : "?"));
-    expect(st).toEqual([null, "stalled_event"]);
+    expect(st).toEqual(["stalled_event", null]); // (TICKET=cysr-1121-ui L ㉢) 직접 답하실 것(멈춤으로 직접 허락이 열린 요청) 먼저
   });
   it("생긴 지 5분 ∧ 마스터 소식 5분 없음 → 직접(사건 없이도)", async () => {
     const h = harness();
@@ -277,7 +277,7 @@ describe("도우미 허락 — 평소 「마스터가 확인하는 중」(FR-C6)
     h.st.master.agent_alive = false;
     await h.open(2);
     // (검증 F5) 꺼짐을 처음 본 뒤 30초 유예 — 그동안은 「마스터가 확인하는 중」
-    expect(h.core.confirm.band().items.map((x) => (x.kind === "helper" ? x.stall : "-"))).toEqual([null, "-"]);
+    expect(h.core.confirm.band().items.map((x) => (x.kind === "helper" ? x.stall : "-"))).toEqual(["-", null]); // (L ㉢) 마스터 창 승인(직접 답하실 것) 먼저
     h.setNow(h.getNow() + 30_000);
     expect(h.core.confirm.band().items.map((x) => [x.kind, x.kind === "helper" ? x.stall : null])).toEqual([
       ["helper", "master_off"],

@@ -6,7 +6,7 @@
 판정 단위: 「허락 집행 = confirm_reply 호출」(우리 Tauri 명령 = 데몬 feed.reply · 결과 actuated 그대로). 원작자 feed_reply 호출 = 늘 0.
 
 A 표식 없음: 마스터 답에 표식 없음 → 띠 숨김 · 머리 「확인할 것 없음」(꾸미지 않음)
-B 마스터 물음: ⟪확인 요청⟫ → 「확인이 필요해요 1」 · 대화에서 답하기(진짜 클릭) → 입력칸 포커스 · 입력칸 글 불변 · 보낸 말 = 원문 그대로 · 해결 표식 → 띠 숨김
+B 마스터 물음: ⟪확인 요청⟫ → 「마스터 물음 1」(1.1.21 L ㉢ 갈래별 머리) · 대화에서 답하기(진짜 클릭) → 입력칸 포커스 · 입력칸 글 불변 · 보낸 말 = 원문 그대로 · 해결 표식 → 띠 숨김
 C 도우미 허락 평소: 「마스터가 확인하는 중」 · 허락·거절 단추 0
 D 마스터 멈춤(master.deadman 주입): 단추 보임 · 펼치기 전 허락(진짜 클릭) → 호출 0 + 안내 · 대본 클릭 → 호출 0 · 펼친 뒤 진짜 클릭 → 호출 1(번호·allow)
 E 이미 처리된 요청(그리기 뒤 목록에서 빠짐) → 진짜 클릭 → 호출 0 + 「이미 처리됐거나 바뀐 요청이에요」
@@ -123,8 +123,8 @@ def main() -> int:
         print("== B 마스터 물음 · 대화에서 답하기 · 원문 그대로 · 해결")
         push_reply(pg, "a1", "정리했어요.\n⟪확인 요청: 금요일 배포를 다음 주로 미뤄도 될까요?⟫")
         b = band(pg)
-        check(not b["hidden"] and b["head"] == "확인이 필요해요 1" and "금요일 배포" in b["text"], f"물음 → 띠 1 {b}")
-        check(b["min"] == "확인이 필요해요 1", f"최소 계약 칸 = 띠와 같은 값 {b['min']}")
+        check(not b["hidden"] and b["head"] == "마스터 물음 1" and "금요일 배포" in b["text"], f"물음 → 띠 1 {b}")
+        check(b["min"] == "마스터 물음 1", f"최소 계약 칸 = 띠와 같은 값 {b['min']}")
         pg.click(".cvb-answer")
         pg.clock.run_for(50)
         st = pg.evaluate("""() => ({ focus: document.activeElement?.className, value: document.querySelector('.cv-input').value,
@@ -136,7 +136,7 @@ def main() -> int:
         pg.clock.run_for(50)
         w = pg.evaluate("() => window.__CHAT.writes.map((x) => x.args.text)")
         check(w == ["네 미뤄 주세요"], f"★보낸 말 = 원문 그대로(물음 글·꼬리표 0) {w}")
-        check(band(pg)["head"] == "확인이 필요해요 1", "사람 답만으로는 띠가 닫히지 않음(마스터 해결 표식만 · FR-C3)")
+        check(band(pg)["head"] == "마스터 물음 1", "사람 답만으로는 띠가 닫히지 않음(마스터 해결 표식만 · FR-C3)")
         push_reply(pg, "a2", "알겠습니다.\n⟪확인 해결: 금요일 배포를 다음 주로 미뤄도 될까요?⟫")
         b = band(pg)
         check(b["hidden"], f"해결 표식 → 띠 숨김 {b}")
@@ -148,7 +148,7 @@ def main() -> int:
         pg.evaluate(f"() => {{ window.__CHAT.feedItems = [{item_js('r1', 2, 'rm -rf build', fp=None)}]; }}")
         pg.clock.run_for(3_100)
         b = band(pg)
-        check(b["head"] == "확인이 필요해요 1" and "마스터가 확인하는 중" in b["text"] and not b["allow"] and not b["deny"], f"「마스터가 확인하는 중」 · 허락·거절 단추 0 {b}")
+        check(b["head"] == "마스터가 확인하는 중 1" and "마스터가 확인하는 중" in b["text"] and not b["allow"] and not b["deny"], f"「마스터가 확인하는 중」 · 허락·거절 단추 0 {b}")
 
         print("== D0 앱 꼴 사건(검증 F1) — 부서 slug 사건 = 버림")
         pg.evaluate("() => { window.__CHAT.master.idle_secs = 120; window.__emit('daemon-event', { name: 'master.deadman', category: 'alert', surface_id: 1, socket_slug: 'dept-xyz', payload: { role: 'master' } }); }")

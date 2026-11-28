@@ -1,12 +1,12 @@
 // (cysr-ui-slice4 · TICKET=cysr-ui-slice4-1118) 확인 대기 띠 — 그리기만(판정 = judge/confirms · 행동 = act.confirm). P2-DESIGN §11 조각 4.
 //
-// 한 번에 하나(「다음」으로 넘김) · 머리 「확인이 필요해요 N」 / 모르면 「확인할 것 살펴보는 중」 / 0건 확정이면 숨김.
+// 한 번에 하나(「다음」으로 넘김) · 머리 = 갈래별 수(1.1.21 L ㉢ 「직접 답하실 것 a · 마스터 물음 b · 마스터가 확인하는 중 c」) / 모르면 「… 더 살펴보는 중」 / 0건 확정이면 숨김.
 // 마스터 물음 = 「대화에서 답하기」(그 물음 자리로 + 입력칸 준비 · **입력칸 글은 건드리지 않음** — 보낸 말은 원문 그대로 · FR-C3).
 // 도우미 허락 = 평소 「마스터가 확인하는 중」 · 마스터 멈춤일 때만 「무엇을 보기」 → 허락·거절(펼치기 전 허락 흐림 · 신뢰 클릭만 · 판 묶음).
 // 글은 전부 textContent(명령 원문·마스터 글에 HTML 해석 0).
 
 import type { ChatCore } from "../core";
-import { ALLOW_AT_WORK_MSG, allowReady, bandLabel, boundOf, canAllowDirect, swapBlocked, SWAP_LINE, SWAP_NOTE, type BandItem, type StallWhy } from "../judge/confirms";
+import { ALLOW_AT_WORK_MSG, allowReady, ASK_WAIT_NOTE, bandLabel, bandNeed, boundOf, canAllowDirect, swapBlocked, SWAP_LINE, SWAP_NOTE, type BandItem, type StallWhy } from "../judge/confirms";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -112,6 +112,7 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     }
     if (it.kind === "ask") {
       box.append(el("div", "cvb-text", `마스터가 물어요: ${it.q.text}`));
+      box.append(el("div", "cvb-wait", ASK_WAIT_NOTE)); // (TICKET=cysr-1121-ui L ㉡ 단순안) 안 눌러도 되는 까닭 · 답이 없으면 그 일은 하지 않음
       const waking = act.state.health !== "ready" && act.state.health !== "busy";
       box.append(button(waking ? "대화에서 답하기 · 깨어나면 전달" : "대화에서 답하기", "cvb-answer", () => goTo(it.q)));
       // (s79 · S4-7 · 검증 F7) 마스터가 해결 표식을 안 내도 사람이 띠에서 내릴 길 — 마스터에게 보내는 것 0
@@ -215,6 +216,8 @@ export function createBand(act: ChatCore, ui: BandUi): BandHandle {
     if (arrived && !items.some((x) => x.key === arrived?.key)) arrived = null;
     curKey = items[i]?.key ?? null;
     head.textContent = label ?? "";
+    // (TICKET=cysr-1121-ui L ㉢) 사람이 할 일이 없는 것(마스터가 확인하는 중)만 있으면 머리를 주의 색이 아닌 차분한 색으로
+    head.dataset.calm = String(b.known && b.items.length > 0 && b.items.every((x) => bandNeed(x) === "watch"));
     body.replaceChildren(...(items[i] ? [itemNode(items[i])] : []));
     nav.replaceChildren();
     if (items.length > 1) {

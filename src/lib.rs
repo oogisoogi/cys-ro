@@ -1408,6 +1408,17 @@ pub fn gate_pending_close_from(env_val: Option<&str>) -> bool {
 /// `CYS_LAUNCH_EXIT_GATE_PENDING` ↔ GUI `src-tauri` 분기. 구 바이너리는 78 을 내지 않으므로
 /// (0/1 만) 이 분기는 신 바이너리에서만 발동한다 — 스큐 안전.
 pub const EXIT_GATE_PENDING: i32 = 78;
+/// ★(1.1.21 · cysr-1121-restore D5) `cys launch-agent`(보통 갈래)가 「데몬 자동 복원이 그 역할의 저장 대화를 되살리는 중」이라
+/// 띄우지 않았다 — 실패가 아니라 보류(새 좌석·새 대화 0). cys(CLI)가 내고 cysd 스케줄러가 읽는다(그 회차 schedule.missed 기록 · 되돌림 없음 · 1.1.21 단순안).
+pub const EXIT_RESTORE_IN_PROGRESS: i32 = 95;
+/// ★(1.1.21 · cysr-1121-restore D5) phoenix 가 fresh 강등의 `cys launch-agent` 호출에**만** 붙이는 표지 — 자동 복원 자신의 기동은 거절하지 않는다.
+pub const ENV_AUTO_RESTORE_SELF: &str = "CYS_AUTO_RESTORE_SELF";
+/// ★(1.1.21 D5) 탈출 손잡이 — `1` 이면 자동 복원 중에도 종전대로 띄운다(자동 복원이 멈춘 듯 오래 갈 때 사람·master 가 쓰는 길).
+pub const ENV_LAUNCH_DURING_RESTORE: &str = "CYS_LAUNCH_DURING_RESTORE";
+/// ★(1.1.21 D5 · Fable 코드 1R minor) 데몬이 물려받으면 안 되는 D5 두 키 — 데몬 env 는 좌석 전체로 상속되므로 새면 그 데몬 수명 동안
+/// 「복원 중 기동 거절」 이 조용히 꺼진다. 두 겹으로 지운다: cys 의 데몬 스폰(`spawn_detached_daemon`) + cysd 부팅(`scrub_launch_restore_env`
+/// · 앱·셸에서 직접 띄운 cysd 도 걸린다). 한 배열 = 한쪽에만 키를 더하는 표류 차단.
+pub const LAUNCH_RESTORE_ENV_KEYS: [&str; 2] = [ENV_AUTO_RESTORE_SELF, ENV_LAUNCH_DURING_RESTORE];
 
 /// ★⑯(1.1.7) `refuse_on_approval` 이 켜진 직접 입력이 **승인·질문 창 화면**에서 거부될 때의 오류 코드.
 /// 순환의 무확인 `C-u`→`/clear`→Return 이 그 창의 선택지를 사람 대신 누르지 않게 한다(쓰기 0).
@@ -1427,7 +1438,7 @@ pub const EXIT_RECOVER_REFUSED: i32 = 79;
 /// 동봉 runtime의 bin 디렉토리들(디스크에 실재하는 것만) — OS별 레이아웃. 반환 순서 = PATH 선두 우선순위.
 /// Windows(RC-5): exe 형제 `runtime/`(python·git/cmd·git/usr/bin).
 /// macOS(RC-18·T6b): 앱 번들은 실행바이너리=Contents/MacOS·리소스(runtime/)=Contents/Resources →
-///   `exe_dir/../Resources/runtime`(python/bin·git/bin·uv·node/bin). 개발 빌드(exe 형제 runtime/)도 폴백.
+///   `exe_dir/../Resources/runtime`(python/bin·git/cysbin·git/bin·uv·node/bin · cysbin = 1.1.21 A 감싸개 · 실재분만). 개발 빌드(exe 형제 runtime/)도 폴백.
 /// runtime_prefixed_path(PATH 선두주입)와 state.rs `-lc` 재선두주입(D8 — 로그인셸 path_helper 강등 회피)이 공유.
 pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     #[cfg_attr(not(any(windows, target_os = "macos")), allow(unused_mut))]
@@ -1448,17 +1459,16 @@ pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
     }
     #[cfg(target_os = "macos")]
     {
-        // 앱 번들 리소스 경로 우선, 개발 빌드(형제 runtime/) 폴백. 첫 유효 루트만 사용.
-        let roots = [
-            exe_dir.parent().map(|p| p.join("Resources").join("runtime")),
-            Some(exe_dir.join("runtime")),
-        ];
-        for rt in roots.into_iter().flatten() {
-            if !rt.is_dir() {
-                continue;
-            }
+        // 앱 번들 리소스 경로 우선, 개발 빌드(형제 runtime/) 폴백. 첫 유효 루트만 사용 — 뿌리 탐색 정본 =
+        // `macos_devtools::mac_runtime_root`(좌석 셸 재선두 판정과 같은 뿌리 · 1.1.21 A 중복 제거).
+        if let Some(rt) = crate::macos_devtools::mac_runtime_root(exe_dir) {
+            // ★1.1.21 A: git/cysbin(동봉 dugite git 자립 감싸개 · scripts/mac-runtime/git-wrapper.sh)을 git/bin
+            //   **앞에 더한다**(대체 아님) — 원시 bin/git 은 --exec-path 가 빌드 접두(//libexec/git-core)라 https·init
+            //   템플릿을 못 찾고, 감싸개가 GIT_EXEC_PATH 를 세워 부른다. git/bin 은 scalar 노출 때문에 뒤에 남긴다.
+            //   cysbin 이 없는 옛 트리·개발 빌드는 is_dir 거짓 = 종전 4개 그대로.
             for d in [
                 rt.join("python").join("bin"),
+                rt.join("git").join("cysbin"),
                 rt.join("git").join("bin"),
                 rt.join("uv"),
                 rt.join("node").join("bin"),
@@ -1467,7 +1477,6 @@ pub fn runtime_bin_dirs(exe_dir: &Path) -> Vec<PathBuf> {
                     dirs.push(d);
                 }
             }
-            break;
         }
     }
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -2502,6 +2511,20 @@ pub fn restore_config_dir_under(entry: &serde_json::Value, home: &Path) -> Resul
     Ok(entry["claude_config_dir"].as_str().map(String::from))
 }
 
+/// ★(1.1.21 · TICKET=cysr-1121-restore) 복원 자리 여는 순위 — 작을수록 먼저. master = 0 · 그 밖 = 1.
+/// 근거: 저장 목록(topology.json `entries`)은 데몬 `surfaces` HashMap 순회 순서라 데몬 프로세스마다 바뀌었다
+/// (governance.rs `persist_topology`) → 갱신 뒤 master 가 뒤에 서면 설치기·다른 길이 master 자리를 먼저 잡아
+/// 옛 대화를 못 이었다. ⚠같은 규칙의 팩 쪽 짝 = `javis_phoenix.py` `restore_order` — 한쪽만 바꾸지 않는다.
+pub fn restore_role_rank(role: &str) -> u8 {
+    if role == "master" { 0 } else { 1 }
+}
+
+/// 저장 목록을 복원 순위로 정렬한다 — **안정 정렬**(순위가 같으면 원래 순서 그대로 · master 만 앞으로 나온다).
+/// 읽는 쪽(`cys restore` 순회 직전)과 쓰는 쪽(cysd `persist_topology`)이 같은 이 함수 하나를 쓴다.
+pub fn sort_saved_master_first(entries: &mut [serde_json::Value]) {
+    entries.sort_by_key(|e| restore_role_rank(e["role"].as_str().unwrap_or("")));
+}
+
 /// topology 엔트리의 설정 폴더 권위 칸(데몬 persist_topology 가 claude 좌석에 쓴다) — `"os"`(OS env 관측) ·
 /// `"recorded"`(관측 불가 기계 = 윈도우 · 기록값) · `"unobserved"`(관측 가능 기계인데 관측 전).
 pub const CONFIG_DIR_AUTHORITY_KEY: &str = "config_dir_authority";
@@ -3239,6 +3262,47 @@ pub mod dormant {
 // (1.1.8 병합: 이 시험 mod 는 원래 daemon_state_dir_for 바로 뒤에 있었다 — 원작자 소스 핀
 //  macos_devtools::spawn_env_pairs_wires_seventh_verdict_through_single_source_source_pin 이 「첫 cfg(test) 속성 앞 = 프로덕션」
 //  으로 자르므로 spawn_env_pairs 뒤로 옮겼다 · 내용 무변경.)
+#[cfg(test)]
+mod restore_order_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn roles(v: &[serde_json::Value]) -> Vec<String> {
+        v.iter().map(|e| e["role"].as_str().unwrap_or("-").to_string()).collect()
+    }
+
+    #[test]
+    fn master_moves_to_front_others_keep_relative_order() {
+        for (input, want) in [
+            (vec!["worker", "cso", "master"], vec!["master", "worker", "cso"]),
+            (vec!["cso", "master", "worker-2", "worker"], vec!["master", "cso", "worker-2", "worker"]),
+            (vec!["master", "worker", "cso"], vec!["master", "worker", "cso"]),
+            (vec!["worker", "cso"], vec!["worker", "cso"]),
+            (vec![], vec![]),
+        ] {
+            let mut v: Vec<_> = input.iter().map(|r| json!({"role": r})).collect();
+            sort_saved_master_first(&mut v);
+            assert_eq!(roles(&v), want, "입력 {input:?}");
+        }
+    }
+
+    #[test]
+    fn roleless_and_lookalike_roles_are_not_master() {
+        let mut v = vec![json!({"agent": "claude"}), json!({"role": "master-2"}), json!({"role": "dept-master"}), json!({"role": "master"})];
+        sort_saved_master_first(&mut v);
+        assert_eq!(roles(&v), vec!["master", "-", "master-2", "dept-master"]);
+        assert_eq!((restore_role_rank("master"), restore_role_rank("Master"), restore_role_rank("")), (0, 1, 1));
+    }
+
+    #[test]
+    fn duplicate_master_rows_keep_their_order() {
+        // 승계 도중 영속(같은 역할 두 줄 · 일시) — 안정 정렬이라 두 master 줄 사이 순서는 그대로다.
+        let mut v = vec![json!({"role": "worker"}), json!({"role": "master", "n": 1}), json!({"role": "master", "n": 2})];
+        sort_saved_master_first(&mut v);
+        assert_eq!(v.iter().map(|e| e["n"].as_i64().unwrap_or(0)).collect::<Vec<_>>(), vec![1, 2, 0]);
+    }
+}
+
 #[cfg(test)]
 mod daemon_state_dir_tests {
     use super::*;
@@ -5667,6 +5731,38 @@ mod tests {
         // 부재 dir는 계상 안 함: uv 제거 후 3개.
         fs::remove_dir_all(rt.join("uv")).unwrap();
         assert_eq!(runtime_bin_dirs(&macos).len(), 3, "uv 부재 시 3개");
+        fs::remove_dir_all(&base).ok();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn runtime_bin_dirs_macos_puts_git_wrapper_dir_before_raw_git_bin() {
+        // ★1.1.21 A 회귀 핀: git/cysbin(감싸개)이 있으면 git/bin **앞에 더한다** — 대체가 아니다(scalar 노출 유지).
+        use std::fs;
+        let base = std::env::temp_dir().join(format!("cysrt-1121a-{}", std::process::id()));
+        let macos = base.join("Contents").join("MacOS");
+        let rt = base.join("Contents").join("Resources").join("runtime");
+        for d in ["python/bin", "git/cysbin", "git/bin", "uv", "node/bin"] {
+            fs::create_dir_all(rt.join(d)).unwrap();
+        }
+        fs::create_dir_all(&macos).unwrap();
+        let got: Vec<String> = runtime_bin_dirs(&macos)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let want = ["python/bin", "git/cysbin", "git/bin", "uv", "node/bin"];
+        assert_eq!(got.len(), want.len(), "5개: {got:?}");
+        for (g, w) in got.iter().zip(want) {
+            assert!(g.ends_with(&format!("Resources/runtime/{w}")), "순서 {w}: {got:?}");
+        }
+        // 감싸개 dir 이 없으면 종전 4개 그대로(옛 트리 = 무변화).
+        fs::remove_dir_all(rt.join("git").join("cysbin")).unwrap();
+        let old: Vec<String> = runtime_bin_dirs(&macos)
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(old.len(), 4, "cysbin 부재 시 종전 4개: {old:?}");
+        assert!(old[1].ends_with("Resources/runtime/git/bin"), "git/bin 2순위 그대로: {old:?}");
         fs::remove_dir_all(&base).ok();
     }
 

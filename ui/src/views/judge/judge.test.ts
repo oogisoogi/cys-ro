@@ -97,7 +97,7 @@ describe("sendGate — 문턱(조건 하나씩 실패 = 쓰기 0)", () => {
     expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: null }] }, () => false)?.human_idle_secs).toBeNull();
     expect(masterRowOf({ surfaces: [{ surface_id: 1, role: "master", human_idle_secs: "x" }] }, () => false)?.human_idle_secs).toBeUndefined();
   });
-  it("U25 측정 대기 — 바쁨 = busy(기본값) · 상수/인자가 참이면 통과", () => {
+  it("(C안 · 1.1.21 내림) 「바쁠 때 넘김」 끔 — 바쁨 = busy(기본값) · 인자가 참이면 통과(K-3 길은 코드에 남음)", () => {
     expect(U25_BUSY_PASTE_OK).toBe(false);
     expect(code(G({ master: M({ working: true }) }))).toBe("busy");
     expect(code(G({ master: M({ working: true }), busyPasteOk: true }))).toBe("ok");

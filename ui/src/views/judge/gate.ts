@@ -14,9 +14,11 @@
 export const HUMAN_QUIET_SECS = 30;
 /** 0.5 M10 실측 묶임(초) — 기계 문안을 사람 보내기 뒤 언제 보낼지(조각 5)·「30초 뒤 다시」 문구가 이 값을 쓴다. */
 export const MEASURED_QUEUE_HOLD_AFTER_HUMAN_SECS = 31.2;
-/** U25(마스터가 답하는 중에 친 말을 Claude Code 가 받아 두는가) — **측정 대기**(0.5 M5 보류).
- *  값이 오면 이 상수만 바꾼다: true = 바쁠 때도 보냄 · false = 못 믿음(마스터가 쉬면 보냄 · 지금 기본값). */
-export const U25_BUSY_PASTE_OK: boolean = false;
+/** U25(마스터가 답하는 중에 친 말을 Claude Code 가 받아 두는가) — ★실측 = 받아 둔다(TICKET=cysr-1121-ui K-3 · 2026-11-27 · Claude Code 2.1.332 ·
+ *  증거 workers/cysr-1121-ui/u25-evidence/u25-records.txt): 원자 제출 0.7초 뒤 `queue-operation enqueue`(화면 「Queued」) → 도구 경계에서 흡수
+ *  (`attachment.queued_command`) 또는 턴 끝 dequeue 뒤 user 레코드. 대기 중 둘째 원자 제출의 Ctrl-U 는 대기 말을 지우지 않는다(두 말 차례 그대로).
+ *  → true = 바쁠 때도 보냄(작업 화면에서 바쁠 때 치는 것과 같은 길 · 설계 P2-DESIGN §2 「마스터가 바쁠 때」의 원래 그림). 되돌리기 = 이 값을 false 로. */
+export const U25_BUSY_PASTE_OK: boolean = false; // (C안 · 1.1.21 내림 · master 결정 11-27) 「바쁠 때 넘김」 끔 = 쉴 때만 보냄 · K 고침(accepted·10분 좁힘·확인 못 함 등)은 그대로
 
 /** (TICKET=cysr-chat-held-win) 자기 신고(status)가 없거나 낡았을 때 대화 화면 문턱이 「답하는 중」을 가르는 출력 정적 초.
  *  앱 공통 판정(appearance.nodeWorking)은 「출력 60초 안 = 일하는 중」이라, 자기 신고가 없는 마스터(윈 좌석 492 = 재시작 뒤 set-status 0회)에선
@@ -55,7 +57,8 @@ export interface MasterRow {
   working: boolean;
   /** (조각 3) 좌석 마지막 출력 뒤 초(org.status `idle_secs` · handlers.rs:12145) — 두 조회 사이 새 출력(짧은 답)을 알아채는 데만 씀 · 없으면 null */
   idle_secs?: number | null;
-  /** (조각 5 · S1-5) 지금 남은 사람 입력 시각의 찍기 표지(org.status `human_input_stamp` = `<데몬 기동 ms>:<번호>` · 찍기 없음·옛 데몬 = null) */
+  /** (조각 5 · S1-5) 지금 남은 사람 입력 시각의 찍기 표지(org.status `human_input_stamp` = `<데몬 기동 ms>:<번호>` · 찍기 없음 = null)
+   *  ★(TICKET=cysr-1121-ui K-2) 칸 자체가 없음(옛 데몬) = undefined — 「입력 없음(null)」과 갈라야 10분 상한 판정이 모르는 데몬에서 자동으로 틀리지 않는다. */
   human_input_stamp?: string | null;
   /** (조각 5 · §6-2) 등록 에이전트 이름(meta) · 이 좌석에서 그 에이전트를 본 적 있는가 · 좌석 판정("empty"/"occupied"/"unknown") — 없으면 null */
   agent?: string | null;
@@ -101,7 +104,7 @@ const MSG: Record<GateCode, string> = {
   draft: "마스터 창에 쓰다 만 글이 있어요 — 그 글을 지우지 않으려고 기다려요. 작업 화면에서 그 글을 보내거나 지우면 보낼게요.",
   input_unknown: "마스터 입력줄 상태를 확인하는 중이에요 — 확인되면 보낼게요.",
   human_recent: "마스터 창에 사람 입력이 있은 지 30초가 안 됐어요(방금 보낸 말 포함) — 30초 동안 조용하면 보낼게요.",
-  busy: "마스터가 답하는 중이에요 — 끝나면 보낼게요.",
+  busy: "마스터가 지금 답하는 중이라 끼워 넣지 않았어요 — 답이 끝나면 저절로 보내요(누르실 것 없어요).",
 };
 
 const verdict = (code: GateCode): GateVerdict => ({ ok: false, code, msg: MSG[code] });
@@ -128,6 +131,26 @@ export function ownLastHumanInput(m: MasterRow, own: string | null | undefined):
   return typeof own === "string" && own !== "" && typeof m.human_input_stamp === "string" && m.human_input_stamp === own;
 }
 
+/** (TICKET=cysr-1121-ui K-2 · master 10:2x 「붙잡은 뒤 같은 좌석 사람 입력 0」) 기준 표지(말을 받아들일 때 본 값 · "" = 그때 입력 없음) 뒤로
+ *  지금 표지까지 늘어난 사람 입력 차례가 **전부 이 화면이 실제로 쓴 제출**인가(순수). 표지 = 데몬 `<기동 ms>:<번호>`(handlers.rs human_input_stamp_label) —
+ *  모름(기준 없음 · 지금 칸 없음 · 꼴 틀림 · 데몬이 다시 켜짐 = 세대 다름 · 번호가 줄어듦 · 차이가 너무 큼) = false(= 종전대로 사람 클릭). */
+export const HUMAN_GAP_MAX = 200;
+export function noOtherHumanInputSince(base: string | undefined, now: string | null | undefined, own: ReadonlySet<string>): boolean {
+  if (typeof base !== "string" || now === undefined) return false;
+  const cur = now ?? "";
+  if (cur === base) return true;
+  const parse = (x: string): [string, number] | null => {
+    const m = /^(\d+):(\d+)$/.exec(x);
+    return m ? [m[1], Number(m[2])] : null;
+  };
+  const c = parse(cur);
+  if (!c) return false;
+  const b: [string, number] | null = base === "" ? [c[0], 0] : parse(base);
+  if (!b || b[0] !== c[0] || c[1] < b[1] || c[1] - b[1] > HUMAN_GAP_MAX) return false;
+  for (let k = b[1] + 1; k <= c[1]; k++) if (!own.has(`${c[0]}:${k}`)) return false;
+  return true;
+}
+
 /** org.status 행(IPC 값 · 전부 의심) → MasterRow. 마스터 = role === "master" ∧ !exited(main.ts 와 같은 판정) · 둘 이상이면 번호가 작은 것. */
 export function masterRowOf(org: unknown, working: (row: Record<string, unknown>) => boolean): MasterRow | null | undefined {
   const rows = (org as { surfaces?: unknown } | null)?.surfaces;
@@ -151,7 +174,7 @@ export function masterRowOf(org: unknown, working: (row: Record<string, unknown>
     human_idle_secs: "human_idle_secs" in r ? num(r.human_idle_secs) ?? (r.human_idle_secs === null ? null : undefined) : undefined,
     working: working(r),
     idle_secs: num(r.idle_secs),
-    human_input_stamp: typeof r.human_input_stamp === "string" && r.human_input_stamp !== "" ? r.human_input_stamp : null,
+    human_input_stamp: typeof r.human_input_stamp === "string" && r.human_input_stamp !== "" ? r.human_input_stamp : "human_input_stamp" in r && r.human_input_stamp === null ? null : undefined, // (K-2) 칸 없음·꼴 틀림 = undefined(모름)
     agent: typeof r.agent === "string" ? r.agent : null,
     agent_seen: bool(r.agent_seen),
     seat: typeof r.seat === "string" ? r.seat : null,

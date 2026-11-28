@@ -10,7 +10,7 @@ import { nodeWorking, STATUS_FRESH_SECS } from "../appearance";
 
 type Mode = "mac" | "win";
 
-function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: number; serial?: boolean; master?: Record<string, unknown>; working?: (r: Record<string, unknown>) => boolean; chatWorking?: (r: Record<string, unknown>) => boolean }) {
+function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: number; serial?: boolean; master?: Record<string, unknown>; working?: (r: Record<string, unknown>) => boolean; chatWorking?: (r: Record<string, unknown>) => boolean; busyPasteOk?: boolean }) {
   const calls: string[] = [];
   const mem = new Map<string, string>();
   let now = 1_000_000;
@@ -62,6 +62,7 @@ function sim(o: { mode: Mode; lat: (cmd: string) => number; winInnerRpcs?: numbe
     },
     store: { get: (k) => mem.get(k) ?? null, set: (k, v) => void mem.set(k, v), remove: (k) => void mem.delete(k) },
     working: o.working ?? ((r) => r.working === true),
+    busyPasteOk: o.busyPasteOk,
     chatWorking: o.chatWorking,
   };
   const flush = async () => {
@@ -198,7 +199,7 @@ describe("ⓑ 같은 까닭(상태 확인 늦음) 3회 연속 = 자동 전송 �
 
 describe("붙잡힌 까닭이 바뀌면 안내도 지금 까닭으로", () => {
   it("상태 확인 늦음으로 붙잡힌 뒤 마스터가 답하는 중 → 안내 = 답하는 중(옛 「상태 확인이 늦어져서」를 남기지 않음) · 쓰기 0 · 끝나면 쓰기 1", async () => {
-    const s = sim({ mode: "win", lat: () => 5 });
+    const s = sim({ mode: "win", lat: () => 5, busyPasteOk: false }); // (K-3) 「답하는 중」 붙잡음 = 되돌리기 판 동작
     await ready(s);
     s.st.hang.add("org_status");
     void s.core.submit("말");
@@ -239,7 +240,7 @@ describe("대화 화면 「답하는 중」 — 자기 신고(status) 없는 마
   });
   it("통합(윈 좌석 492 꼴 · status 없음): 답을 마치고 출력 20초 정적 → 바로 씀(고치기 전 = 60초까지 「답하는 중」 붙잡힘) · 출력 중(0초)엔 붙잡음", async () => {
     const master: Record<string, unknown> = { surface_id: 492, role: "master", exited: false, agent_alive: true, pending_input_bytes: 0, pending_input_human_bytes: 0, input_paste_open: false, gate_pending: null, human_idle_secs: null, idle_secs: 0, status: null };
-    const s = sim({ mode: "win", lat: () => 5, master, working: appWorking, chatWorking: (r) => chatWorking(r, appWorking) }); // index.ts bootViews 배선 그대로
+    const s = sim({ mode: "win", lat: () => 5, master, working: appWorking, chatWorking: (r) => chatWorking(r, appWorking), busyPasteOk: false }); // index.ts bootViews 배선 그대로 · (K-3) 붙잡음 판정 = 되돌리기 판 동작
     await ready(s);
     void s.core.submit("출력 중에 보낸 말");
     await s.advance(1_000);

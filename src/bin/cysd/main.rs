@@ -78,6 +78,8 @@ mod team;
 mod teamtoken;
 mod trash;
 mod undo;
+// ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 윈도우 표준 오류가 버려지는 기동(작업 스케줄러·null)이면 상태 폴더 cysd.log 로 붙는다 — 맥은 무동작.
+mod winlog;
 mod update_hold;
 mod usage;
 mod watch_wake;
@@ -1149,6 +1151,31 @@ fn scrub_update_txn_env() {
     }
 }
 
+/// ★1.1.21 A ③(설계 DESIGN-A r7.2 §2-3) 데몬은 좌석 셸 재선두 root 를 물려받지 않는다 — 좌석 안에서 뜬 데몬(CLI 자동 기동·부서 데몬)이
+/// 그 좌석의 `PATH_HELPER_ROOT`·짝 표식을 env 로 쥐면, 이 데몬의 다른 자식(스케줄 잡 등)이 옛 root 를 물려받는다(CLT 설치 뒤·롤백 뒤·앱 이동
+/// 뒤에도 고착). 좌석 스폰의 ②와 **같은 식별**(`macos_devtools::is_our_path_helper_root`)로 우리 것만 지우고 진단 표지는 늘 지운다. 사용자 값 무접촉 ·
+/// 롤백(`CYS_BOOT_GATES=0`·`CYS_MAC_SEAT_PATH=0`)이어도 돈다(롤백 = 「물려받은 우리 값도 걷음」 · §4). 맥 전용(윈도우·리눅스 무접촉).
+fn scrub_mac_seat_path_env() {
+    #[cfg(target_os = "macos")]
+    if let Some(home) = dirs::home_dir() {
+        let base = cys::macos_devtools::path_helper_root_base(&home);
+        for k in cys::macos_devtools::scrub_boot_env(&mut cys::macos_devtools::ProcessEnv, &base) {
+            eprintln!("[cysd] scrubbed inherited seat path env: {k}");
+        }
+    }
+}
+
+/// ★(1.1.21 · cysr-1121-restore D5 · Fable 코드 1R minor) 데몬은 「복원 중 기동 거절」 의 표지·손잡이를 물려받지 않는다 — 데몬 env 는
+/// 좌석 전체로 상속되므로 새면 그 데몬 수명 동안 거절이 조용히 꺼진다. cys 스폰 쪽 env_remove 와 두 겹(앱·셸이 직접 띄운 cysd 도 걸린다).
+fn scrub_launch_restore_env() {
+    for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+        if std::env::var_os(k).is_some() {
+            std::env::remove_var(k);
+            eprintln!("[cysd] scrubbed launch-restore env: {k}");
+        }
+    }
+}
+
 /// cysd 명령줄 판정(순수 · argv[0] 제외).
 #[derive(Debug, PartialEq, Eq)]
 enum CysdCli {
@@ -1241,7 +1268,13 @@ fn main() {
         }
         CysdCli::Run => {}
     }
+    // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 데몬 실행 갈래의 **첫 동작** — 어떤 로그 줄(아래 `[cysd] v…` 포함)보다 먼저 붙어야
+    //   그 줄들이 윈도우 로그 파일에 남는다. 표준 오류를 누가 받고 있으면(콘솔·파이프·파일) 그대로 두고, 맥·리눅스는 무동작(winlog.rs).
+    #[cfg(windows)]
+    winlog::attach_if_discarded(&state::state_dir(&cys::socket_path()));
     cys::seal_python_bytecode_in_process();
+    // ★(1.1.21 · cysr-1121-restore D5 · codex 코드 2R minor) 런타임(워커 스레드) 생성 **전** — set_var/remove_var 는 프로세스 전역이다(위 봉인과 같은 계약).
+    scrub_launch_restore_env();
     async_main();
 }
 
@@ -1258,6 +1291,7 @@ async fn async_main() {
     );
     scrub_claude_session_env();
     scrub_update_txn_env();
+    scrub_mac_seat_path_env();
 
     // ★(1R#4 · 2026-09-10) Windows 자식 수명 결박을 **상속**으로 세운다 — 데몬 자신을 프로세스
     //   수명 Job(KILL_ON_JOB_CLOSE)에 넣으면 이후 CreateProcess 되는 모든 자손이 커널 수준에서
@@ -1358,6 +1392,9 @@ async fn async_main() {
             }
         }
     };
+    // ★(1.1.21 · TICKET=cysr-win-cysd-stderr-1126) 로그 회전은 게이트를 이긴 데몬만(패자가 승자의 cysd.log 를 밀어내지 않게) — 기동 직후 1회 + 10분마다.
+    #[cfg(windows)]
+    winlog::spawn_rotation_if_attached();
 
     // windows .prev sweep 은 위 싱글턴 게이트 **뒤**에서 수행 — 승자만 잔해를 정리한다(패자는 이미 즉사).
     // ★무중단 rename-swap 잔해 청소(nsis-hooks.nsh의 짝): 업데이트가 잠긴 파일을 죽이는 대신
@@ -4386,6 +4423,16 @@ mod env_scrub_tests {
     /// 회귀 박제: claude 세션 안에서 spawn된 데몬이 세션 정체성 env를 보존하면 PTY 자식
     /// claude가 child-session으로 강등돼 트랜스크립트 미영속(복원·recall·T5 전부 파괴).
     /// scrub은 누설 변수만 제거하고 무관 변수는 보존해야 한다.
+    /// ★1.1.21 A ③ 부팅 scrub 배선 핀 — 기존 scrub 둘 옆(main 첫 경로)에서 돈다.
+    #[test]
+    fn boot_scrubs_inherited_seat_path_env() {
+        let src = include_str!("main.rs");
+        assert!(src.contains("fn scrub_mac_seat_path_env() {"), "부팅 scrub 정의 소실");
+        let call = src.find("    scrub_update_txn_env();\n    scrub_mac_seat_path_env();").expect("부팅 scrub 배선 소실");
+        let main_fn = src.find("\nfn main()").expect("main 소실");
+        assert!(call > main_fn, "부팅 scrub 이 main 첫 경로에 있지 않다");
+    }
+
     #[test]
     fn scrub_removes_leaky_session_vars_only() {
         std::env::set_var("CLAUDE_CODE_SESSION_ID", "parent-session");
@@ -4402,6 +4449,26 @@ mod env_scrub_tests {
             "무관 env까지 지우면 안 된다"
         );
         std::env::remove_var("CYS_SCRUB_TEST_KEEP");
+    }
+}
+
+/// ★(1.1.21 · cysr-1121-restore D5) 데몬 부팅 scrub — 「복원 중 기동 거절」 의 표지·손잡이를 지운다(좌석 상속 누출 차단) · main 이 부른다.
+#[cfg(test)]
+mod launch_restore_scrub_tests {
+    #[test]
+    fn boot_scrubs_both_launch_restore_keys_and_main_calls_it() {
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            std::env::set_var(k, "1");
+        }
+        super::scrub_launch_restore_env();
+        for k in cys::LAUNCH_RESTORE_ENV_KEYS {
+            assert!(std::env::var_os(k).is_none(), "{k} 가 남았다");
+        }
+        assert_eq!(cys::LAUNCH_RESTORE_ENV_KEYS, ["CYS_AUTO_RESTORE_SELF", "CYS_LAUNCH_DURING_RESTORE"]);
+        let src: String = include_str!("main.rs").lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
+        // 위치 = 동기 main 의 async_main()(tokio 런타임 생성) 바로 앞 · 한 곳(codex 코드 2R minor)
+        assert!(src.contains("    scrub_launch_restore_env();\n    async_main();\n"), "부팅 scrub 이 런타임 생성 앞(동기 main)에 없다");
+        assert_eq!(src.matches("    scrub_launch_restore_env();\n").count(), 1, "부팅 scrub 호출은 한 곳");
     }
 }
 

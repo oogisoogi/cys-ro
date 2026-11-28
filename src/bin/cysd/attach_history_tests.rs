@@ -367,7 +367,7 @@ async fn lagged_history_connection_ends_with_marker_plain_does_not() {
         let d2 = Arc::clone(&d);
         let sid = s.id;
         let hist = with_history.then_some((cursor, 24u16));
-        let task = tokio::spawn(async move { crate::run_attach(&d2, &mut srv, ack, sid, hist).await });
+        let mut task = tokio::spawn(async move { crate::run_attach(&d2, &mut srv, ack, sid, hist).await });
         let s2 = Arc::clone(&s);
         tokio::task::spawn_blocking(move || wait_until(|| s2.line_count.load(Ordering::Relaxed) >= 4000)).await.unwrap();
         let mut r = BufReader::new(cli);
@@ -380,7 +380,12 @@ async fn lagged_history_connection_ends_with_marker_plain_does_not() {
                 Err(_) => break, // 조용함
             }
         }
-        let ended = task.is_finished();
+        // ★TICKET=debug-cysr-ci-flaky-1126 F3(깜빡이 고침 · 시험만 · 제품·단언 그대로): 종전 `task.is_finished()` 는 관이 닫힌 것(EOF)을 본
+        //   **직후** 완료 표식을 읽었다 — tokio 는 미래값이 끝나 `srv` 가 버려진(=EOF 가 보인) **뒤에야** 완료 표식을 세운다
+        //   (tokio 1.52.3 harness.rs `poll_future` → `store_output` → `complete`). 그 틈에 작업 스레드가 밀리면 「표지 true · 닫힘 false」로
+        //   붉었다(11-25 516 부하 대조 1/40 · 원문 같음). → 완료를 시각이 아니라 **사건**으로 기다린다: 기록 연결은 5초 안에 끝나야 하고
+        //   (안 끝나면 닫힘 false = 붉음 그대로), 인자 없는 연결은 종전처럼 기다리지 않는다(단언에 쓰지 않음).
+        let ended = with_history && tokio::time::timeout(std::time::Duration::from_secs(5), &mut task).await.is_ok();
         task.abort();
         kill(&s);
         let marker = all.ends_with(crate::ATTACH_LAGGED_MARKER);
